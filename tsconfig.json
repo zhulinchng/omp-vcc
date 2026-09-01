@@ -1,0 +1,1 @@
+{"compilerOptions":{"target":"ES2022","module":"ESNext","moduleResolution":"bundler","strict":false,"esModuleInterop":true,"skipLibCheck":true,"allowImportingTsExtensions":true,"noImplicitAny":false},"include":["extensions","tools","hooks","src","scripts","tests","types.d.ts","*.d.ts"]}

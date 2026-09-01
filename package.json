@@ -1,0 +1,106 @@
+{
+  "name": "@zhu/omp-vcc",
+  "version": "0.1.0",
+  "description": "Algorithmic VCC compaction for omp - fast lossless no-LLM",
+  "type": "module",
+  "keywords": [
+    "oh-my-pi",
+    "omp",
+    "plugin"
+  ],
+  "license": "MIT",
+  "files": [
+    "extensions",
+    "tools",
+    "skills",
+    "commands",
+    "hooks",
+    "rules",
+    "prompts",
+    "agents",
+    "mcp.json",
+    ".mcp.json",
+    "types.d.ts"
+  ],
+  "omp": {
+    "description": "Algorithmic VCC compaction for omp - fast lossless no-LLM",
+    "extensions": [
+      "./extensions/main.ts"
+    ],
+    "commands": [
+      "./commands/omp-vcc.md",
+      "./commands/vcc-recall.md"
+    ],
+    "settings": {
+      "vccEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable VCC compaction interception (master switch)"
+      },
+      "overrideDefaultCompaction": {
+        "type": "boolean",
+        "default": true,
+        "description": "When true, omp-vcc handles all compactions (threshold/overflow/manual); when false, only /omp-vcc is handled"
+      },
+      "smartKeepTail": {
+        "type": "boolean",
+        "default": true,
+        "description": "Boost default keep:1 tail when small (5k→25k token window)"
+      },
+      "continueAfterThresholdCompact": {
+        "type": "boolean",
+        "default": true,
+        "description": "Auto-continue after threshold/overflow compaction"
+      },
+      "debug": {
+        "type": "boolean",
+        "default": false,
+        "description": "Write debug snapshot to /tmp/omp-vcc-debug.json"
+      }
+    }
+  },
+  "pi": {
+    "description": "Algorithmic VCC compaction for omp - fast lossless no-LLM",
+    "extensions": [
+      "./extensions/main.ts"
+    ],
+    "commands": [
+      "./commands/omp-vcc.md",
+      "./commands/vcc-recall.md"
+    ],
+    "settings": {
+      "vccEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable VCC compaction interception (master switch)"
+      },
+      "overrideDefaultCompaction": {
+        "type": "boolean",
+        "default": true,
+        "description": "When true, omp-vcc handles all compactions (threshold/overflow/manual); when false, only /omp-vcc is handled"
+      },
+      "smartKeepTail": {
+        "type": "boolean",
+        "default": true,
+        "description": "Boost default keep:1 tail when small (5k→25k token window)"
+      },
+      "continueAfterThresholdCompact": {
+        "type": "boolean",
+        "default": true,
+        "description": "Auto-continue after threshold/overflow compaction"
+      },
+      "debug": {
+        "type": "boolean",
+        "default": false,
+        "description": "Write debug snapshot to /tmp/omp-vcc-debug.json"
+      }
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "smoke": "bun run scripts/smoke.ts",
+    "postuninstall": "node scripts/uninstall-reset.js || true",
+    "prepublishOnly": "npm run typecheck"
+  }
+}
