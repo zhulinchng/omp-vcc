@@ -782,7 +782,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     });
 
     const details: PiVccCompactionDetails = {
-      compactor: "pi-vcc",
+      compactor: "omp-vcc",
       version: 1,
       sections: [...summary.matchAll(/^\[(.+?)\]/gm)].map((m) => m[1]),
       sourceMessageCount: agentMessages.length,
