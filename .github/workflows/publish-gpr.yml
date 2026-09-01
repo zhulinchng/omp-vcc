@@ -1,0 +1,76 @@
+name: Publish to GitHub Packages
+
+# Mirrors the package to the GitHub npm registry so it appears under
+# https://github.com/zhulinchng/omp-vcc/packages. GitHub's registry only
+# accepts owner-scoped names, so the published identity is
+# @zhulinchng/omp-vcc (the unscoped omp-vcc stays on npmjs).
+#
+# Runs automatically when a GitHub Release is published, or manually from the
+# Actions tab. Registry versions are immutable: a run whose version is
+# already published skips the publish step with a warning instead of failing.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # Explicit gate: the full suite must pass before anything is published.
+  test:
+    name: Gates (typecheck · test · smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: bun install --frozen-lockfile
+      - run: bunx tsc --noEmit
+      - run: bun test
+      - run: bun run smoke
+
+  publish-gpr:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://npm.pkg.github.com
+          scope: "@zhulinchng"
+      - name: Install dev tooling (prepublish gate needs tsc)
+        run: bun install --frozen-lockfile
+      - name: Scope the package name for the GitHub registry
+        run: npm pkg set name=@zhulinchng/omp-vcc
+      - name: Skip if this version is already published
+        id: gpr
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "@zhulinchng/omp-vcc@$VERSION" version --registry https://npm.pkg.github.com > /dev/null 2>&1; then
+            echo "already-published=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::@zhulinchng/omp-vcc@$VERSION is already on GitHub Packages; nothing to publish (versions are immutable). Bump and cut a new release instead."
+          else
+            echo "already-published=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish (prepublishOnly re-runs the gates as defense)
+        if: steps.gpr.outputs.already-published != 'true'
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify published metadata
+        run: npm view @zhulinchng/omp-vcc version --registry https://npm.pkg.github.com
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

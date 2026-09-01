@@ -1,18 +1,27 @@
 {
-  "name": "@zhulinchng/omp-vcc",
-  "version": "0.1.1",
+  "name": "omp-vcc",
+  "version": "0.1.2",
   "description": "Algorithmic VCC compaction for omp - fast lossless no-LLM",
-  "type": "module",
+  "author": "Zhu Lin <zhulin@czl.my>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhulinchng/omp-vcc.git"
+  },
+  "homepage": "https://github.com/zhulinchng/omp-vcc#readme",
+  "bugs": {
+    "url": "https://github.com/zhulinchng/omp-vcc/issues"
+  },
   "keywords": [
     "oh-my-pi",
     "omp",
-    "plugin"
+    "pi",
+    "oh-my-pi",
+    "plugin",
+    "vcc",
+    "compaction",
+    "pi-package"
   ],
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/zhulinchng/omp-vcc.git"
-  },
   "files": [
     "extensions",
     "skills",
@@ -99,6 +108,6 @@
     "test": "bun test",
     "smoke": "bun run scripts/smoke.ts",
     "postuninstall": "node scripts/uninstall-reset.js || true",
-    "prepublishOnly": "npm run typecheck"
+    "prepublishOnly": "npm run typecheck && npm test && npm run smoke"
   }
 }
