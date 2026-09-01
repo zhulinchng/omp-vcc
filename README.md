@@ -9,11 +9,14 @@
 omp plugin link /Users/zhu/code/projects/omp-vcc
 omp plugin list --json | jq '.[] | select(.name|contains("omp-vcc"))'
 
-# from npm (once published)
+# from npm (unscoped)
+omp plugin install omp-vcc
+
+# from GitHub Packages (scoped, requires auth — see below)
 omp plugin install @zhulinchng/omp-vcc
 
 # from git
-omp plugin install github:zhu/omp-vcc
+omp plugin install github:zhulinchng/omp-vcc
 ```
 
 ## What you get
@@ -89,7 +92,13 @@ In a live `omp` session: `/omp-vcc keep:1` shows `[Session Goal]` toast `omp-vcc
 
 ## Publish
 
-- npm: `npm publish` then `omp plugin install @zhulinchng/omp-vcc`
+- npmjs (unscoped): `npm publish --registry https://registry.npmjs.org --access public` (package `omp-vcc`)
+- GitHub Packages (scoped): `npm publish --registry https://npm.pkg.github.com` (package `@zhulinchng/omp-vcc`, needs `GITHUB_TOKEN` with `read:packages, write:packages`)
+- Consumer GPR auth: add to `~/.npmrc`:
+  ```
+  @zhulinchng:registry=https://npm.pkg.github.com
+  //npm.pkg.github.com/:_authToken=YOUR_GITHUB_PAT
+  ```
 - Marketplace: add an entry to `.omp-plugin/marketplace.json` (see `plugin-skill/assets/templates/marketplace-entry.json.template`).
 
 ## License

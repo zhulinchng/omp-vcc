@@ -9,17 +9,15 @@
     "plugin"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zhulinchng/omp-vcc.git"
+  },
   "files": [
     "extensions",
-    "tools",
     "skills",
     "commands",
-    "hooks",
-    "rules",
-    "prompts",
-    "agents",
-    "mcp.json",
-    ".mcp.json",
+    "scripts",
     "types.d.ts"
   ],
   "omp": {
