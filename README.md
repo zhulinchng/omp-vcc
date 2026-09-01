@@ -4,6 +4,8 @@
 
 ## Quick start
 
+> **New here?** → [`docs/setup.md`](docs/setup.md) — 5-minute install with prerequisites, 4 install options (link / npm / git), verify, first `/omp-vcc`, recall, config, and troubleshooting. The commands below are the tldr.
+
 ```sh
 # from source (local)
 omp plugin link /Users/zhu/code/projects/omp-vcc
@@ -49,8 +51,6 @@ File `~/.omp/omp-vcc/config.json` (XDG-aware: `$OMP_VCC_CONFIG_PATH` > `$PI_VCC_
 }
 ```
 
-Manifest `omp.settings` also exposed (`vccEnabled`, `overrideDefaultCompaction`, `smartKeepTail`, `continueAfterThresholdCompact`, `debug`) — appears under plugin section in `/settings` and via `omp config`. See [`docs/configuration.md`](docs/configuration.md).
-
 ## How it works
 
 VCC compiles the raw JSONL trace via **lex → parse IR → monotonic line assignment → view lowering** into three views sharing one coordinate system:
@@ -59,7 +59,7 @@ VCC compiles the raw JSONL trace via **lex → parse IR → monotonic line assig
 - `V_ui` one-line tool summaries with pointers (`* Read "src/pets.py" (file.txt:18-20)`)
 - `V_adapt(b, ρ)` projection via predicate `ρ` preserving headers/role tags and `(f:s-e)` pointers, two transposed modalities (document vs index oriented)
 
-`omp-vcc` implements `V_ui` as the structured summary (5 sections + ranked brief transcript) and `V_adapt` as `vcc_recall`. Pointer invariant `V_ui → V_full[s:e]` holds structurally. See [`docs/architecture.md`](docs/architecture.md) and [`docs/paper-notes.md`](docs/paper-notes.md).
+`omp-vcc` implements `V_ui` as the structured summary (5 sections + ranked brief transcript) and `V_adapt` as `vcc_recall`. Pointer invariant `V_ui → V_full[s:e]` holds structurally. Diagrams and pipeline in [`docs/architecture.md`](docs/architecture.md); paper mapping in [`docs/paper-notes.md`](docs/paper-notes.md); setup in [`docs/setup.md`](docs/setup.md).
 
 ## Related work
 
@@ -83,13 +83,12 @@ Capabilities: `extension`, `skill`, `command` — entry `extensions/main.ts`.
 
 ```sh
 bunx tsc --noEmit
-bun test          # 295 tests across 32 files
+bun test          # 310 tests across 33 files, 768 expects
 bun run smoke     # ok: session_before_compact hooked, vcc_recall registered
 omp plugin link /Users/zhu/code/projects/omp-vcc && omp plugin doctor
 ```
 
-In a live `omp` session: `/omp-vcc keep:1` shows `[Session Goal]` toast `omp-vcc: kept 1/5 turns, ~2.1k tok`; with `debug:true` check `/tmp/omp-vcc-debug.json`. See [`docs/verification.md`](docs/verification.md).
-
+In a live `omp` session: `/omp-vcc keep:1` shows `[Session Goal]` toast `omp-vcc: kept 1/5 turns, ~2.1k tok`; with `debug:true` check `/tmp/omp-vcc-debug.json`. Full proof matrix and mermaid flows in [`docs/verification.md`](docs/verification.md).
 ## Publish
 
 - npmjs (unscoped): `npm publish --registry https://registry.npmjs.org --access public` (package `omp-vcc`)
