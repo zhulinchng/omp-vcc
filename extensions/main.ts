@@ -53,6 +53,7 @@ export default function (pi: ExtensionAPI): void {
     label: "VCC Recall",
     description:
       "Recall earlier parts of the current session — decisions made, files touched, commands run, including anything dropped by compaction. Reach for this before telling the user you no longer have the context. Plain keywords work best; a regex pattern is also accepted. Results are paged (page); pass expand with entry indices to read full untruncated content. Use mode:'touched' to list files worked on in this session with their entry indices, and #N:path to drill into a file's content from an entry (#N:path:full for all lines). Note: apply_patch paths (inside the diff payload) and bash redirects do not appear in the touched index. Only the current session is searchable — earlier sessions are not.",
+    approval: "read",
     parameters: pi.zod.object({
       query: pi.zod.string().optional().describe("What to recall, in plain keywords (e.g. 'redis cache decision'). Multi-word queries are ranked by relevance. A regex pattern also works."),
       expand: pi.zod.array(pi.zod.number()).optional().describe("Entry indices to return full untruncated content for"),

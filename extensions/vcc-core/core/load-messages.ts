@@ -13,7 +13,12 @@ export const loadAllMessages = (
   full: boolean,
   allowedEntryIds?: Set<string>,
 ): LoadedMessages => {
-  const content = readFileSync(sessionFile, "utf-8");
+  let content: string;
+  try {
+    content = readFileSync(sessionFile, "utf-8");
+  } catch {
+    return { rendered: [], rawMessages: [] };
+  }
   const entries: any[] = [];
   for (const line of content.split("\n")) {
     if (!line.trim()) continue;

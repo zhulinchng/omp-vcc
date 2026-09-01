@@ -639,6 +639,13 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
 
       pendingFollowUpPrompt = null;
       const fallbackToCore = !isPiVcc && (reason === "overflow" || willRetry);
+      // Note: omp's SessionBeforeCompactEvent carries no reason/willRetry
+      // (shared-events.ts:64-74 emits only {preparation, branchEntries,
+      // customInstructions, signal}), so fallbackToCore is currently dead
+      // under real omp runs and an overflow with too_few would be cancelled
+      // instead of falling back. See reviewer finding; graceful fallback for
+      // undefined reason is deferred to avoid breaking manual /compact cancel
+      // semantics verified by tests/before-compact-hook.test.ts:124.
       dbg(settings, {
         cancelled: !fallbackToCore,
         fallbackToCore,
@@ -795,9 +802,6 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       },
     };
   });
-
-  // Fire success toast for /compact path only (delayed to let UI settle).
-  // /pi-vcc path uses its own onComplete callback in the command handler.
   pi.on("session_compact", async (event, ctx) => {
     const { reason, willRetry } = readCompactionEventContext(event);
     if (!event.fromExtension) return;
@@ -807,6 +811,10 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     if (willRetry) return;
     const stats = lastStats;
     if (!stats) return;
+    // omp's SessionCompactEvent is {compactionEntry, fromExtension} only
+    // (shared-events.ts:84-89); reason/willRetry are always undefined/false
+    // under real omp runs, so auto-continue is currently dead. Threshold/
+    // overflow continuation is verified via mocked events in tests.
     const shouldContinueAfterAutoCompact = (reason === "threshold" || reason === "overflow") && loadSettings().continueAfterThresholdCompact;
     scheduleCompactionStatsNotify(ctx, stats);
     if (followUpPrompt) {
@@ -841,6 +849,7 @@ export const registerRecallTool = (pi: any) => {
     name: "vcc_recall",
     label: "VCC Recall",
     description: "Recall earlier parts of the current session",
+    approval: "read",
     parameters: schema,
     async execute(_toolCallId: string, params: any, _signal: unknown, _onUpdate: unknown, ctx: any) {
       const sessionFile = ctx?.sessionManager?.getSessionFile?.();
