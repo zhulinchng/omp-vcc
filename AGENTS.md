@@ -124,12 +124,11 @@ const isVccSentinel = (s) => s === PI_VCC_COMPACT_INSTRUCTION || s === OMP_VCC_C
 
 **Dependency injection & state**
 
-- Extension receives single `pi: ExtensionAPI` (factory pattern, no global). Tests/smoke use `mockPi` with `on`/`registerTool`/`registerCommand`/`zod` chain mock and `mockCtx` with `compact`/`notify`. Shared mutable state in `hook.ts`: `lastStats`, `lastCompactWasPiVcc`, `pendingFollowUpPrompt`, `pendingAutoContinueTimer` — access via `getLastCompactionStats()` / `scheduleCompactionStatsNotify()`.
+- Extension receives single `pi: ExtensionAPI` (factory pattern, no global). Tests/smoke use `mockPi` with `on`/`registerTool`/`registerCommand`/`zod` chain mock and `mockCtx` with `compact`/`notify`. Mutable state in `hook.ts` (`lastStats`, `lastCompactWasPiVcc`, `pendingFollowUpPrompt`, `pendingAutoContinueTimer`) is per-pi via `WeakMap` (`perPi`) with module-global fallback for host-free tests — access via `getLastCompactionStats()` / `scheduleCompactionStatsNotify(ctx, stats)`; `clearPendingAutoContinueForPi`/`scheduleAutoContinueForPi` avoid cross-session pollution.
 
-**Settings — file over manifest**
+**Settings — file over manifest with ctx overlay**
 
-- XDG priority: `$OMP_VCC_CONFIG_PATH` > `$PI_VCC_CONFIG_PATH` > `$OMP_DIR`/`$PI_CODING_AGENT_DIR` > `~/.omp/omp-vcc/config.json`; migrates `~/.pi/agent/pi-vcc-config.json` once. `scaffoldSettings()` fills missing keys without clobbering. Manifest `omp.settings`/`pi.settings` (dual, 5 booleans) is UI surface only.
-
+- XDG priority: `$OMP_VCC_CONFIG_PATH` > `$PI_VCC_CONFIG_PATH` > `$OMP_DIR`/`$PI_CODING_AGENT_DIR` > `~/.omp/omp-vcc/config.json`; migrates `~/.pi/agent/pi-vcc-config.json` once. `scaffoldSettings()` fills missing keys without clobbering. Manifest `omp.settings`/`pi.settings` (dual, 5 booleans) is UI surface; `loadSettings(ctx)` overlays `ctx.settings.get` / `ctx.config.get` so `/settings` toggles take effect without restart (file remains source of truth).
 ## Important Files
 
 | Path | Purpose |
@@ -158,8 +157,8 @@ const isVccSentinel = (s) => s === PI_VCC_COMPACT_INSTRUCTION || s === OMP_VCC_C
 ## Testing & QA
 
 - **Framework:** `bun:test` primary + `node:test` compat via `types.d.ts` shims. No `vitest`/`jest` config. Vendored tests use `// @ts-nocheck` to silence cross-host type mismatches.
-- **Suites:** 32 files, 295 tests, 728 `expect()` — ported from `pi-vcc@0.7.0` (28 required). Covers `buildOwnCut` (keep:0/1/N, orphan `""`, `too_few`), budget `no_anchor`/`oversized_tail`×2.5, `smartKeep` boost 5k→25k, `sanitize`/`normalize`/`rank` TF-IDF, `search-entries` regex→OR, `lineage`, `load-messages`, `recall` `expand`/`touched`/`scope:all`.
-- **Fixtures:** `tests/fixtures.ts` (`userMsg`, `assistantText`, `toolResult`), `tests/helpers.ts` (`makeMockApi`/`makeMockCtx`), `tests/support/real-sessions.ts` + `load-session.ts` stubs (empty when no `~/.pi/sessions`).
+- **Suites:** 32 files, 295 tests, 733 `expect()` — ported from `pi-vcc@0.7.0` (28 required). Covers `buildOwnCut` (keep:0/1/N, orphan `""`, `too_few`, `reset_boundary` /clear supersession), budget `no_anchor`/`oversized_tail`×2.5, `smartKeep` boost 5k→25k, `sanitize`/`normalize`/`rank` TF-IDF, `search-entries` regex→OR, `lineage`, `load-messages` ENOENT graceful, `recall` `expand`/`touched`/`scope:all`, `vcc_recall` approval `read` tier.
+- **Fixtures:** `tests/fixtures.ts` (`userMsg`, `assistantText`, `toolResult`), `tests/helpers.ts` (`makeMockApi`/`makeMockCtx`), `tests/support/real-sessions.ts` + `load-session.ts` (synthetic 100-turn large session fallback when no `~/.pi/sessions`; `prepareSessionSamples` stub still empty for CI).
 - **Run:**
 
   ```bash
@@ -169,5 +168,5 @@ const isVccSentinel = (s) => s === PI_VCC_COMPACT_INSTRUCTION || s === OMP_VCC_C
   bunx tsc --noEmit && bun test && bun run smoke && omp plugin doctor  # CI gate
   ```
 
-- **Benchmark harness:** `scripts/benchmark-real-sessions.ts` (port of pi-vcc bench, not CI) — measures 35–99% token reduction. Real sessions in `tests/support/real-sessions.ts` are opt-in (stubbed in CI).
-- **Coverage expectation:** deterministic output assertions per fixture; no snapshot tests. New compaction logic must add boundary cases: empty branch, orphan `firstKeptEntryId`, `keep:0` sentinel, `toolResult` snap, explicit `keep:N` not boosted, `scope:all` vs lineage, regex-no-hit → keyword fallback.
+- **Benchmark harness:** `scripts/benchmark-real-sessions.ts` is a documented placeholder (port of pi-vcc bench, not committed, not CI) — would measure 35–99% token reduction. Real sessions in `tests/support/real-sessions.ts` are opt-in via synthetic fallback.
+- **Coverage expectation:** deterministic output assertions per fixture; no snapshot tests. New compaction logic must add boundary cases: empty branch, orphan `firstKeptEntryId`, `keep:0` sentinel, `reset_boundary` clear, `toolResult` snap, explicit `keep:N` not boosted, `scope:all` vs lineage, regex-no-hit → keyword fallback, ENOENT graceful, `willRetry`/`overflow` fallback, cross-session per-pi isolation.

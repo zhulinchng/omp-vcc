@@ -60,9 +60,39 @@ export const OVERSIZED_TAIL_FACTOR = 2.5;
 let lastStats: CompactionStats | null = null;
 let lastCompactWasPiVcc = false;
 let pendingFollowUpPrompt: string | null = null;
-let pendingAutoContinueTimer: ReturnType<typeof setTimeout> | null = null;
-
-// Invisible auto-continue: resume the agent after compaction without polluting
+let pendingAutoContinueTimer: any = null;
+// Per-pi state to avoid cross-session pollution when multiple sessions share the
+// same ESM module singleton (e.g. main + subagents). Module globals remain as
+// fallback for host-free tests that call getLastCompactionStats() without a pi.
+const perPi = new WeakMap<any, { lastStats: CompactionStats | null; lastCompactWasPiVcc: boolean; pendingFollowUpPrompt: string | null; pendingAutoContinueTimer: any }>();
+const getPerPi = (pi: any) => {
+  if (!pi || typeof pi !== "object") return null;
+  let s = perPi.get(pi);
+  if (!s) { s = { lastStats: null, lastCompactWasPiVcc: false, pendingFollowUpPrompt: null, pendingAutoContinueTimer: null }; perPi.set(pi, s); }
+  return s;
+};
+const setLastStats = (pi: any, v: CompactionStats | null) => { lastStats = v; const s = getPerPi(pi); if (s) s.lastStats = v; };
+const setLastCompactWasPiVcc = (pi: any, v: boolean) => { lastCompactWasPiVcc = v; const s = getPerPi(pi); if (s) s.lastCompactWasPiVcc = v; };
+const setPendingFollowUpPrompt = (pi: any, v: string | null) => { pendingFollowUpPrompt = v; const s = getPerPi(pi); if (s) s.pendingFollowUpPrompt = v; };
+const getPendingFollowUpPrompt = (pi: any) => { const s = getPerPi(pi); return s ? s.pendingFollowUpPrompt : pendingFollowUpPrompt; };
+const clearPendingAutoContinueForPi = (pi: any) => {
+  const s = getPerPi(pi);
+  clearTimeout(s ? s.pendingAutoContinueTimer as any : pendingAutoContinueTimer as any);
+  clearTimeout(pendingAutoContinueTimer as any);
+  pendingAutoContinueTimer = null;
+  if (s) s.pendingAutoContinueTimer = null;
+};
+const scheduleAutoContinueForPi = (pi: any) => {
+  clearPendingAutoContinueForPi(pi);
+  const s = getPerPi(pi);
+  const timer: any = setTimeout(() => {
+    pendingAutoContinueTimer = null;
+    if (s) s.pendingAutoContinueTimer = null;
+    try { triggerInvisibleContinue(pi); } catch {}
+  }, 0);
+  pendingAutoContinueTimer = timer;
+  if (s) s.pendingAutoContinueTimer = timer;
+};
 // the LLM context with a user-visible continue prompt. triggerInvisibleContinue
 // sends a custom message marked with a dedicated customType (content:[],
 // display:false, triggerTurn:true, deliverAs:'followUp') so Pi's queue/busy-state
@@ -91,11 +121,8 @@ export const triggerInvisibleContinue = (pi: ExtensionAPI): void => {
 };
 
 const clearPendingAutoContinue = () => {
-
-  if (pendingAutoContinueTimer) {
-    clearTimeout(pendingAutoContinueTimer);
-    pendingAutoContinueTimer = null;
-  }
+  clearTimeout(pendingAutoContinueTimer as any);
+  pendingAutoContinueTimer = null;
 };
 
 const scheduleAutoContinue = (pi: any) => {
@@ -544,20 +571,19 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
   });
 
   pi.on("before_agent_start", () => {
-    clearPendingAutoContinue();
+    clearPendingAutoContinueForPi(pi);
   });
 
   pi.on("session_before_compact", (event, ctx) => {
     const { preparation, branchEntries, customInstructions } = event;
     const { reason, willRetry } = readCompactionEventContext(event);
-    const settings = loadSettings();
-
+    const settings = loadSettings(ctx);
     if (!settings.vccEnabled) return;
 
     // Always handle explicit /pi-vcc or /omp-vcc marker.
     // Otherwise, only handle when user opted in via settings.
     const { isPiVcc, keepUserTurns, keepUserTurnsExplicit, followUpPrompt } = parseCompactionInstructions(customInstructions);
-    pendingFollowUpPrompt = null;
+    setPendingFollowUpPrompt(pi, null);
     if (!isPiVcc && !settings.overrideDefaultCompaction) return;
 
     const calibrationCut = buildOwnCut(branchEntries as any[], 0);
@@ -637,15 +663,13 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       }
       const userIndices = liveRoles.reduce<number[]>((acc, r, i) => (r === "user" ? (acc.push(i), acc) : acc), []);
 
-      pendingFollowUpPrompt = null;
-      const fallbackToCore = !isPiVcc && (reason === "overflow" || willRetry);
-      // Note: omp's SessionBeforeCompactEvent carries no reason/willRetry
-      // (shared-events.ts:64-74 emits only {preparation, branchEntries,
-      // customInstructions, signal}), so fallbackToCore is currently dead
-      // under real omp runs and an overflow with too_few would be cancelled
-      // instead of falling back. See reviewer finding; graceful fallback for
-      // undefined reason is deferred to avoid breaking manual /compact cancel
-      // semantics verified by tests/before-compact-hook.test.ts:124.
+      setPendingFollowUpPrompt(pi, null);
+      // Fallback when pi-vcc cannot cut: for omp, SessionBeforeCompactEvent has no
+      // reason/willRetry (shared-events.ts:64-74), so overflow would otherwise be
+      // cancelled. Use tokensBefore as heuristic: large context + undefined
+      // reason likely means auto threshold/overflow, not manual /compact.
+      const isOverflowHeuristic = preparation.tokensBefore > 50000;
+      const fallbackToCore = !isPiVcc && (reason === "overflow" || willRetry || (reason == null && isOverflowHeuristic));
       dbg(settings, {
         cancelled: !fallbackToCore,
         fallbackToCore,
@@ -688,7 +712,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       return { cancel: true };
     }
 
-    pendingFollowUpPrompt = followUpPrompt;
+    setPendingFollowUpPrompt(pi, followUpPrompt);
     const agentMessages = ownCut.messages;
     const firstKeptEntryId = ownCut.firstKeptEntryId;
     const messages = convertToLlm(agentMessages);
@@ -702,7 +726,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       (sum: number, e: any) => sum + estimateMessageContentChars(e.message?.content),
       0,
     );
-    lastStats = {
+    setLastStats(pi, {
       summarized: agentMessages.length,
       kept: keptEntries.length,
       keptUserTurns: ownCut.keptUserTurns,
@@ -716,8 +740,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       budgetCut: ownCut.ok ? ownCut.budgetCut : undefined,
       reason,
       willRetry,
-    };
-
+    });
     const config = settings;
 
     // Ranked compaction: keep the highest-signal blocks under a token budget
@@ -791,7 +814,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       willRetry,
     };
 
-    lastCompactWasPiVcc = isPiVcc;
+    setLastCompactWasPiVcc(pi, isPiVcc);
 
     return {
       compaction: {
@@ -805,24 +828,27 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
   pi.on("session_compact", async (event, ctx) => {
     const { reason, willRetry } = readCompactionEventContext(event);
     if (!event.fromExtension) return;
-    const followUpPrompt = pendingFollowUpPrompt;
-    pendingFollowUpPrompt = null;
-    if (lastCompactWasPiVcc) return; // /pi-vcc handles its own toast via onComplete
+    const followUpPrompt = getPendingFollowUpPrompt(pi);
+    setPendingFollowUpPrompt(pi, null);
+    const per = getPerPi(pi);
+    const isPiVccLast = per ? per.lastCompactWasPiVcc : lastCompactWasPiVcc;
+    if (isPiVccLast) return; // /pi-vcc handles its own toast via onComplete
     if (willRetry) return;
-    const stats = lastStats;
+    const stats = per ? per.lastStats : lastStats;
     if (!stats) return;
     // omp's SessionCompactEvent is {compactionEntry, fromExtension} only
     // (shared-events.ts:84-89); reason/willRetry are always undefined/false
-    // under real omp runs, so auto-continue is currently dead. Threshold/
-    // overflow continuation is verified via mocked events in tests.
-    const shouldContinueAfterAutoCompact = (reason === "threshold" || reason === "overflow") && loadSettings().continueAfterThresholdCompact;
+    // under real omp runs. Treat undefined as auto (threshold/overflow) when
+    // the compaction was sizable, otherwise manual /compact should not auto-continue.
+    const isLargeCompaction = (stats.summarized > 10) || (stats.kept > 5) || (stats.keptTokensEst > 2000);
+    const shouldContinueAfterAutoCompact = (reason === "threshold" || reason === "overflow" || (reason == null && isLargeCompaction)) && loadSettings(ctx).continueAfterThresholdCompact;
     scheduleCompactionStatsNotify(ctx, stats);
     if (followUpPrompt) {
       try {
         await pi.sendUserMessage(followUpPrompt);
       } catch {}
     } else if (shouldContinueAfterAutoCompact) {
-      scheduleAutoContinue(pi);
+      scheduleAutoContinueForPi(pi);
     }
   });
 };

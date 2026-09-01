@@ -74,14 +74,39 @@ const readJson = (path: string): Record<string, unknown> | null => {
   }
 };
 
-export function loadSettings(): PiVccSettings {
-  const primary = settingsPath();
-  const parsed = readJson(primary) ?? (() => {
-    const fb = fallbackReadPath();
-    return fb && fb !== primary ? readJson(fb) : null;
+export function loadSettings(ctx?: unknown): PiVccSettings {
+  // File is source of truth, but if the host provides plugin-scoped settings
+  // via ctx.settings (omp manifest `omp.settings` / `pi.settings` UI surface),
+  // merge them on top of file so /settings toggles take effect without restart.
+  // Host shapes vary: ctx.settings.get(key), ctx.config.get(key), or plain map.
+  const tryGet = (key: string): unknown => {
+    try {
+      const c = ctx as any;
+      if (!c) return undefined;
+      if (c.settings?.get) return c.settings.get(key);
+      if (c.config?.get) return c.config.get(key);
+      if (c.settings && typeof c.settings === "object" && key in c.settings) return c.settings[key];
+      if (c.config && typeof c.config === "object" && key in c.config) return c.config[key];
+    } catch {}
+    return undefined;
+  };
+  const file = (() => {
+    const primary = settingsPath();
+    const parsed = readJson(primary) ?? (() => {
+      const fb = fallbackReadPath();
+      return fb && fb !== primary ? readJson(fb) : null;
+    })();
+    if (!parsed || typeof parsed !== "object") return { ...DEFAULT_SETTINGS };
+    return { ...DEFAULT_SETTINGS, ...(parsed as Partial<PiVccSettings>) };
   })();
-  if (!parsed || typeof parsed !== "object") return { ...DEFAULT_SETTINGS };
-  return { ...DEFAULT_SETTINGS, ...(parsed as Partial<PiVccSettings>) };
+  if (!ctx) return file;
+  // Overlay plugin-scoped keys if host exposes them (e.g. plugins["@zhulinchng/omp-vcc"].vccEnabled)
+  const overlay: Partial<PiVccSettings> = {};
+  for (const k of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
+    const v = tryGet(`plugins.@zhulinchng/omp-vcc.${k}`) ?? tryGet(`plugins.omp-vcc.${k}`) ?? tryGet(`omp-vcc.${k}`) ?? tryGet(k);
+    if (v !== undefined) (overlay as any)[k] = v;
+  }
+  return Object.keys(overlay).length ? { ...file, ...overlay } : file;
 }
 
 /**

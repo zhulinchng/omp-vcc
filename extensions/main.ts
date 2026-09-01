@@ -313,7 +313,7 @@ export default function (pi: ExtensionAPI): void {
     },
   });
 }
-
-// ── Re-exports for pi-vcc test compatibility ──
+// ── Re-exports for pi-vcc test compatibility (not dead: tests import via hook directly,
+// but external consumers and the `vcc-recall` shim may import via main) ──
 export { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, OMP_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, scheduleCompactionStatsNotify, formatCompactionStats, AUTO_CONTINUE_CUSTOM_TYPE, LEGACY_AUTO_CONTINUE_CUSTOM_TYPE, invalidExpandIndices, registerRecallTool, registerVccRecallCommand, registerPiVccCommand } from "./vcc-core/hook";
 export { buildPiVccCustomInstructions, parseKeepAndPrompt } from "./vcc-core/core/compact-args";
