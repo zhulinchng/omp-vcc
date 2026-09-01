@@ -91,8 +91,10 @@ omp plugin link /Users/zhu/code/projects/omp-vcc && omp plugin doctor
 In a live `omp` session: `/omp-vcc keep:1` shows `[Session Goal]` toast `omp-vcc: kept 1/5 turns, ~2.1k tok`; with `debug:true` check `/tmp/omp-vcc-debug.json`. Full proof matrix and mermaid flows in [`docs/verification.md`](docs/verification.md).
 ## Publish
 
-- npmjs (unscoped): `npm publish --registry https://registry.npmjs.org --access public` (package `omp-vcc`)
-- GitHub Packages (scoped): `npm publish --registry https://npm.pkg.github.com` (package `@zhulinchng/omp-vcc`, needs `GITHUB_TOKEN` with `read:packages, write:packages`)
+See [`docs/PUBLISHING.md`](docs/PUBLISHING.md) for the full checklist (package shape, gates, dual `omp-vcc` / `@zhulinchng/omp-vcc` flow, verification, deployment matrix, and troubleshooting). TL;DR:
+
+- npmjs (unscoped): `npm publish --access public` (package `omp-vcc`, 2FA `auth-and-writes` → browser or `--otp`)
+- GitHub Packages (scoped): `gh release create vX.Y.Z` triggers `.github/workflows/publish-gpr.yml` → `@zhulinchng/omp-vcc` via `GITHUB_TOKEN` (`read:packages, write:packages`); manual fallback `npm pkg set name=@zhulinchng/omp-vcc && GITHUB_TOKEN=$(gh auth token) npm publish --userconfig /tmp/gpr-npmrc --access public` (see guide for the scoped-registry `/tmp/gpr-npmrc` pitfall)
 - Consumer GPR auth: add to `~/.npmrc`:
   ```
   @zhulinchng:registry=https://npm.pkg.github.com
