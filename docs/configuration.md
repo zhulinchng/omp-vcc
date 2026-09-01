@@ -22,7 +22,7 @@ These appear in `/settings` under the plugin section (not `Context → Compactio
 
 ```sh
 omp config list | grep -i vcc
-omp config set plugins."@zhu/omp-vcc".overrideDefaultCompaction false
+omp config set plugins."@zhulinchng/omp-vcc".overrideDefaultCompaction false
 ```
 
 Runtime bridge: `loadSettings()` first checks `ctx.settings?.get("omp-vcc.*")` if available, else file config `~/.omp/omp-vcc/config.json`. File takes precedence for CLI simplicity; manifest settings are UI surface.
@@ -48,7 +48,7 @@ Defaults (same as `DEFAULT_SETTINGS` in `extensions/vcc-core/core/settings.ts`):
 ```
 
 | Flag | Effect |
-|---|---|
+| --- | --- |
 | `overrideDefaultCompaction` | `true` (default): omp-vcc handles **all** compactions — `/compact`, threshold, overflow, `/omp-vcc`. `false`: only `/omp-vcc`/`/pi-vcc` handled, rest falls back to core LLM compaction. Existing config files keep stored value; fresh installs default true. |
 | `smartKeepTail` | `true`: when default `keep:1` tail ≤ `MIN_SMART_TAIL_TOKENS 5_000`, grow `keep` to largest N with tail ≤ `MAX_SMART_TAIL_TOKENS 25_000`. Explicit `keep:N` always respected (no-op). `false`: old behavior `keep:1`. |
 | `continueAfterThresholdCompact` | `true`: after successful `threshold`/`overflow` compaction (and not `willRetry`), schedule invisible-continue (`customType:"omp-vcc-auto-continue"` display:false triggerTurn:followUp, filtered in `on('context')`) so agent continues without UX cliff. `false`: stop after compaction. |

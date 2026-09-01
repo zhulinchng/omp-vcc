@@ -19,7 +19,7 @@ bun run smoke       # ok: session_before_compact hooked, vcc_recall registered, 
 Ported from `pi-vcc@0.7.0` 31 suites (28 required) via `bun:test` + `node:test` hybrids, imports remapped `src/core`→`extensions/vcc-core/core`, `src/hooks/before-compact`→`extensions/vcc-core/hook`, sentinel `__pi_vcc__` also accepts `__omp_vcc__`, debug path `/tmp/omp-vcc-debug.json` (and legacy `/tmp/pi-vcc-debug.json`):
 
 | Suite | What it checks | Status |
-|---|---|---|
+| --- | --- | --- |
 | `before-compact.test.ts` | `buildOwnCut` keep:0/1/N, orphan recovery `""`, `compactAll` sentinel, too_few, single-user+autonomous | 13 pass |
 | `before-compact-hook.test.ts` | Hook `session_before_compact` → `session_compact` flow, smartKeep, budget `no_anchor`/`oversized_tail`×2.5, cancel reasons, `formatCompactionStats` `omp-vcc:`, invisible-continue `omp-vcc-auto-continue`, debug snapshot | 41 pass |
 | `brief.test.ts` `build-sections.test.ts` `compile.test.ts` `content.test.ts` `format.test.ts` `normalize.test.ts` `rank.test.ts` `sanitize.test.ts` `token-estimate.test.ts` | Deterministic output for fixtures, TF-IDF, clipping, token calibrate `charsPerToken` 2–6 fallback 4 | ~80 pass |
@@ -51,7 +51,7 @@ omp plugin doctor
 
 ## Functional proof 1 — manual compaction
 
-In fresh `omp` session with extension enabled (`omp -e @zhu/omp-vcc` or via link):
+In fresh `omp` session with extension enabled (`omp -e @zhulinchng/omp-vcc` or via link):
 
 ```
 /omp-vcc keep:2 Test prompt

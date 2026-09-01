@@ -1,4 +1,4 @@
-# @zhu/omp-vcc — Algorithmic VCC Compaction for oh-my-pi
+# @zhulinchng/omp-vcc — Algorithmic VCC Compaction for oh-my-pi
 
 > Fast, deterministic, lossless compaction — no LLM calls. Port of [`sting8k/pi-vcc`](https://github.com/sting8k/pi-vcc) (`@0.7.0`) into [oh-my-pi](https://github.com/can1357/oh-my-pi), inspired by [`lllyasviel/VCC`](https://github.com/lllyasviel/VCC) and paper [`arxiv:2603.29678`](https://arxiv.org/pdf/2603.29678) *View-oriented Conversation Compiler for Agent Trace Analysis* (Zhang & Agrawala, 2026-03-31).
 
@@ -10,7 +10,7 @@ omp plugin link /Users/zhu/code/projects/omp-vcc
 omp plugin list --json | jq '.[] | select(.name|contains("omp-vcc"))'
 
 # from npm (once published)
-omp plugin install @zhu/omp-vcc
+omp plugin install @zhulinchng/omp-vcc
 
 # from git
 omp plugin install github:zhu/omp-vcc
@@ -25,7 +25,7 @@ omp plugin install github:zhu/omp-vcc
 ## Commands
 
 | Command | Description |
-|---|---|
+| --- | --- |
 | `/omp-vcc [keep:N] [focus]` | Algorithmic compaction, smart-keep may boost `keep:1` to keep more when tail small (5 k → 25 k). `keep:0` compacts all. |
 | `/pi-vcc` | Alias for migration |
 | `/vcc-recall [query] [scope:all] [page:N]` | Search compacted history (V_adapt). Plain keywords best. |
@@ -89,7 +89,7 @@ In a live `omp` session: `/omp-vcc keep:1` shows `[Session Goal]` toast `omp-vcc
 
 ## Publish
 
-- npm: `npm publish` then `omp plugin install @zhu/omp-vcc`
+- npm: `npm publish` then `omp plugin install @zhulinchng/omp-vcc`
 - Marketplace: add an entry to `.omp-plugin/marketplace.json` (see `plugin-skill/assets/templates/marketplace-entry.json.template`).
 
 ## License

@@ -6,9 +6,10 @@ description: Recall earlier parts of this session via ranked search (V_adapt)
 
 Search compacted history — implements VCC `V_adapt` with rho predicate (regex or BM25-like ranked OR).
 
-Registered by `@zhu/omp-vcc` extension.
+Registered by `@zhulinchng/omp-vcc` extension.
 
 Usage:
+
 - `/vcc-recall` — show 25 most recent entries
 - `/vcc-recall auth token` — keyword search (OR-ranked, TF-IDF)
 - `/vcc-recall "hook|inject" scope:all` — regex search across all branches

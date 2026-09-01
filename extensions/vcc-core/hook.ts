@@ -269,6 +269,30 @@ const collectLiveMessages = (branchEntries: any[]): EntryWithMessage[] => {
     }
   }
 
+  // Honor the latest `/clear` reset_boundary, mirroring prepareCompaction
+  // (packages/agent/src/compaction/compaction.ts:1335-1345). A reset after the
+  // last compaction supersedes it — the pre-reset summary was cleared, so start
+  // fresh after the boundary. A reset at or before the compaction is already
+  // superseded and is ignored (scan only newer entries).
+  let resetBoundaryIdx = -1;
+  for (let i = branchEntries.length - 1; i > lastCompactionIdx; i--) {
+    if (branchEntries[i].type === "reset_boundary") {
+      resetBoundaryIdx = i;
+      break;
+    }
+  }
+  if (resetBoundaryIdx > lastCompactionIdx) {
+    const liveMessages: EntryWithMessage[] = [];
+    for (let i = resetBoundaryIdx + 1; i < branchEntries.length; i++) {
+      const e = branchEntries[i];
+      if (e.type === "compaction") continue;
+      if (e.type === "reset_boundary") continue;
+      const m = toLiveMessage(e);
+      if (m) liveMessages.push({ entry: e, message: m });
+    }
+    return liveMessages;
+  }
+
   // Orphan recovery: triggers when lastKeptId is set to "" (sentinel from prior
   // compact-all) OR set to an id that no longer exists in the branch. In both cases,
   // start collecting from right after the last compaction entry.
@@ -282,6 +306,7 @@ const collectLiveMessages = (branchEntries: any[]): EntryWithMessage[] => {
     for (let i = lastCompactionIdx + 1; i < branchEntries.length; i++) {
       const e = branchEntries[i];
       if (e.type === "compaction") continue;
+      if (e.type === "reset_boundary") continue;
       const m = toLiveMessage(e);
       if (m) liveMessages.push({ entry: e, message: m });
     }
@@ -291,6 +316,7 @@ const collectLiveMessages = (branchEntries: any[]): EntryWithMessage[] => {
       if (!foundKept && e.id === lastKeptId) foundKept = true;
       if (!foundKept) continue;
       if (e.type === "compaction") continue;
+      if (e.type === "reset_boundary") continue;
       const m = toLiveMessage(e);
       if (m) liveMessages.push({ entry: e, message: m });
     }
@@ -568,24 +594,44 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       const lastComp = [...branchEntries].reverse().find((e: any) => e.type === "compaction");
       const lastCompIdx = lastComp ? (branchEntries as any[]).indexOf(lastComp) : -1;
 
-      // Recompute liveMessages view (same logic as buildOwnCut) for diagnostic
-      const lastKeptId: string | undefined = lastComp?.firstKeptEntryId;
-      const hasPriorCompaction = lastCompIdx >= 0;
-      const hasValidKeptId = !!lastKeptId && (branchEntries as any[]).some((e: any) => e.id === lastKeptId);
+      // Recompute liveMessages view (same logic as buildOwnCut) for diagnostic —
+      // honor reset_boundary like collectLiveMessages does (see compaction.ts:1335).
+      let resetIdx = -1;
+      for (let i = (branchEntries as any[]).length - 1; i > lastCompIdx; i--) {
+        if ((branchEntries as any[])[i].type === "reset_boundary") { resetIdx = i; break; }
+      }
+      const resetSupersedes = resetIdx > lastCompIdx;
+      let diagLastKeptId: string | undefined = lastComp?.firstKeptEntryId;
+      let diagLastCompIdx = lastCompIdx;
+      if (resetSupersedes) {
+        diagLastKeptId = undefined;
+        diagLastCompIdx = -1;
+      }
+      const hasPriorCompaction = diagLastCompIdx >= 0;
+      const hasValidKeptId = !!diagLastKeptId && (branchEntries as any[]).some((e: any) => e.id === diagLastKeptId);
       const diagOrphan = hasPriorCompaction && !hasValidKeptId;
       const liveRoles: string[] = [];
-      if (diagOrphan) {
-        for (let i = lastCompIdx + 1; i < branchEntries.length; i++) {
+      if (resetSupersedes) {
+        for (let i = resetIdx + 1; i < (branchEntries as any[]).length; i++) {
           const e = (branchEntries as any[])[i];
           if (e.type === "compaction") continue;
+          if (e.type === "reset_boundary") continue;
+          if (e.type === "message" && e.message) liveRoles.push(e.message.role);
+        }
+      } else if (diagOrphan) {
+        for (let i = diagLastCompIdx + 1; i < branchEntries.length; i++) {
+          const e = (branchEntries as any[])[i];
+          if (e.type === "compaction") continue;
+          if (e.type === "reset_boundary") continue;
           if (e.type === "message" && e.message) liveRoles.push(e.message.role);
         }
       } else {
-        let foundKept = !lastKeptId;
+        let foundKept = !diagLastKeptId;
         for (const e of branchEntries as any[]) {
-          if (!foundKept && e.id === lastKeptId) foundKept = true;
+          if (!foundKept && e.id === diagLastKeptId) foundKept = true;
           if (!foundKept) continue;
           if (e.type === "compaction") continue;
+          if (e.type === "reset_boundary") continue;
           if (e.type === "message" && e.message) liveRoles.push(e.message.role);
         }
       }

@@ -4,9 +4,10 @@ description: Compact conversation with omp-vcc structured summary (keep:N + opti
 
 # /omp-vcc
 
-Algorithmic VCC compaction — fast lossless no-LLM. Registered by `@zhu/omp-vcc` extension.
+Algorithmic VCC compaction — fast lossless no-LLM. Registered by `@zhulinchng/omp-vcc` extension.
 
 Usage:
+
 - `/omp-vcc` — compact with default keep:1 (smart-keep may boost to keep:N up to 25k tokens)
 - `/omp-vcc keep:2` — keep last 2 user turns, summarize the rest
 - `/omp-vcc keep:0` — compact all (no tail, sentinel firstKeptEntryId="")

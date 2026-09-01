@@ -1,5 +1,5 @@
 {
-  "name": "@zhu/omp-vcc",
+  "name": "@zhulinchng/omp-vcc",
   "version": "0.1.0",
   "description": "Algorithmic VCC compaction for omp - fast lossless no-LLM",
   "type": "module",
@@ -97,7 +97,7 @@
     }
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "bunx tsc --noEmit",
     "test": "bun test",
     "smoke": "bun run scripts/smoke.ts",
     "postuninstall": "node scripts/uninstall-reset.js || true",
