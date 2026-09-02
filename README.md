@@ -109,7 +109,73 @@ Full diagrams and pipeline in [`docs/architecture.md`](docs/architecture.md); pa
 - **VCC** — Python `VCC.py` adaptive/transposed views, `SEP`, `match_lines`, `_tokenize`, `_trunc`, projection model
 - **Paper** — AppWorld evaluation: +1.1–4.2 task_goal points, ½–⅔ token halving, smaller memory
 
-## Develop
+## Best practices
+
+> Goal: keep context small enough to stay fast and cheap, but large enough that the agent doesn't lose what you're working on.
+
+### 1) Let auto do its job
+
+- Keep `overrideDefaultCompaction:true` (default) — threshold/overflow compaction becomes deterministic and instant. Only set `false` if you explicitly want the remote LLM summarizer for `handoff` or you installed the optional native `vcc` dropdown patch and want to toggle per-session in `/settings`.
+- Keep `smartKeepTail:true` and `continueAfterThresholdCompact:true` — the plugin grows `keep:1` to `keep:2…4` when the tail is tiny (5 k → 25 k) and auto-continues after a threshold compact so the agent doesn't stall mid-task.
+- Don't spam `/omp-vcc` every few turns. Auto threshold (derived from your model's context window) already fires at the right moment. Manual compacts are for deliberate boundaries: finishing a sub-task, before a risky refactor, or when you feel the context getting noisy.
+
+### 2) Pick the right `keep:N`
+
+| Situation | Command | Why |
+| --- | --- | --- |
+| Default, happy path | `/omp-vcc` or `keep:1` | Smallest tail, max savings. `smartKeepTail` will still grow to `keep:3` if the last turn is only 3 k tok so you don't waste budget. |
+| Actively iterating on last edits/tests | `/omp-vcc keep:2` or `keep:3` | Preserves the last 2–3 user turns verbatim (e.g. failing test output + fix). Costs more tokens but avoids recall. |
+| Need maximal reduction (e.g. before context overflow) | `/omp-vcc keep:0` | Summarizes everything, no tail. Next turn starts from pure `V_ui`. Useful before pasting a huge spec. |
+| With a focus prompt | `/omp-vcc keep:2 focus on auth refresh only` | Preserved tail + an injected follow-up prompt so the agent continues with the narrowed scope. |
+
+Explicit `keep:N` always wins — smart-keep never overrides it.
+
+### 3) Use recall instead of keeping more
+
+Keeping a huge tail is the expensive alternative to recall. Prefer a small keep and search when you need history:
+
+- Plain keywords first: `/vcc-recall redis cache` or `vcc_recall({query:"redis cache"})` — multi-word is OR + TF-IDF ranked (rare terms rank higher).
+- Regex when you know the pattern: `/vcc-recall hook|inject`, `/vcc-recall fail.*build`.
+- Pagination: `page:2` (5 hits/page): `/vcc-recall auth scope:all page:2`.
+- Scope: default is active lineage (what the current branch actually saw). Add `scope:all` to search abandoned branches/edits/retries.
+- Drill-down: `/vcc-recall #18:src/auth.ts` expands that turn's file slice verbatim from `V_full` — fastest way to rehydrate an edit.
+- Index mode: `vcc_recall({query:"", mode:"touched"})` lists touched files across the session.
+
+```mermaid
+flowchart LR
+  KEEP["keep small\nkeep:1 + smartKeep"] --> RECALL["need history?\n/vcc-recall keywords"]
+  RECALL --> DRILL["#N:path drill\nrehydrate file"]
+  KEEP --> FORGET["keep huge tail\nwastes 10-20k tok"]
+  style FORGET stroke-dasharray: 3 3
+```
+
+### 4) Help the extractor help you
+
+The 5 sections (`[Session Goal]`, `[Files And Changes]`, `[Commits]`, `[Outstanding Context]`, `[User Preferences]`) are regex/heuristics, not an LLM. Make them work better:
+
+- State the goal once, plainly, in the first user message: `Goal: fix auth token refresh in src/auth.ts`. That seeds `[Session Goal]` reliably.
+- Declare preferences explicitly with cue words: `always run tests before committing`, `prefer concise diffs`, `never edit src/generated/`. Those go to `[User Preferences]`.
+- Commit frequently — commits populate `[Commits]` and survive compaction better than bare edits.
+- Mark outstanding items as questions/errors (`TODO:`, `failing:`, `why does …?`) so they land in `[Outstanding Context]` until resolved.
+
+### 5) Know the difference: compact vs clear
+
+- `/omp-vcc` (or `/compact`) **summarizes** — history becomes `V_ui` + searchable `V_full`. The divider `── compacted · 90k→22k · ctrl+o ──` stays in the transcript (expand with `ctrl+o`).
+- `/clear` **erases** — inserts a `reset_boundary` after which even `V_full` is no longer compacted. Previous history stays on disk for `/vcc-recall scope:all` but the live context starts empty. Use `/clear` when you truly want a fresh session; use `/omp-vcc` when you want to keep the story.
+
+### 6) Debug/verify habits
+
+- One-shot verification after install: `/omp-vcc keep:1 test` → expect toast `omp-vcc: kept …` and an inline `[Session Goal]` block. No toast = `overrideDefaultCompaction:false` or a competing compactor.
+- To tune: set `debug:true` in `~/.omp/omp-vcc/config.json`, run `/omp-vcc`, then `cat /tmp/omp-vcc-debug.json` — check `usedOwnCut`, `tokensBefore`, `tokenEstimate {charsPerToken, mode}`, `summaryLength`, `sections`. Remember to flip `debug:false` after — the file is overwritten every compact.
+- For overflow: if you hit `tokensBefore > 50k` and nothing happens, check `omp plugin doctor` and that `vccEnabled:true`.
+
+### 7) Team / long-session hygiene
+
+- One compaction covers 30–100 turns; repeated compactions merge bounded (transcript caps at ~120 lines, sections dedup). Long-running sessions (200+ turns) stay healthy — don't fear auto.
+- `snapcompact`/`shake`/`handoff` in `compaction.methodOrder` are orthogonal — `omp-vcc` only intercepts `context-full`. Leave them in the order if you use them; they run when `omp-vcc` explicitly defers (e.g. `vccEnabled:false`).
+- Pin the plugin version in CI or shared dots: `omp plugin install github:zhulinchng/omp-vcc#v0.1.x` so the team shares the same `RANKED_BRIEF_BUDGET_TOKENS=1100` behavior.
+
+## Development
 
 ```bash
 omp plugin link .
@@ -131,6 +197,7 @@ omp plugin link /Users/zhu/code/projects/omp-vcc && omp plugin doctor
 ```
 
 In a live `omp` session: `/omp-vcc keep:1` shows `[Session Goal]` toast `omp-vcc: kept 1/5 turns, ~2.1k tok`; with `debug:true` check `/tmp/omp-vcc-debug.json`. Full proof matrix and mermaid flows in [`docs/verification.md`](docs/verification.md).
+
 ## Publish
 
 See [`docs/PUBLISHING.md`](docs/PUBLISHING.md) for the full checklist (package shape, gates, dual `omp-vcc` / `@zhulinchng/omp-vcc` flow, verification, deployment matrix, and troubleshooting). TL;DR:
@@ -138,10 +205,12 @@ See [`docs/PUBLISHING.md`](docs/PUBLISHING.md) for the full checklist (package s
 - npmjs (unscoped): `npm publish --access public` (package `omp-vcc`, 2FA `auth-and-writes` → browser or `--otp`)
 - GitHub Packages (scoped): `gh release create vX.Y.Z` triggers `.github/workflows/publish-gpr.yml` → `@zhulinchng/omp-vcc` via `GITHUB_TOKEN` (`read:packages, write:packages`); manual fallback `npm pkg set name=@zhulinchng/omp-vcc && GITHUB_TOKEN=$(gh auth token) npm publish --userconfig /tmp/gpr-npmrc --access public` (see guide for the scoped-registry `/tmp/gpr-npmrc` pitfall)
 - Consumer GPR auth: add to `~/.npmrc`:
+
   ```
   @zhulinchng:registry=https://npm.pkg.github.com
   //npm.pkg.github.com/:_authToken=YOUR_GITHUB_PAT
   ```
+
 - Marketplace: add an entry to `.omp-plugin/marketplace.json` (see `plugin-skill/assets/templates/marketplace-entry.json.template`).
 
 ## License
