@@ -183,12 +183,6 @@ export default function (pi: ExtensionAPI): void {
         const stats = getLastCompactionStats(pi);
         if (stats) {
           scheduleCompactionStatsNotify(c as unknown as { ui: { notify: (msg: string, level?: string) => void } }, stats);
-          try {
-            (pi as unknown as { sendMessage?: (msg: unknown, opts?: unknown) => void }).sendMessage?.(
-              { customType: "vcc-stats", content: formatLastStatsDetail(stats), display: true },
-              { triggerTurn: false },
-            );
-          } catch {}
         } else {
           try { c.ui.notify("Compacted with omp-vcc", "info"); } catch {}
         }

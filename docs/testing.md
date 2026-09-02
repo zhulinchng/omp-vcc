@@ -377,7 +377,7 @@ Covered in `compaction-stats-gaps` + `review-gaps` + `edge-cases` + `mixed-seque
 - Savings `before 0`, `percent 0`, `saved 0 → —`, `after>before → 0`, `budgetCut` + savings prefix, `999→500` vs `1.0k`, negative
 - Table `timestamp null → —`, `budgetCut` suffix, `undefined history → No compactions yet`, perPi vs global copy isolation, 50-cap global+perPi, `authoritative > est` note
 - History `clearCompactionHistoryForTests()` clears `global` + `perPi` via `perPiKeys` Set, timestamp once, `setLastStats(null)` no push, `willRetry` enrichment before early return
-- Commands `vcc-stats` vs `omp-vcc-stats`, `history`/`all` variants, `vcc_stats({history:true})` schema fallback when `zod.boolean` missing; `/omp-vcc` single option (compact + inline stats)
+- Commands `vcc-stats` vs `omp-vcc-stats`, `history`/`all` variants, `vcc_stats({history:true})` schema fallback when `zod.boolean` missing; `/omp-vcc` compact only (toast single line, no inline `Last compaction`)
 - Pipeline `queue-operation` discard, `digits→` strip, `Escape JSON → |` block scalar, `IMAGE_CONTENT_CHARS 4800`, ANSI strip, `<system-reminder>` etc
 
 ## CI & verification

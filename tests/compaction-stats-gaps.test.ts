@@ -475,9 +475,9 @@ describe("gap: vcc-stats command arg variants", () => {
     expect(notified).toContain("No compactions yet");
   });
 });
-describe("gap: main omp-vcc --stats inline handler", () => {
+describe("gap: main omp-vcc compact (no inline detail)", () => {
   beforeEach(() => clearCompactionHistoryForTests());
-  test("extension factory handles any args as compact (single option with stats)", async () => {
+  test("extension factory handles any args as compact (toast single line, no inline Last compaction)", async () => {
     const handlers: any = {};
     const tools: any[] = [];
     const commands: Map<string, any> = new Map();
@@ -511,15 +511,15 @@ describe("gap: main omp-vcc --stats inline handler", () => {
       await handlers["session_before_compact"]({ branchEntries: entries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 80000 }, customInstructions: OMP_VCC_COMPACT_INSTRUCTION, signal: new AbortController().signal }, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
       let sent: any = null;
       pi.sendMessage = (m: any) => { sent = m; };
-      let compactCalled = false;
-      const ctx = { compact: async () => { compactCalled = true; }, ui: { notify: () => {} }, sessionManager: { getSessionFile: () => undefined } };
+      let toast: string | null = null;
+      const ctx = { compact: async () => {}, ui: { notify: (m: string) => { toast = m; } }, sessionManager: { getSessionFile: () => undefined } };
       for (const arg of ["", "keep:2", "keep:2 fix auth", "--stats", "stats", "some focus text"]) {
-        sent = null; compactCalled = false;
+        sent = null; toast = null;
         await ompVcc.handler(arg, ctx);
-        expect(compactCalled).toBe(true);
-        // with prior stats, handler surfaces inline detail
-        expect(sent).not.toBe(null);
-        expect(sent.content).toContain("Last compaction");
+        // with prior stats, handler shows toast single line, no inline detail
+        expect(sent).toBe(null);
+        expect(toast).not.toBe(null);
+        expect(String(toast)).toContain("omp-vcc");
       }
     } finally {
       process.env.OMP_VCC_CONFIG_PATH = orig;

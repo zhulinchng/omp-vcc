@@ -154,7 +154,7 @@ flowchart TB
 5. `pi.on("session_compact", ...)` enriches `lastStats` with authoritative `compactionEntry.tokensAfter/tokensBefore → saved/percent` *before* `isPiVccLast/willRetry` early returns, then schedules toast (`formatCompactionStats` with `90k→22k (76% saved)` prefix, budgetCut aware, `999→500` vs `1.0k`) and `triggerInvisibleContinue` (`customType:"omp-vcc-auto-continue"` display:false triggerTurn:followUp) filtered in (2); `dbg.authoritativeSavings` when `debug:true`.
 6. `pi.registerTool("vcc_recall", ...)` via `pi.zod` (rho: regex→OR, lineage `active` vs `all`, pagination 5, `mode:'touched'`, `expand`, `parseDrillDown`).
 7. `pi.registerTool("vcc_stats", {history?:boolean})` (approval read, `perPi`+global history table via `formatStatsTable`/`formatLastStatsDetail`) + `pi.registerCommand("vcc-stats")` single (no `omp-vcc-stats` duplicate).
-8. `pi.registerCommand("omp-vcc")` / `"pi-vcc"` (compact + inline stats) and `"vcc-recall"` / `"pi-vcc-recall"` — extension-only; no `commands/*.md` file slash commands (removed to avoid duplicate `/omp-vcc`).
+8. `pi.registerCommand("omp-vcc")` / `"pi-vcc"` (compact only, toast single line; detailed savings via `/vcc-stats`) and `"vcc-recall"` / `"pi-vcc-recall"` — extension-only; no `commands/*.md` file slash commands (removed to avoid duplicate `/omp-vcc`).
 
 ```mermaid
 sequenceDiagram
