@@ -55,13 +55,55 @@ File `~/.omp/omp-vcc/config.json` (XDG-aware: `$OMP_VCC_CONFIG_PATH` > `$PI_VCC_
 
 VCC compiles the raw JSONL trace via **lex → parse IR → monotonic line assignment → view lowering** into three views sharing one coordinate system:
 
-- `V_full` identity (defines coordinates)
-- `V_ui` one-line tool summaries with pointers (`* Read "src/pets.py" (file.txt:18-20)`)
+- `V_full` identity — every message verbatim, defines coordinates `L`
+- `V_ui` one-line tool summaries with stable pointers (`* Read "src/pets.py" (file.txt:18-20)`)
 - `V_adapt(b, ρ)` projection via predicate `ρ` preserving headers/role tags and `(f:s-e)` pointers, two transposed modalities (document vs index oriented)
 
-`omp-vcc` implements `V_ui` as the structured summary (5 sections + ranked brief transcript) and `V_adapt` as `vcc_recall`. Pointer invariant `V_ui → V_full[s:e]` holds structurally. Diagrams and pipeline in [`docs/architecture.md`](docs/architecture.md); paper mapping in [`docs/paper-notes.md`](docs/paper-notes.md); setup in [`docs/setup.md`](docs/setup.md).
+`omp-vcc` implements `V_ui` as the structured summary (5 sections + ranked brief transcript) and `V_adapt` as `vcc_recall`. Pointer invariant `V_ui → V_full[s:e]` holds structurally.
 
-## Related work
+### No LLM — just local algorithm (30–470 ms)
+
+Traditional compaction ships the whole history to a remote LLM and waits seconds. `omp-vcc` never calls a model: it reuses `branchEntries` already in memory, calibrates token size, cuts, normalizes, and ranks locally.
+
+```mermaid
+flowchart TB
+  subgraph VCC["omp-vcc — local, deterministic"]
+    A["branchEntries\nin memory"] --> B["calibrate\ncpt = chars / tokensBefore"]
+    B --> C["buildOwnCut + smartKeep\nkeep tailored to tail size"]
+    C --> D["normalize + filter\nstrip ANSI, 123 arrow, harness XML"]
+    D --> E["rank TF-IDF\n5 sections + brief transcript"]
+    E --> F["summary 1.1k tok\n+ kept tail\n30-470 ms, zero cost"]
+  end
+  subgraph LLM["native remote LLM compaction"]
+    L1["branchEntries"] --> L2["serialize history\nHTTP to LLM"]
+    L2 --> L3["wait seconds\n+ token cost\n+ nondeterministic"]
+  end
+  F -. "next turn sees only F" .-> A
+  classDef vcc fill:#e8f5e9,stroke:#2e7d32
+  class F vcc
+  classDef llm fill:#fce4ec,stroke:#c2185b
+  class L3 llm
+```
+
+**Example** — a 80-turn session at 90k tokens, `keep:1` tail is only 3k (wastes budget):
+
+- raw tail `3k` → `smartKeepTail` grows to `keep:4` with tail `21k` (still ≤ 25k cap)
+- older 76 turns are compiled into `V_ui`:
+
+```txt
+[Session Goal] Fix auth token refresh
+[Files And Changes] src/auth.ts, src/app.ts
+[Brief transcript] (ranked, TF-IDF, 78 lines)
+  (#12) Read src/auth.ts — missing refresh on expiry
+  (#18) Edit src/auth.ts:12-34 — add refreshToken()
+  (#33) Test auth flow — 2 failed, 1 passed
+---
+Kept tail (#77-#80) stays verbatim for immediate continuity.
+```
+
+Recall is the same idea: `vcc_recall` runs local regex → TF-IDF `rank.ts` and preserves skeleton. `query: "hook|inject"` returns 5 hits with `(#N)` pointers like `(#33) hook registration`; `query: "#18:src/auth.ts"` drills to `V_full[18:e]` verbatim.
+
+Full diagrams and pipeline in [`docs/architecture.md`](docs/architecture.md); paper mapping in [`docs/paper-notes.md`](docs/paper-notes.md); setup in [`docs/setup.md`](docs/setup.md).
 
 - **pi-vcc** — TypeScript algorithmic compactor, zero LLM, `RANKED_BRIEF_BUDGET_TOKENS=1100` ceil 2000, `charsPerBlock 15`
 - **VCC** — Python `VCC.py` adaptive/transposed views, `SEP`, `match_lines`, `_tokenize`, `_trunc`, projection model

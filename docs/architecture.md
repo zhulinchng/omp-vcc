@@ -248,22 +248,22 @@ flowchart TB
 classDiagram
   class SessionEntry {
     <<union>>
-    +type: message | compaction | reset_boundary | ...
+    +type: string
     +id: string
-    +message: {role, content}
+    +message: object
     +firstKeptEntryId: string
   }
   class AgentMessage {
-    +role: user | assistant | ...
+    +role: string
     +content: Block[]
   }
   class Block {
-    +type: text | tool_call | tool_result | thinking
+    +type: string
     +text: string
   }
-  SessionEntry --> AgentMessage : toLiveMessage()\ncustom_message → message
+  SessionEntry --> AgentMessage : toLiveMessage
   AgentMessage o-- Block
-  Block ..> SessionEntry : normalize → sanitize → clip
+  Block ..> SessionEntry : normalize sanitize clip
 ```
 
 ## Performance & invariants

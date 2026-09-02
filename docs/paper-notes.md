@@ -124,16 +124,16 @@ Transformations (§2.3, Fig.2):
 ```mermaid
 flowchart LR
   subgraph Before["Before normalize"]
-    B1["'cat file.txt'\n'{\"file\":\"src/x.ts\"}'\nescaped JSON"]
-    B2["'123→  content of file'\nprefixed digits"]
-    B3["'<system-reminder>hint</>'\nharness XML"]
-    B4["'TodoWrite(...)'\ninternal tool"]
+    B1["cat file.txt / file src/x.ts / escaped JSON"]
+    B2["123 arrow content of file / prefixed digits"]
+    B3["system-reminder hint / harness XML"]
+    B4["TodoWrite / internal tool"]
   end
   subgraph After["After normalize + filter-noise"]
-    A1["| file: src/x.ts\n  block scalar indented"]
-    A2["'content of file'\nstripped digits→"]
-    A3["(removed)\nfiltered"]
-    A4["(removed)\nallowlisted only"]
+    A1["block scalar indented / file src/x.ts"]
+    A2["content of file / stripped digits"]
+    A3["removed / filtered"]
+    A4["removed / allowlisted only"]
   end
   B1 --> A1
   B2 --> A2
