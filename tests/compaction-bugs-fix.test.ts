@@ -259,6 +259,45 @@ describe("bug fix: vcc_stats per-pi (was global last)", () => {
     expect(outB).not.toContain("11.1k");
   });
 });
+describe("bug fix: clearCompactionHistoryForTests perPiKeys leak", () => {
+  beforeEach(() => clearCompactionHistoryForTests());
+  test("clear deletes WeakMap entries and clears Set so repeated clears don't leak", async () => {
+    const handlers = new Map();
+    const pis: any[] = [];
+    for (let i = 0; i < 5; i++) {
+      const pi: any = { on: (n, h) => handlers.set(`${i}:${n}`, h), registerTool: () => {}, registerCommand: () => {}, zod: { object: (o) => o, string: () => ({ optional: () => ({ describe: () => {} }) }), number: () => ({ optional: () => ({ describe: () => {} }) }), boolean: () => ({ optional: () => ({ describe: () => {} }) }), enum: () => ({ optional: () => ({ describe: () => {} }) }), array: () => ({ optional: () => ({ describe: () => {} }) }) } };
+      registerBeforeCompactHook(pi);
+      pis.push(pi);
+      const before = handlers.get(`${i}:session_before_compact`);
+      const branch = [
+        { id: `m${i}1`, type: "message", message: { role: "user", content: "u1" } },
+        { id: `m${i}2`, type: "message", message: { role: "assistant", content: "a1" } },
+        { id: `m${i}3`, type: "message", message: { role: "user", content: "u2" } },
+        { id: `m${i}4`, type: "message", message: { role: "assistant", content: "a2" } },
+      ];
+      await before({ customInstructions: "__omp_vcc__", branchEntries: branch, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 50000 + i * 1000 } }, { ui: { notify: () => {} } } as any);
+    }
+    expect(getCompactionHistory().length).toBe(5);
+    for (const pi of pis) expect(getCompactionHistory(pi).length).toBe(1);
+    clearCompactionHistoryForTests();
+    expect(getCompactionHistory().length).toBe(0);
+    for (const pi of pis) expect(getCompactionHistory(pi).length).toBe(0);
+    expect(getLastCompactionStats()).toBeNull();
+    for (const pi of pis) expect(getLastCompactionStats(pi)).toBeNull();
+    const reusePi = pis[0];
+    const beforeReuse = handlers.get(`0:session_before_compact`);
+    const branchReuse = [
+      { id: "rm1", type: "message", message: { role: "user", content: "u1" } },
+      { id: "rm2", type: "message", message: { role: "assistant", content: "a1" } },
+      { id: "rm3", type: "message", message: { role: "user", content: "u2" } },
+      { id: "rm4", type: "message", message: { role: "assistant", content: "a2" } },
+    ];
+    await beforeReuse({ customInstructions: "__omp_vcc__", branchEntries: branchReuse, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 60000 } }, { ui: { notify: () => {} } } as any);
+    expect(getCompactionHistory(reusePi).length).toBe(1);
+    expect(getCompactionHistory().length).toBe(1);
+  });
+});
+
 describe("bug fix: details.sections should not include [user]/[assistant] brief headers", () => {
   beforeEach(() => clearCompactionHistoryForTests());
 

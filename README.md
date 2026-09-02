@@ -193,7 +193,7 @@ Capabilities: `extension`, `skill`, `command` — entry `extensions/main.ts`.
 
 ```sh
 bunx tsc --noEmit
-bun test          # 377 tests across 36 files, 987 expects
+bun test          # 378 tests across 36 files, 1007 expects
 bun run smoke     # 9 checks: 3 hooks + 4 commands + 2 tools (vcc_recall, vcc_stats)
 omp plugin link /Users/zhu/code/projects/omp-vcc && omp plugin doctor
 ```

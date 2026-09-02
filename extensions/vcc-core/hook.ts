@@ -242,7 +242,13 @@ export const clearCompactionHistoryForTests = () => {
       clearTimeout(s.pendingAutoContinueTimer as any);
       s.pendingAutoContinueTimer = null;
     }
+    // Remove strong ref so pi can be GC'd and WeakMap entry cleared; fresh
+    // getPerPi(pi) will recreate if this pi is reused, but tests create fresh
+    // pi objects each time, so clearing prevents unbounded Set growth across
+    // the 377-test suite.
+    perPi.delete(pi);
   }
+  perPiKeys.clear();
 };
 
 export const formatStatsTable = (history: CompactionStats[]): string => {
