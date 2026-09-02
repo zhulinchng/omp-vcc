@@ -25,7 +25,7 @@ flowchart LR
 ## Test matrix
 
 ```sh
-bun test            # 368 tests across 35 files, 945 expect() calls, 0 fail
+bun test            # 377 tests across 36 files, 987 expect() calls, 0 fail
 bun run smoke       # 9 checks: 3 hooks + 4 commands + 2 tools (vcc_recall, vcc_stats)
 ```
 
@@ -45,17 +45,13 @@ flowchart TB
   subgraph Sessions["Sessions — real data"]
     F["real-sessions 2 tests\nstubbed when no ~/.pi/sessions\nsynthetic 100-turn fallback"]
   end
-  subgraph Savings["Savings observability 58 tests"]
+  subgraph Savings["Savings observability 59 tests"]
     G["compaction-stats 22 tests\ntoast prefix, table, detail, history\ncap 50, perPi, authoritative\ndebug file, details v2"]
     H["compaction-stats-gaps 36 tests\npercent 0, budgetCut, boundaries\ncopy isolation, capping, timestamp\ntool/command --stats variants\nperPi clear, enrichment edge\nmain inline --stats"]
+    I["compaction-bugs-fix 9 tests\nfallback 0, perPi isolation\nvcc_stats perPi, sections filter"]
   end
-  Unit & Integration & Sessions & Savings --> ALL["bun test: 368 pass (310+58)\n945 expects, 0 fail\n+ gaps 36 (945-832)"]
+  Unit & Integration & Sessions & Savings --> ALL["bun test: 377 pass (all)\n987 expects, 0 fail"]
   ALL --> SMOKE["bun run smoke\n9 checks ok\n3 hooks + 4 cmds + 2 tools\n+ buildOwnCut + calibrate"]
-
-  classDef suite fill:#e3f2fd,stroke:#1565c0
-  class A,B,C,D,E,F,G,H suite
-  class ALL,SMOKE fill:#e8f5e9,stroke:#2e7d32
-```
 
 | Suite | What it checks | Status |
 | --- | --- | --- |
@@ -282,7 +278,7 @@ flowchart TB
     E12["enrich missing/after>before\nwillRetry + debug"]
     E13["--stats variants\ncase-insensitive"]
   end
-  E1 & E2 & E3 & E4 & E5 & E6 & E7 & E8 & E9 & E10 & E11 & E12 & E13 --> PASS["all 368 pass (332+36)"]
+  E1 & E2 & E3 & E4 & E5 & E6 & E7 & E8 & E9 & E10 & E11 & E12 & E13 --> PASS["all 377 pass (36 files)"]
 
   classDef edge fill:#fff8e1,stroke:#f57f17
   class E1,E2,E3,E4,E5,E6,E7,E8,E9,E10,E11,E12,E13 edge
@@ -311,13 +307,12 @@ flowchart LR
 ```sh
 bunx tsc --noEmit && bun test && bun run smoke && omp plugin link /Users/zhu/code/projects/omp-vcc && omp plugin doctor
 ```
-
 ```mermaid
 flowchart LR
-  A["bunx tsc --noEmit\n0 errors"] --> B["bun test\n368 pass 945 expects\n35 files"]
+  A["bunx tsc --noEmit\n0 errors"] --> B["bun test\n377 pass 987 expects\n36 files"]
   B --> C["bun run smoke\n9 checks ok\n3 hooks + 4 cmds + 2 tools"]
   C --> D["omp plugin link .\nlist --json ok"]
-  D --> E["omp plugin doctor\n5 ok"]
+  D --> E["omp plugin doctor\n6 ok"]
   E --> F["gate green\nshippable"]
 
   classDef gate fill:#e8f5e9,stroke:#2e7d32
