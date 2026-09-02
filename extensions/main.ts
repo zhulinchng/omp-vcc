@@ -6,6 +6,7 @@
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { scaffoldSettings } from "./vcc-core/core/settings";
+import { migrateStalePluginEntries } from "./vcc-core/core/migrate-stale";
 import { loadAllMessages } from "./vcc-core/core/load-messages";
 import {
   registerBeforeCompactHook,
@@ -45,9 +46,11 @@ const parseRecallCommandArgs = (
 
 const DEFAULT_RECENT = 25;
 const PAGE_SIZE = 5;
-
 export default function (pi: ExtensionAPI): void {
   scaffoldSettings();
+  try {
+    migrateStalePluginEntries();
+  } catch {}
   registerBeforeCompactHook(pi);
 
   // ── vcc_recall tool — implements VCC V_adapt via rho predicate (paper §2.1 eq.2) ──

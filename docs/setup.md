@@ -341,6 +341,8 @@ bunx tsc --noEmit && bun test && bun run smoke && omp plugin doctor
 
 ## Uninstall & reset
 
+> **Stale `@zhu/omp-vcc`**: early `v0.1.0` used `package.json:name` `@zhu/omp-vcc`; renames to `@zhulinchng/omp-vcc` → `omp-vcc` left a `~/.omp/plugins/omp-plugins.lock.json` entry + `node_modules/@zhu/omp-vcc` symlink that `omp plugin uninstall omp-vcc` (old host) reported as `✔ Uninstalled` but left behind (`doctor` still `✔ plugin:@zhu/omp-vcc`, `list` showed duplicate). Since `v0.1.5` the plugin auto-migrates this on startup (`extensions/vcc-core/core/migrate-stale.ts`) and `node scripts/uninstall-reset.js` (also `postuninstall`) cleans it. The manual steps below are fallback for old plugin/host.
+
 `omp plugin list` shows the **resolved** `package.json:name` (today `omp-vcc`); `omp plugin doctor` / `~/.omp/plugins/omp-plugins.lock.json` shows the **key used at install time** (could be `omp-vcc`, `@zhu/omp-vcc`, or `@zhulinchng/omp-vcc` after renames). `omp plugin uninstall <name>` only removes that key — a renamed/linked install can leave a stale key + symlink that still appears healthy. Verify both views and fall back to manual removal.
 
 ```sh
