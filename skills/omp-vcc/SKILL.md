@@ -1,3 +1,8 @@
+---
+name: omp-vcc
+description: VCC-inspired algorithmic compaction for oh-my-pi — lossless V_ui summary + ranked brief + V_adapt recall via vcc_recall. Use after auto-compaction (toast 90k→22k), when context grows 50+ turns, or before /omp-vcc keep:N boundaries.
+---
+
 # omp-vcc Skill — VCC-Inspired Algorithmic Compaction
 
 > Lossless, deterministic summarization — no LLM. `V_full` = full transcript, `V_ui` = structured summary + ranked brief, `V_adapt(b, ρ)` = structure-preserving recall. Use `V_ui → V_adapt(query) → V_full[s:e]`: scan summary, query, drill to verbatim lines.
@@ -12,7 +17,7 @@
 
 Compacted summary replaces the old transcript; `V_ui` + kept tail is what you see next:
 
-```
+```sh
 [Session Goal]
 - …
 
@@ -56,7 +61,7 @@ No config needed for normal use. Auto `threshold`/`overflow` compaction is alrea
 
 **How search works**: regex first; if invalid or no hits → TF-IDF keyword OR (rare terms weighted, stopwords removed). Each hit preserves turn/header/block, role tags, and `(#N)`. ±2 lines around the match are shown.
 
-```
+```sh
 # basic keyword (TF-IDF OR)
 vcc_recall({query:"redis cache"})
 /vcc-recall redis cache
@@ -110,8 +115,3 @@ vcc_recall({query:"", expand:[12,18,25]})
 4. **Create boundaries intentionally.** Before a multi-file refactor or hand-off doc: `/omp-vcc keep:2 continue auth refactor` — next turn starts from a fresh, citable `V_ui`. Verify with `/vcc-stats` (`kept 2/18 turns, 76% saved`) before continuing.
 5. **Don't stall after threshold.** Auto threshold/overflow compaction auto-continues via invisible follow-up (you'll just see the summary and your next turn proceeds). If you issued `/omp-vcc keep:2 <focus>`, that focus text arrives as the next user message — treat it as the goal.
 6. **Use pointers, don't re-derive.** When you quote prior work, cite `(#N)` or `(file:s-e)` from the brief; drill `#N:path` for verbatim to paste, not guessed content.
-
-## Related
-
-- Paper `arxiv:2603.29678` — VCC views `V_full`/`V_ui`/`V_adapt(b,ρ)`; AppWorld +1.1–4.2 pts at ½–⅔ tokens.
-- `sting8k/pi-vcc@0.7.0` — this plugin's core (`extensions/vcc-core/*`) is a verbatim port adapted to `@oh-my-pi/pi-coding-agent`.
