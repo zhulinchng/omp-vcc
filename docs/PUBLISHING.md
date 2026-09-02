@@ -22,7 +22,7 @@ execute verbatim (`allowImportingTsExtensions: true`, `type: module`, zero
 | `scripts/uninstall-reset.js` | `postuninstall` hook — restores `~/.omp/omp-vcc` ownership |
 | `types.d.ts` | Ambient host-API shims (typecheck only) |
 | `LICENSE`, `README.md` | Auto-included by npm even when not in `files` |
-| *not shipped* | `tests/`, `docs/`, `tsconfig.json`, `bun.lock`, `.github/`, `AGENTS.md` |
+| *not shipped* | `tests/`, `docs/` (incl. `harness.md`, `omp-compaction.md`, `omp-snapcompact.md` — docs-only, correctly excluded from `files`), `tsconfig.json`, `bun.lock`, `.github/`, `AGENTS.md` |
 
 Dual manifest (`package.json#omp.extensions` / `#pi.extensions`) points at
 `./extensions/main.ts`; that is the entire “build output”. Keep `files`
@@ -30,6 +30,11 @@ exactly `["extensions","skills","commands","scripts","types.d.ts"]` —
 omitting `scripts` silently drops the `postuninstall` hook (seen as missing
 `scripts/uninstall-reset.js` in `npm pack --dry-run` when `files` still listed
 `tools/hooks/...` stubs). `README.md`/`LICENSE` need not be in `files`.
+`docs/` — now including `harness.md` plus pinned `omp-compaction.md` /
+`omp-snapcompact.md` — is intentionally **not** in `files` (correctly
+excluded): they are reference docs cross-linked from `docs/architecture.md`
+and `docs/setup.md`, not runtime code. Verify with `npm pack --dry-run` —
+no `docs/` entry should appear.
 
 ## Maintainer release checklist
 
@@ -302,11 +307,6 @@ https://npm.pkg.github.com` needs `GITHUB_TOKEN` even for `public`.
 The working `publish-gpr.yml` is essentially `omp-startup`'s with two
 adaptations: `oven-sh/setup-bun` + `bun install --frozen-lockfile` for the
 Bun-based gates, and `registry-url: https://npm.pkg.github.com` +
-`scope: @zhulinchng` for `setup-node`. Copy it, change only `omp-startup`
-→ `omp-vcc` and the install command — do not re-invent the scope or token
-plumbing. Version immutability: the job does `npm view @version` → if
-`0` warn & skip (do not `npm publish --force`); bump instead.
-
 **11. Keep one version for both registries — tag once.**
 Workflow is `on: release[published]` → `git push origin main --follow-tags;
 gh release create vX.Y.Z`. Publishing `omp-vcc@0.1.2` to npmjs and
@@ -314,6 +314,17 @@ gh release create vX.Y.Z`. Publishing `omp-vcc@0.1.2` to npmjs and
 on both. The earlier manual path (publish GPR first, npm later) worked but
 left `0.1.1`/`0.1.2` publishes split across days and required manual `npm pkg
 set` juggling.
+
+**12. `harness.md` + `setup.md` §Working with existing strategies are canonical for `overrideDefaultCompaction` vs `compaction.methodOrder`.**
+`docs/harness.md` (§3 intercepts / §4 does-not-edit / §8 strategies) and
+`docs/setup.md` (§Working with existing strategies) are the canonical
+references for how `overrideDefaultCompaction` (plugin gate, default `true`
+→ handles every auto trigger as `V_ui`) interacts with the host's
+`compaction.methodOrder` walk (`remote` → `snapcompact` → `handoff` →
+`shake` → `soft`). Consumers should read those two sections before flipping
+`overrideDefaultCompaction` or reordering `compaction.methodOrder` — they
+explain sentinel bypass (`/omp-vcc` always handled), `override:false` fallback
+to the host walk, and when to keep `snapcompact`/`handoff` alongside `omp-vcc`.
 
 ## Troubleshooting publishes
 

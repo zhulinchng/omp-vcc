@@ -1,10 +1,10 @@
 # @zhulinchng/omp-vcc — Algorithmic VCC Compaction for oh-my-pi
 
-> Fast, deterministic, lossless compaction — no LLM calls. Port of [`sting8k/pi-vcc`](https://github.com/sting8k/pi-vcc) (`@0.7.0`) into [oh-my-pi](https://github.com/can1357/oh-my-pi), inspired by [`lllyasviel/VCC`](https://github.com/lllyasviel/VCC) and paper [`arxiv:2603.29678`](https://arxiv.org/pdf/2603.29678) *View-oriented Conversation Compiler for Agent Trace Analysis* (Zhang & Agrawala, 2026-03-31).
+> Fast, deterministic, lossless compaction with no LLM calls. Port of [`sting8k/pi-vcc`](https://github.com/sting8k/pi-vcc) (`@0.7.0`) into [oh-my-pi](https://github.com/can1357/oh-my-pi), inspired by [`lllyasviel/VCC`](https://github.com/lllyasviel/VCC) and paper [`arxiv:2603.29678`](https://arxiv.org/pdf/2603.29678) *View-oriented Conversation Compiler for Agent Trace Analysis* (Zhang & Agrawala, 2026-03-31).
 
 ## Quick start
 
-> **New here?** → [`docs/setup.md`](docs/setup.md) — 5-minute install with prerequisites, 4 install options (link / npm / git), verify, first `/omp-vcc`, recall, config, and troubleshooting. The commands below are the tldr.
+> **New here?** → [`docs/setup.md`](docs/setup.md)
 
 ```sh
 # from source (local)
@@ -23,7 +23,7 @@ omp plugin install github:zhulinchng/omp-vcc
 
 ## What you get
 
-- **Auto** threshold/overflow compaction via `session_before_compact` hook — no LLM summary, 30–470 ms, 35–99% reduction.
+- **Auto** threshold/overflow compaction via `session_before_compact` hook (no LLM summary), 30–470 ms, 35–99% reduction.
 - **Manual** `/omp-vcc [keep:N] [focus]` (and `/pi-vcc` alias) — e.g. `/omp-vcc keep:2 fix auth` keeps last 2 user turns.
 - **Recall** `vcc_recall({query:"redis cache", scope:"all", page:1})` or `/vcc-recall hook|inject scope:all page:2` — ranked regex → TF-IDF OR, 5/page, `mode:'touched'` and `#N:path` drill-down.
 - **Savings observability** — toast `90.0k→22.0k (76% saved, ~68.0k)`, divider `── compacted · 90K→22K ·`, `vcc_stats` tool + `/vcc-stats` table + `details.savings` + `/tmp/omp-vcc-debug.json` (authoritative `tokensAfter` from host).
@@ -46,6 +46,7 @@ File `~/.omp/omp-vcc/config.json` (XDG-aware: `$OMP_VCC_CONFIG_PATH` > `$PI_VCC_
 
 ```json
 {
+  "vccEnabled": true,
   "overrideDefaultCompaction": true,
   "smartKeepTail": true,
   "continueAfterThresholdCompact": true,
@@ -63,7 +64,7 @@ VCC compiles the raw JSONL trace via **lex → parse IR → monotonic line assig
 
 `omp-vcc` implements `V_ui` as the structured summary (5 sections + ranked brief transcript) and `V_adapt` as `vcc_recall`. Pointer invariant `V_ui → V_full[s:e]` holds structurally.
 
-### No LLM — just local algorithm (30–470 ms)
+### VCC algorithm (30–470 ms)
 
 Traditional compaction ships the whole history to a remote LLM and waits seconds. `omp-vcc` never calls a model: it reuses `branchEntries` already in memory, calibrates token size, cuts, normalizes, and ranks locally.
 
@@ -87,6 +88,8 @@ flowchart TB
   class L3 llm
 ```
 
+What `omp-vcc` adds vs intercepts in the harness (hooks, tools, commands, settings) and why — see [`docs/harness.md`](docs/harness.md) §§2–3.
+
 **Example** — a 80-turn session at 90k tokens, `keep:1` tail is only 3k (wastes budget):
 
 - raw tail `3k` → `smartKeepTail` grows to `keep:4` with tail `21k` (still ≤ 25k cap)
@@ -100,12 +103,9 @@ flowchart TB
   (#18) Edit src/auth.ts:12-34 — add refreshToken()
   (#33) Test auth flow — 2 failed, 1 passed
 ---
-Kept tail (#77-#80) stays verbatim for immediate continuity.
-```
-
 Recall is the same idea: `vcc_recall` runs local regex → TF-IDF `rank.ts` and preserves skeleton. `query: "hook|inject"` returns 5 hits with `(#N)` pointers like `(#33) hook registration`; `query: "#18:src/auth.ts"` drills to `V_full[18:e]` verbatim.
 
-Full diagrams and pipeline in [`docs/architecture.md`](docs/architecture.md); paper mapping in [`docs/paper-notes.md`](docs/paper-notes.md); setup in [`docs/setup.md`](docs/setup.md).
+Docs: [`architecture`](docs/architecture.md) · [`configuration`](docs/configuration.md) · [`verification`](docs/verification.md) · [`harness`](docs/harness.md) · [`paper-notes`](docs/paper-notes.md) · [`setup`](docs/setup.md) · [`PUBLISHING`](docs/PUBLISHING.md) · pinned [`omp-compaction`](docs/omp-compaction.md) / [`omp-snapcompact`](docs/omp-snapcompact.md).
 
 - **pi-vcc** — TypeScript algorithmic compactor, zero LLM, `RANKED_BRIEF_BUDGET_TOKENS=1100` ceil 2000, `charsPerBlock 15`
 - **VCC** — Python `VCC.py` adaptive/transposed views, `SEP`, `match_lines`, `_tokenize`, `_trunc`, projection model
@@ -198,7 +198,9 @@ bun run smoke     # 9 checks: 3 hooks + 4 commands + 2 tools (vcc_recall, vcc_st
 omp plugin link /Users/zhu/code/projects/omp-vcc && omp plugin doctor
 ```
 
-In a live `omp` session: `/omp-vcc keep:1` shows `[Session Goal]` with toast `omp-vcc: 90.0k→22.0k (76% saved, ~68.0k) · kept 1/5 turns, ~2.1k tok` (fallback `omp-vcc: kept 1/5 turns…` when `tokensBefore` unavailable) + divider `── compacted · 90K→22K · ctrl+o ──`; with `debug:true` check `/tmp/omp-vcc-debug.json` (`savings` + `authoritativeSavings`). `/vcc-stats` / `/omp-vcc --stats` / `vcc_stats({history:true})` show the 50-capped `Before→After/Saved/Kept/Summarized/When` table. Full proof matrix and mermaid flows in [`docs/verification.md`](docs/verification.md); harness impact (adds vs intercepts) in [`docs/harness.md`](docs/harness.md).
+In a live `omp` session: `/omp-vcc keep:1` shows `[Session Goal]` with toast `omp-vcc: 90.0k→22.0k (76% saved, ~68.0k) · kept 1/5 turns, ~2.1k tok` (fallback `omp-vcc: kept 1/5 turns…` when `tokensBefore` unavailable) + divider `── compacted · 90K→22K · ctrl+o ──`; with `debug:true` check `/tmp/omp-vcc-debug.json` (`savings` + `authoritativeSavings`). `/vcc-stats` / `/omp-vcc --stats` / `vcc_stats({history:true})` show the 50-capped `Before→After/Saved/Kept/Summarized/When` table. Full proof matrix and mermaid flows in [`docs/verification.md`](docs/verification.md); harness impact (adds vs intercepts) in [`docs/harness.md`](docs/harness.md). Smoke checks map to the re-runnable truth table in [`docs/harness.md` §9](docs/harness.md#9-verification-map-claim--evidence).
+
+Docs: [`architecture`](docs/architecture.md) · [`configuration`](docs/configuration.md) · [`verification`](docs/verification.md) · [`harness`](docs/harness.md) · [`paper-notes`](docs/paper-notes.md) · [`setup`](docs/setup.md) · [`PUBLISHING`](docs/PUBLISHING.md) · pinned [`omp-compaction`](docs/omp-compaction.md) / [`omp-snapcompact`](docs/omp-snapcompact.md).
 
 See [`docs/PUBLISHING.md`](docs/PUBLISHING.md) for the full checklist (package shape, gates, dual `omp-vcc` / `@zhulinchng/omp-vcc` flow, verification, deployment matrix, and troubleshooting). TL;DR:
 
@@ -215,4 +217,4 @@ See [`docs/PUBLISHING.md`](docs/PUBLISHING.md) for the full checklist (package s
 
 ## License
 
-MIT — pi-vcc core files retain original MIT.
+MIT

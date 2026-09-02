@@ -115,6 +115,8 @@ vcc-core/
   commands/vcc-recall.ts — shim for pi-vcc test compatibility
 ```
 
+Host pipeline that omp-vcc bypasses is detailed in [harness.md §5.2.1](harness.md) (prune → useless → threshold → prepareCompaction → walk methodOrder) and pinned host docs [omp-compaction.md](omp-compaction.md)/[omp-snapcompact.md](omp-snapcompact.md) @18781d8295.
+
 ```mermaid
 flowchart TB
   HOOK["hook.ts\norchestrator\nsession_before_compact\n+ savings + history"]
@@ -299,4 +301,4 @@ stateDiagram-v2
 
 ---
 
-See also: [Harness Impact](harness.md) — what omp-vcc adds vs intercepts in oh-my-pi, with verified citations and mermaid.
+See also: [Harness Impact](harness.md) — what omp-vcc adds vs intercepts in oh-my-pi, with verified citations and mermaid. · [Setup — working with strategies](setup.md#working-with-existing-compaction-strategies) · Pinned copies: [omp-compaction.md](omp-compaction.md) / [omp-snapcompact.md](omp-snapcompact.md)

@@ -21,6 +21,8 @@ flowchart LR
   classDef err fill:#fce4ec,stroke:#c2185b
   class FAIL err
 ```
+> See also: [Harness Impact — Verification map](harness.md#9-verification-map-claim--evidence) for re-runnable claim→evidence `grep` commands (e.g. `grep -R "session_before_compact" extensions/vcc-core/hook.ts`).
+
 
 ## Test matrix
 
@@ -102,8 +104,11 @@ flowchart LR
   DOCTOR --> READY["ready for TUI"]
 
   classDef ok fill:#e8f5e9,stroke:#2e7d32
+
   class READY ok
 ```
+> `omp plugin doctor` for `@zhulinchng/omp-vcc` reports **5 ok** (extensions, commands, settings, type:module, allowImportingTsExtensions) — plugin manifest is `omp`+`pi` dual; when `overrideDefaultCompaction:false` the host `methodOrder` walk resumes (`remote→snapcompact→handoff→shake→soft`) — see [Harness Impact §8](harness.md#8-working-with-existing-compaction-strategies) for the coexistence matrix.
+
 
 ## Functional proof 1 — manual compaction
 
@@ -259,6 +264,8 @@ flowchart LR
 - Table: `timestamp null` → `—`, `budgetCut` suffix, `undefined` history → `No compactions yet.`, `perPi` vs `global` copy isolation, capping 50 (global + perPi), `authoritative > est` note
 - History: `clearCompactionHistoryForTests()` clears `global` + `perPi` via `perPiKeys` set, `timestamp` assigned once, `setLastStats(null)` no push, `willRetry` enrichment before early return
 - Commands: `vcc-stats` vs `omp-vcc-stats`, `--stats`/`stats`/`history`/`all` case variants, `vcc_stats({history:true})` schema fallback when `zod.boolean` missing
+- Docs: harness impact table pipes fixed (`&#124;` escaped as `/` in cells) and setup mermaid labels quoted — see [harness.md §9](harness.md#9-verification-map-claim--evidence) for table/mermaid lint.
+
 
 ```mermaid
 flowchart TB

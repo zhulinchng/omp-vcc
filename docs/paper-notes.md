@@ -306,3 +306,5 @@ mindmap
       MEMORY.md diff-merge
       token halving
 ```
+
+See also: [Architecture — Implementation pipeline](architecture.md#implementation-pipeline-omp-vcc) and [Harness Impact](harness.md).

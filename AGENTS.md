@@ -38,8 +38,9 @@ Single line assignment before lowering guarantees pointer invariant `V_ui → V_
 5. `pi.on("session_compact")` — savings toast (before→after) + `triggerInvisibleContinue` (`setTimeout 0`; `display:false, triggerTurn:true, deliverAs:'followUp'`)
 6. Registrations: `vcc_recall` tool via `pi.zod`, `/omp-vcc`+`/pi-vcc`, `/vcc-recall`+`/pi-vcc-recall` (main.ts); `vcc_stats` tool (approval `read`, `{history?: boolean}`) and `/vcc-stats`+`/omp-vcc-stats` (`registerVccStatsTool`/`registerVccStatsCommand`, hook.ts)
 
-Recall modalities: document-oriented temporal (default) vs index-oriented flat list (`mode:'touched'`). Savings state is per-pi (`perPi.statsHistory` via `getCompactionHistory(pi)`); `/omp-vcc --stats` and `vcc_stats`/`/vcc-stats` print last + history.
+> See `docs/harness.md §5` for host pipeline bypass (how `session_before_compact` replaces `SessionMaintenance` LLM path) and `§8` for `methodOrder` coexistence when `overrideDefaultCompaction:false`.
 
+Recall modalities: document-oriented temporal (default) vs index-oriented flat list (`mode:'touched'`). Savings state is per-pi (`perPi.statsHistory` via `getCompactionHistory(pi)`); `/omp-vcc --stats` and `vcc_stats`/`/vcc-stats` print last + history.
 ## Key Directories
 
 ```
@@ -58,7 +59,7 @@ commands/                  — omp-vcc.md, vcc-recall.md (slash-command shims, d
 skills/omp-vcc/SKILL.md    — VCC philosophy + usage
 tests/                     — *.test.ts suites + support/ (load-session, real-sessions) + fixtures.ts, helpers.ts
 scripts/                   — smoke.ts (host-free registration + pipeline smoke), uninstall-reset.js
-docs/                      — architecture, configuration, verification, paper-notes, PUBLISHING, setup
+docs/                      — architecture, configuration, harness, omp-compaction, omp-snapcompact, paper-notes, PUBLISHING, setup, verification
 ```
 
 ## Development Commands
@@ -105,6 +106,10 @@ No `lint`/`format` script — keep vendored files `// @ts-nocheck` untouched. `p
 | `extensions/vcc-core/core/settings.ts` | `PiVccSettings` + `DEFAULT_SETTINGS` + `loadSettings()`/`scaffoldSettings()` + XDG path |
 | `extensions/vcc-core/details.ts` | `PiVccCompactionDetails` incl. `savings` persisted on the compaction entry |
 | `docs/architecture.md` | Pipeline map + per-file paper anchors |
+| `docs/harness.md` | Host impact: what plugin adds vs intercepts, lifecycle, token math, verification map |
+| `docs/omp-compaction.md` | Compaction pipeline deep dive (calibrate → merge) + budget/preservation guarantees |
+| `docs/omp-snapcompact.md` | Snapshot compaction reference (branchEntries, firstKeptEntryId, lineage) |
+| `docs/setup.md` | Install, linking, and working with existing strategies |
 
 ## Runtime & Tooling
 

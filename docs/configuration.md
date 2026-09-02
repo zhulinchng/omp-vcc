@@ -24,6 +24,8 @@ These appear in `/settings` under the plugin section (not `Context → Compactio
 omp config list | grep -i vcc
 omp config set plugins."@zhulinchng/omp-vcc".overrideDefaultCompaction false
 ```
+See harness impact for when overrideDefaultCompaction defers to host methodOrder: [harness.md §8](harness.md#8-working-with-existing-compaction-strategies) and [setup.md](setup.md#working-with-existing-compaction-strategies) for practical toggling.
+
 
 Runtime bridge: `loadSettings(ctx)` first overlays `ctx.settings?.get("plugins.@zhulinchng/omp-vcc.*")` on the file, then returns merged config. File is source of truth on restart; manifest `/settings` takes effect immediately without restart.
 
@@ -84,7 +86,7 @@ Defaults (same as `DEFAULT_SETTINGS` in `extensions/vcc-core/core/settings.ts`):
 | Flag | Effect |
 | --- | --- |
 | `vccEnabled` | Master switch. `false` → extension still loads but `session_before_compact` returns `void` unless `__omp_vcc__`/`__pi_vcc__` marker present. |
-| `overrideDefaultCompaction` | `true` (default): omp-vcc handles **all** compactions — `/compact`, threshold, overflow, `/omp-vcc`. `false`: only `/omp-vcc`/`/pi-vcc` handled, rest falls back to core LLM compaction. |
+| `overrideDefaultCompaction` | `true` (default): omp-vcc handles **all** compactions — `/compact`, threshold, overflow, `/omp-vcc`. `false`: only `/omp-vcc`/`/pi-vcc` handled, rest falls back to core LLM compaction (host walks `methodOrder` per [omp-compaction.md:104-151](omp-compaction.md) and vision gate per [snapcompact.md](snapcompact.md)). |
 | `smartKeepTail` | `true`: when default `keep:1` tail ≤ `MIN_SMART_TAIL_TOKENS 5_000`, grow `keep` to largest N with tail ≤ `MAX_SMART_TAIL_TOKENS 25_000`. Explicit `keep:N` always respected. `false`: old behavior `keep:1`. |
 | `continueAfterThresholdCompact` | `true`: after successful `threshold`/`overflow` compaction (and not `willRetry`), schedule invisible-continue (`customType:"omp-vcc-auto-continue"` display:false triggerTurn:followUp, filtered in `on('context')`) so agent continues without UX cliff. `false`: stop after compaction. |
 | `debug` | `true`: write snapshot to `/tmp/omp-vcc-debug.json` (and legacy `/tmp/pi-vcc-debug.json`) on each `session_before_compact` and `session_compact` with `counts`, `liveMessages.roleSequence`, `tail` previews, `tokenEstimate`, `sections`, `savings {tokensBefore, summaryChars, summaryTokensEst, keptTokensEst, tokensAfterEst, tokensSavedEst, savedPercentEst}` and after `session_compact` also `authoritativeSavings {tokensBefore, tokensAfter, tokensSaved, savedPercent}`. |
@@ -243,6 +245,8 @@ flowchart LR
 Pure plugin intercepts via `session_before_compact` hook; native `/settings` → Context → General → Compaction method dropdown entry requires closed-enum patch (decision Step 0):
 
 `packages/coding-agent/src/session/compaction-methods.ts:11-49` closed enum `CompactionMethod="remote"|"snapcompact"|"handoff"|"soft"|"shake"` with `COMPACTION_METHOD_CHOICES` + `DEFAULT_COMPACTION_METHOD_ORDER` + `isCompactionMethod` (`Object.hasOwn`). Manifest `omp.settings` is plugin-scoped, not global `compaction.*`.
+Pinned copies [omp-compaction.md](omp-compaction.md) and [omp-snapcompact.md](omp-snapcompact.md) capture the same closed enum at the pinned commit — use them as reference without a live harness checkout.
+
 
 ```mermaid
 flowchart TB
