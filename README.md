@@ -102,7 +102,8 @@ What `omp-vcc` adds vs intercepts in the harness (hooks, tools, commands, settin
   (#12) Read src/auth.ts — missing refresh on expiry
   (#18) Edit src/auth.ts:12-34 — add refreshToken()
   (#33) Test auth flow — 2 failed, 1 passed
----
+```
+
 Recall is the same idea: `vcc_recall` runs local regex → TF-IDF `rank.ts` and preserves skeleton. `query: "hook|inject"` returns 5 hits with `(#N)` pointers like `(#33) hook registration`; `query: "#18:src/auth.ts"` drills to `V_full[18:e]` verbatim.
 
 Docs: [`architecture`](docs/architecture.md) · [`configuration`](docs/configuration.md) · [`verification`](docs/verification.md) · [`harness`](docs/harness.md) · [`paper-notes`](docs/paper-notes.md) · [`setup`](docs/setup.md) · [`PUBLISHING`](docs/PUBLISHING.md) · pinned [`omp-compaction`](docs/omp-compaction.md) / [`omp-snapcompact`](docs/omp-snapcompact.md).
