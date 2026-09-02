@@ -173,7 +173,7 @@ Unified via `hook.ts:38-105` `CompactionStats` + `details.ts:PiVccCompactionDeta
 | File | Coverage |
 |---|---|
 | `compaction-stats.test.ts` (22) | Toast `omp-vcc: 90.0k→22.0k (76% saved, ~68.0k) · kept 1/5 turns, ~2.1k tok` prefix, `formatLastStatsDetail` `Before → After: **90.0k → 22.0k** (76% saved)`, `formatStatsTable` `| # | Before → After | Saved | Kept | Summarized | When |`, history copy-isolation, `details.savings` v2, `authoritative refine`, `debug` file |
-| `compaction-stats-gaps.test.ts` (36) | Edge gaps: `percent 0`/`before 0`/`saved 0→—`/`after>before→0` no prefix, `999→500` vs `1.0k`, negative, empty table, `budgetCut` suffix, `timestamp null→—`, `derived saved`, `smartKeep`/`budgetCut`/`willRetry`, perPi isolation & clear, 50-cap global+perPi, enrichment missing/after>before/willRetry, `debug authoritativeSavings`, tool schema fallback when `zod.boolean` missing, command `--stats`/`stats`/`history`/`all` case-insensitive, `tokensBefore undefined` |
+| `compaction-stats-gaps.test.ts` (36) | Edge gaps: `percent 0`/`before 0`/`saved 0→—`/`after>before→0` no prefix, `999→500` vs `1.0k`, negative, empty table, `budgetCut` suffix, `timestamp null→—`, `derived saved`, `smartKeep`/`budgetCut`/`willRetry`, perPi isolation & clear, 50-cap global+perPi, enrichment missing/after>before/willRetry, `debug authoritativeSavings`, tool schema fallback when `zod.boolean` missing, `vcc-stats` `history`/`all` variants, `tokensBefore undefined` |
 | `compaction-bugs-fix.test.ts` (10) | Bugs: fallback `kept 0/2` when `tokensBefore` missing, perPi isolation for `vcc_stats`, sections filter `KNOWN_SECTIONS`, `perPiKeys` leak via `WeakMap` enumeration |
 
 ## E2E suites (99 tests, `tests/e2e/`)
@@ -263,7 +263,7 @@ After manual compaction via `registerBeforeCompactHook`, asserts `getLastCompact
 | per-pi isolation | `piA` 2 → `length 2`, `piB` 1 → `1`, `clearCompactionHistoryForTests` clears both via `perPiKeys` Set |
 | authoritative before early return | `before` `details.savings.tokensBefore 90000`, `compact` `fromExtension true compactionEntry {tokensBefore 90000, tokensAfter 21000}` → `last.tokensBefore 90000` `tokensAfter 21000` (enrichment before `isPiVccLast` return, `hook.ts:1018-1050`) |
 | deferred toast | `scheduleCompactionStatsNotify(ctx, {...})` → after 600ms `notify` matches `/omp-vcc:/` (`setTimeout 500`) |
-| inline `--stats` variants | case-insensitive `stats`/`history`/`all`/`--STATS`/`HISTORY` → `isStats true` (`main.ts:174-189`) |
+| `vcc-stats` history/all | `history`/`all` variants for `vcc-stats` → table via `getCompactionHistory` |
 
 ### `lifecycle.e2e.test.ts` (7)
 
@@ -377,7 +377,7 @@ Covered in `compaction-stats-gaps` + `review-gaps` + `edge-cases` + `mixed-seque
 - Savings `before 0`, `percent 0`, `saved 0 → —`, `after>before → 0`, `budgetCut` + savings prefix, `999→500` vs `1.0k`, negative
 - Table `timestamp null → —`, `budgetCut` suffix, `undefined history → No compactions yet`, perPi vs global copy isolation, 50-cap global+perPi, `authoritative > est` note
 - History `clearCompactionHistoryForTests()` clears `global` + `perPi` via `perPiKeys` Set, timestamp once, `setLastStats(null)` no push, `willRetry` enrichment before early return
-- Commands `vcc-stats` vs `omp-vcc-stats`, `--stats`/`stats`/`history`/`all` case-insensitive, `vcc_stats({history:true})` schema fallback when `zod.boolean` missing
+- Commands `vcc-stats` vs `omp-vcc-stats`, `history`/`all` variants, `vcc_stats({history:true})` schema fallback when `zod.boolean` missing; `/omp-vcc` single option (compact + inline stats)
 - Pipeline `queue-operation` discard, `digits→` strip, `Escape JSON → |` block scalar, `IMAGE_CONTENT_CHARS 4800`, ANSI strip, `<system-reminder>` etc
 
 ## CI & verification

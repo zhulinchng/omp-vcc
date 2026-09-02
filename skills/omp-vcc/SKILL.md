@@ -48,8 +48,7 @@ Use `vcc_recall` to search for prior work … Do not redo work already completed
 
 | Task | How | Notes |
 |---|---|---|
-| **Force compaction** | `/omp-vcc` or `/omp-vcc keep:2 fix auth` · alias `/pi-vcc` | `keep:1` is default. Explicit `keep:N` always wins. Default `keep:1` may keep 2–4 turns if tail is tiny (smart-keep ≤5k→≤25k). `keep:0` = compact all, next turn from pure `V_ui`. Focus text after `keep:N` becomes the next user message. |
-| **Check savings** | `/omp-vcc --stats` · `/vcc-stats` · `/omp-vcc-stats`  · `vcc_stats({history:true})` | Last + history table (50-capped). Use to confirm headroom before long edits. |
+| **Check savings** | `/vcc-stats` · `/omp-vcc-stats`  · `vcc_stats({history:true})` | Last + history table (50-capped). `/omp-vcc` also shows savings inline after compacting (single option). Use to confirm headroom before long edits. |
 | **Recall search** | `/vcc-recall <query> [scope:all] [page:2]` · alias `/pi-vcc-recall` · tool `vcc_recall({query, scope, mode, page, expand})` | 5 hits/page, up to 50 total. See cookbook below. |
 | **Stats tool** | `vcc_stats({history?: boolean})` | Same as `/vcc-stats`. `history:true` = full 50-row table. |
 

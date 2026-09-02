@@ -48,7 +48,7 @@ flowchart TB
   end
   subgraph Savings["Savings observability 60 tests"]
     G["compaction-stats 22 tests\ntoast prefix, table, detail, history\ncap 50, perPi, authoritative\ndebug file, details v2"]
-    H["compaction-stats-gaps 36 tests\npercent 0, budgetCut, boundaries\ncopy isolation, capping, timestamp\ntool/command --stats variants\nperPi clear, enrichment edge\nmain inline --stats"]
+    H["compaction-stats-gaps 36 tests\npercent 0, budgetCut, boundaries\ncopy isolation, capping, timestamp\nvcc-stats history/all variants\nperPi clear, enrichment edge\nomp-vcc single option with stats"]
     I["compaction-bugs-fix 10 tests\nfallback 0, perPi isolation\nvcc_stats perPi, sections filter\nperPiKeys leak"]
   end
   Unit & Integration & Sessions & Savings --> ALL["bun test: 515 pass (all)\n1443 expects, 0 fail"]
@@ -62,7 +62,7 @@ flowchart TB
 | `pi-vcc-command.test.ts` `vcc-recall-command.test.ts` `recall-tool-scope.test.ts` `smart-keep.test.ts` `invisible-continue.test.ts` `recall-expand` `recall-quality` `recall-touched` | Command keep parsing, tool `vcc_recall` active/all lineage, `mode:'touched'`, `scope:all` vs `lineage`, `expand` invalid indices, smart-keep boost 5k→25k, invisible-continue filtered | ~30 pass |
 | `real-sessions.test.ts` + `review-gaps.test.ts` | Copied large sessions (synthetic fallback) + `reset_boundary` supersession, ENOENT graceful, approval read, manifest overlay, fallback heuristic, per-pi WeakMap | 17 pass |
 | `compaction-stats.test.ts` | Toast savings prefix (budgetCut, zero, large, small, smart-keep), table/detail, history cap/copy, tool/command, details v2, authoritative refine, debug | 22 pass |
-| `compaction-stats-gaps.test.ts` | Edge gaps: percent 0, boundaries 999/1000, negative, empty table, budgetCut suffix, timestamp null, derived saved, smartKeep/budgetCut/willRetry, perPi isolation & clear, capping 50 global+perPi, timestamp, enrichment missing/after>before/willRetry, debug authoritativeSavings, tool schema fallback, command arg variants, main `--stats` inline, tokensBefore undefined | 36 pass |
+| `compaction-stats-gaps.test.ts` | Edge gaps: percent 0, boundaries 999/1000, negative, empty table, budgetCut suffix, timestamp null, derived saved, smartKeep/budgetCut/willRetry, perPi isolation & clear, capping 50 global+perPi, timestamp, enrichment missing/after>before/willRetry, debug authoritativeSavings, tool schema fallback, `vcc-stats` `history`/`all` variants, `omp-vcc` single option (compact+inline stats), tokensBefore undefined | 36 pass |
 | `combined-compaction.test.ts` + `combined-compaction.e2e.test.ts` | VCC+shake/snapcompact explicit-mode bypass, override gate, sequential VCC→VCC, edge orphan/reset/toolResult/applyTailBudget/calibrate, chainShakeHint eager chain (WeakSet guard), per-pi isolation, large brief cap, mixed recall→stats | 38 pass (26+12) |
 
 Run single file:
@@ -119,7 +119,7 @@ In fresh `omp` session with extension enabled (`omp -e @zhulinchng/omp-vcc` or v
 
 - TUI shows compaction summary with `[Session Goal]` / `[Files And Changes]` / `[Commits]` / `[Outstanding Context]` / `[User Preferences]` / `---` `Brief transcript` and toast `omp-vcc: 90.0k→22.0k (76% saved, ~68.0k) · kept 2/5 turns, ~2.1k tok` (falls back to `omp-vcc: kept 2/5 turns…` when `tokensBefore` unavailable) + divider `── compacted · 90K→22K · ctrl+o ──`.
 - With `debug:true`, `/tmp/omp-vcc-debug.json` exists with `usedOwnCut:true, messagesToSummarize, tokensBefore, tokenEstimate, sections, savings {tokensBefore, summaryChars, summaryTokensEst, keptTokensEst, tokensAfterEst, tokensSavedEst, savedPercentEst}` and after host `session_compact` also `authoritativeSavings`.
-- `/vcc-stats` / `/omp-vcc --stats` / `vcc_stats({history:true})` show `Before→After / Saved (percent) / Kept / Summarized / When` table (50-capped, per-pi + global).
+- `/vcc-stats` / `vcc_stats({history:true})` show `Before→After / Saved (percent) / Kept / Summarized / When` table (50-capped, per-pi + global). `/omp-vcc` also shows inline savings after compacting.
 
 Repeated compactions merge bounded (run `/omp-vcc` twice, second summary deduped, transcript rolled <120 lines via `capBrief`).
 
@@ -223,7 +223,7 @@ After any `omp-vcc` compaction (auto or manual):
   - Before → After: **90.0k → 22.0k** (76% saved, ~68.0k)
   - Summary: ~1.1k tok (2400 chars), kept tail ~2.1k tok (5 msgs, 1/5 turns)
   - Note: est after 22.0k vs authoritative 22.0k  (when est ≠ auth)
-/vcc-stats history   or   /omp-vcc --stats history   or   vcc_stats({history:true})
+/vcc-stats history   or   vcc_stats({history:true})
 → | # | Before → After | Saved | Kept | Summarized | When |
   | 1 | 90.0k→22.0k | 68.0k (76%) | 1/5 turns, ~2.1k tok | 10 | 2026-09-02 12:34:56 |
 ```
@@ -262,7 +262,7 @@ flowchart LR
 - Savings: `before=0` → no prefix, `percent 0` → no prefix, `saved 0` → `—`, `after>before` → `0`, budgetCut + savings prefix, boundaries 999/1000, negative → no prefix
 - Table: `timestamp null` → `—`, `budgetCut` suffix, `undefined` history → `No compactions yet.`, `perPi` vs `global` copy isolation, capping 50 (global + perPi), `authoritative > est` note
 - History: `clearCompactionHistoryForTests()` clears `global` + `perPi` via `perPiKeys` set, `timestamp` assigned once, `setLastStats(null)` no push, `willRetry` enrichment before early return
-- Commands: `vcc-stats` vs `omp-vcc-stats`, `--stats`/`stats`/`history`/`all` case variants, `vcc_stats({history:true})` schema fallback when `zod.boolean` missing
+- Commands: `vcc-stats` vs `omp-vcc-stats`, `history`/`all` variants, `vcc_stats({history:true})` schema fallback when `zod.boolean` missing; `/omp-vcc` single option (compact + inline stats)
 - Docs: harness impact table pipes fixed (`&#124;` escaped as `/` in cells) and setup mermaid labels quoted — see [harness.md §9](harness.md#9-verification-map-claim--evidence) for table/mermaid lint.
 
 
@@ -281,7 +281,7 @@ flowchart TB
     E10["table — / timestamp —\nbudgetCut suffix"]
     E11["capping 50\nperPi + global"]
     E12["enrich missing/after>before\nwillRetry + debug"]
-    E13["--stats variants\ncase-insensitive"]
+    E13["vcc-stats history/all\nvariants"]
   end
   E1 & E2 & E3 & E4 & E5 & E6 & E7 & E8 & E9 & E10 & E11 & E12 & E13 --> PASS["all 378 pass (36 files)"]
 

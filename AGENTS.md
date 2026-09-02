@@ -2,9 +2,7 @@
 
 ## Project Overview
 
-`@zhulinchng/omp-vcc` — VCC-inspired algorithmic compaction for `oh-my-pi` (`omp`). Zero-LLM, 30–470 ms, port of `sting8k/pi-vcc@0.7.0`, paper `arxiv:2603.29678`: `V_full` identity, `V_ui` brief, `V_adapt(b,ρ)` recall.
-
-Provides: auto `threshold`/`overflow` via `session_before_compact` (when `overrideDefaultCompaction:true`, default), manual `/omp-vcc [keep:N] [focus] [--stats]`, tools `vcc_recall` + `vcc_stats`, commands `/vcc-recall` + `/vcc-stats`. Native `/settings` dropdown needs optional one-file core patch (`docs/configuration.md#native-strategy`).
+Provides: auto `threshold`/`overflow` via `session_before_compact` (when `overrideDefaultCompaction:true`, default), manual `/omp-vcc [keep:N] [focus]` (compacts and shows savings), tools `vcc_recall` + `vcc_stats`, commands `/vcc-recall` + `/vcc-stats`. Native `/settings` dropdown needs optional one-file core patch (`docs/configuration.md#native-strategy`).
 
 ## Architecture & Data Flow
 
@@ -34,7 +32,7 @@ Lifecycle (`extensions/main.ts` factory `(pi: ExtensionAPI) => void`, hooks in `
 3. `pi.on("before_agent_start")` — clear pending auto-continue timer
 4. `pi.on("session_before_compact")` — explicit-mode bypass (`snapcompact|shake|soft|remote|handoff` void even if `override:true` unless `__omp_vcc__` sentinel) → `buildOwnCut` → `calibrate` → `compileRanked` → `{compaction:{summary, details}}` or `{cancel}`
 5. `pi.on("session_compact")` — toast + invisible-continue (`setTimeout 0`) + eager `chainShakeHint` (`ctx.compact({mode:"shake"})` guarded by `WeakSet`, only when `fromExtension && !willRetry && !isPiVccLast`)
-6. Registrations: `vcc_recall` (`pi.zod`), `/omp-vcc`+`/pi-vcc`, `/vcc-recall`+`/pi-vcc-recall` (main.ts); `vcc_stats` + `/vcc-stats`+`/omp-vcc-stats` (hook.ts)
+6. Registrations: `vcc_recall` (`pi.zod`), `/omp-vcc`+`/pi-vcc` (compact + inline stats), `/vcc-recall`+`/pi-vcc-recall` (main.ts); `vcc_stats` + `/vcc-stats`+`/omp-vcc-stats` (hook.ts)
 
 See `docs/harness.md §5` (bypass), `§8` (methodOrder coexistence), `docs/setup.md` (combining VCC+shake/snapcompact).
 

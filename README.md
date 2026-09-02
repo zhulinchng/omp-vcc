@@ -16,16 +16,13 @@ New here → [`docs/setup.md`](docs/setup.md).
 
 ## What you get
 
-- **Auto** threshold/overflow compaction via `session_before_compact` — 30–470 ms, 35–99% reduction, no LLM.
-- **Manual** `/omp-vcc [keep:N] [focus] [--stats]` (`/pi-vcc` alias) — e.g. `/omp-vcc keep:2 fix auth`.
+- **Manual** `/omp-vcc [keep:N] [focus]` (`/pi-vcc` alias) — compact + inline savings — e.g. `/omp-vcc keep:2 fix auth`.
 - **Recall** `vcc_recall({query, scope, page, mode, expand})` + `/vcc-recall` — regex → TF-IDF OR, 5/page, `mode:'touched'`, `#N:path` drill-down.
-- **Savings** toast `90k→22k (76% saved)`, divider, `/vcc-stats` + `vcc_stats` tool (50-capped history, per-pi), `details.savings` persisted, `/tmp/omp-vcc-debug.json`.
+- **Savings** toast `90k→22k (76% saved)` + inline detail, divider, `/vcc-stats` + `vcc_stats` tool (50-capped history, per-pi), `details.savings` persisted, `/tmp/omp-vcc-debug.json`.
 
 ## Commands
 
-| Command | Description |
-|---|---|
-| `/omp-vcc [keep:N] [focus]` | Compaction. `keep:0` = all. `--stats` shows savings without compacting. Smart-keep boosts `keep:1` (5k→25k) unless explicit. |
+| `/omp-vcc [keep:N] [focus]` | Compaction + inline savings. `keep:0` = all. Smart-keep boosts `keep:1` (5k→25k) unless explicit. |
 | `/pi-vcc` | Alias |
 | `/vcc-recall [query] [scope:all] [page:N] [mode:touched]` | Search compacted history |
 | `/pi-vcc-recall` | Alias |

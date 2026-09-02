@@ -477,7 +477,7 @@ describe("gap: vcc-stats command arg variants", () => {
 });
 describe("gap: main omp-vcc --stats inline handler", () => {
   beforeEach(() => clearCompactionHistoryForTests());
-  test("extension factory handles --stats and stats variants without compacting", async () => {
+  test("extension factory handles any args as compact (single option with stats)", async () => {
     const handlers: any = {};
     const tools: any[] = [];
     const commands: Map<string, any> = new Map();
@@ -500,34 +500,34 @@ describe("gap: main omp-vcc --stats inline handler", () => {
     await (extension as any)(pi);
     const ompVcc = commands.get("omp-vcc");
     expect(ompVcc).toBeDefined();
-    // seed a compaction via hook
+    // seed a compaction via hook so getLastCompactionStats is non-null
     const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
-    // need tmp config for hook
     const dir = mkdtempSync(join(tmpdir(), "vcc-main-stats-"));
     const cfg = join(dir, "config.json");
     writeFileSync(cfg, JSON.stringify({ overrideDefaultCompaction: true }));
     const orig = process.env.OMP_VCC_CONFIG_PATH;
     process.env.OMP_VCC_CONFIG_PATH = cfg;
-    // extension already registered hook for pi; use same pi for compaction
-    await handlers["session_before_compact"]({ branchEntries: entries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 80000 }, customInstructions: OMP_VCC_COMPACT_INSTRUCTION, signal: new AbortController().signal }, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
-    let sent: any = null;
-    pi.sendMessage = (m: any) => { sent = m; };
-    let compactCalled = false;
-    const ctx = { compact: async () => { compactCalled = true; }, ui: { notify: () => {} }, sessionManager: { getSessionFile: () => undefined } };
-    for (const arg of ["--stats", "stats", "--stats history", "stats all", "--STATS", "STATS history"]) {
-      sent = null; compactCalled = false;
-      await ompVcc.handler(arg, ctx);
-      expect(sent).not.toBe(null);
-      expect(sent.content).toContain("Last compaction");
-      expect(compactCalled).toBe(false);
+    try {
+      await handlers["session_before_compact"]({ branchEntries: entries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 80000 }, customInstructions: OMP_VCC_COMPACT_INSTRUCTION, signal: new AbortController().signal }, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
+      let sent: any = null;
+      pi.sendMessage = (m: any) => { sent = m; };
+      let compactCalled = false;
+      const ctx = { compact: async () => { compactCalled = true; }, ui: { notify: () => {} }, sessionManager: { getSessionFile: () => undefined } };
+      for (const arg of ["", "keep:2", "keep:2 fix auth", "--stats", "stats", "some focus text"]) {
+        sent = null; compactCalled = false;
+        await ompVcc.handler(arg, ctx);
+        expect(compactCalled).toBe(true);
+        // with prior stats, handler surfaces inline detail
+        expect(sent).not.toBe(null);
+        expect(sent.content).toContain("Last compaction");
+      }
+    } finally {
+      process.env.OMP_VCC_CONFIG_PATH = orig;
+      try { rmSync(dir, { recursive: true, force: true }); } catch {}
+      clearCompactionHistoryForTests();
     }
-    // verify plain omp-vcc still compacts when not stats
-    // (we don't call compact here, just ensure it would try)
-    process.env.OMP_VCC_CONFIG_PATH = orig;
-    try { rmSync(dir, { recursive: true, force: true }); } catch {}
-    clearCompactionHistoryForTests();
   });
-  test("omp-vcc --stats with no history shows no-compaction message without compact", async () => {
+  test("omp-vcc with no history still compacts (single option)", async () => {
     clearCompactionHistoryForTests();
     const chain: any = { optional: () => chain, describe: () => chain };
     const pi: any = {
@@ -537,12 +537,12 @@ describe("gap: main omp-vcc --stats inline handler", () => {
     };
     await (extension as any)(pi);
     const handler = pi["cmd_omp-vcc"].handler;
-    let sent: any = null;
-    pi.sendMessage = (m: any) => { sent = m; };
+    let compactCalled = false;
     let notified: any = null;
-    await handler("--stats", { compact: async () => { throw new Error("should not compact"); }, ui: { notify: (m: string) => { notified = m; } } });
-    expect(sent.content).toContain("No compactions yet");
-    expect(notified).toContain("No compactions yet");
+    await handler("keep:1", { compact: async () => { compactCalled = true; }, ui: { notify: (m: string) => { notified = m; } } });
+    expect(compactCalled).toBe(true);
+    // no prior stats → fallback notify
+    expect(notified).toContain("omp-vcc");
   });
 });
 

@@ -163,40 +163,18 @@ export default function (pi: ExtensionAPI): void {
   // ── vcc_stats tool — stats surface for savings (paper § verification) ──
   registerVccStatsToolHook(pi);
 
-
   pi.registerCommand("omp-vcc", {
-    description: "Compact conversation with omp-vcc structured summary (keep:N + optional focus) — add --stats to show savings",
+    description: "Compact conversation with omp-vcc structured summary (keep:N + optional focus)",
     handler: async (args: string, ctx: unknown) => {
       const c = ctx as {
         compact: (instructions?: string) => Promise<void>;
         ui: { notify: (msg: string, level?: string) => void };
         sessionManager?: { getSessionFile?: () => string | undefined };
       };
-      const trimmed = (args || "").trim();
-      const lower = trimmed.toLowerCase();
-      if (lower === "--stats" || lower === "stats" || lower.startsWith("--stats ") || lower.startsWith("stats ")) {
-        const wantHistory = lower.includes("history") || lower.includes("all");
-        const history = getCompactionHistory(pi);
-        const last = getLastCompactionStats(pi);
-        const piAny = pi as unknown as { sendMessage?: (msg: unknown, opts?: unknown) => void };
-        if (!last && history.length === 0) {
-          try { piAny.sendMessage?.({ customType: "vcc-stats", content: "No compactions yet. Run /omp-vcc to compact first.", display: true }, { triggerTurn: false }); } catch {}
-          try { c.ui.notify("No compactions yet.", "info"); } catch {}
-          return;
-        }
-        const output = wantHistory
-          ? `${formatStatsTable(history)}\n\n${last ? formatLastStatsDetail(last) : ""}`
-          : `${last ? formatLastStatsDetail(last) : "No last stats"}${history.length > 1 ? `\n\nHistory:\n${formatStatsTable(history)}` : ""}`;
-        try { piAny.sendMessage?.({ customType: "vcc-stats", content: output, display: true }, { triggerTurn: false }); } catch {}
-        try { c.ui.notify(`vcc_stats: ${history.length} compaction(s)`, "info"); } catch {}
-        return;
-      }
       const parsed = parseKeepAndPrompt(args);
       const keep = parsed.keepUserTurns;
       const followUpPrompt = parsed.followUpPrompt;
       const customInstructions = buildOmpCustomInstructions(keep);
-      // Also accept pi sentinel for legacy: map keep via buildPiVcc if needed? Use omp.
-      // Notify before compact for UX parity with pi-vcc
       try {
         c.ui.notify(`omp-vcc: compacting with keep:${keep ?? 1}${followUpPrompt ? ` + focus` : ""}...`, "info");
       } catch {}
@@ -205,6 +183,12 @@ export default function (pi: ExtensionAPI): void {
         const stats = getLastCompactionStats(pi);
         if (stats) {
           scheduleCompactionStatsNotify(c as unknown as { ui: { notify: (msg: string, level?: string) => void } }, stats);
+          try {
+            (pi as unknown as { sendMessage?: (msg: unknown, opts?: unknown) => void }).sendMessage?.(
+              { customType: "vcc-stats", content: formatLastStatsDetail(stats), display: true },
+              { triggerTurn: false },
+            );
+          } catch {}
         } else {
           try { c.ui.notify("Compacted with omp-vcc", "info"); } catch {}
         }
