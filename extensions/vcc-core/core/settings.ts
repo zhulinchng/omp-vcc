@@ -16,10 +16,16 @@ const settingsPath = (): string =>
 /** Backwards-compat export. Resolves at access time, not import time. */
 export const SETTINGS_PATH = settingsPath();
 // For migration: if omp config missing but legacy pi config exists, we read legacy but write to new
+// Also handles concurrent-test env shadowing: if OMP path is set by another test but file missing,
+// fall back to PI path before default.
 const fallbackReadPath = (): string | null => {
-  const primary = settingsPath();
-  if (existsSync(primary)) return primary;
-  if (existsSync(legacyPiPath)) return legacyPiPath;
+  const candidates: string[] = [];
+  if (process.env.OMP_VCC_CONFIG_PATH) candidates.push(process.env.OMP_VCC_CONFIG_PATH);
+  if (process.env.PI_VCC_CONFIG_PATH) candidates.push(process.env.PI_VCC_CONFIG_PATH);
+  candidates.push(SETTINGS_PATH_DEFAULT);
+  if (!candidates.includes(legacyPiPath)) candidates.push(legacyPiPath);
+  for (const p of candidates) if (existsSync(p)) return p;
+  // No candidate exists — return primary for creation path (used by scaffold)
   return null;
 };
 

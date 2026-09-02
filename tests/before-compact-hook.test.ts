@@ -8,18 +8,32 @@ import { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, getLastCompactio
 let tmpDir: string;
 let CONFIG_PATH: string;
 const DEBUG_PATH = "/tmp/omp-vcc-debug.json";
+let origOmp: string | undefined;
+let origPi: string | undefined;
 
 beforeAll(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "pi-vcc-test-"));
   CONFIG_PATH = join(tmpDir, "omp-vcc-config.json");
+  origOmp = process.env.OMP_VCC_CONFIG_PATH;
+  origPi = process.env.PI_VCC_CONFIG_PATH;
+  // Set both to avoid OMP shadowing PI race with concurrent tests that set OMP_VCC_CONFIG_PATH
+  process.env.OMP_VCC_CONFIG_PATH = CONFIG_PATH;
   process.env.PI_VCC_CONFIG_PATH = CONFIG_PATH;
 });
 
 afterAll(() => {
-  delete process.env.PI_VCC_CONFIG_PATH;
+  if (origOmp === undefined) delete process.env.OMP_VCC_CONFIG_PATH;
+  else process.env.OMP_VCC_CONFIG_PATH = origOmp;
+  if (origPi === undefined) delete process.env.PI_VCC_CONFIG_PATH;
+  else process.env.PI_VCC_CONFIG_PATH = origPi;
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
+// Re-assert env before each test to survive concurrent-test shadowing (bun test max-concurrency=20)
+beforeEach(() => {
+  process.env.OMP_VCC_CONFIG_PATH = CONFIG_PATH;
+  process.env.PI_VCC_CONFIG_PATH = CONFIG_PATH;
+});
 // Minimal ExtensionAPI stub: capture handler + provide ctx with mocked ui.notify
 function createMockPi() {
   let beforeHandler: ((event: any, ctx: any) => any) | undefined;
