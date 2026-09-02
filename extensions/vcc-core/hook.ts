@@ -70,6 +70,8 @@ export interface CompactionStats {
   savedPercentEst?: number;
   /** Authoritative percent */
   savedPercent?: number;
+  /** When compaction occurred */
+  timestamp?: number;
 }
 
 export type BudgetCutKind = "no_anchor" | "oversized_tail";
@@ -79,17 +81,34 @@ let lastStats: CompactionStats | null = null;
 let lastCompactWasPiVcc = false;
 let pendingFollowUpPrompt: string | null = null;
 let pendingAutoContinueTimer: any = null;
+let globalHistory: CompactionStats[] = [];
 // Per-pi state to avoid cross-session pollution when multiple sessions share the
 // same ESM module singleton (e.g. main + subagents). Module globals remain as
 // fallback for host-free tests that call getLastCompactionStats() without a pi.
-const perPi = new WeakMap<any, { lastStats: CompactionStats | null; lastCompactWasPiVcc: boolean; pendingFollowUpPrompt: string | null; pendingAutoContinueTimer: any }>();
+const perPi = new WeakMap<any, { lastStats: CompactionStats | null; lastCompactWasPiVcc: boolean; pendingFollowUpPrompt: string | null; pendingAutoContinueTimer: any; statsHistory: CompactionStats[] }>();
 const getPerPi = (pi: any) => {
   if (!pi || typeof pi !== "object") return null;
   let s = perPi.get(pi);
-  if (!s) { s = { lastStats: null, lastCompactWasPiVcc: false, pendingFollowUpPrompt: null, pendingAutoContinueTimer: null }; perPi.set(pi, s); }
+  if (!s) { s = { lastStats: null, lastCompactWasPiVcc: false, pendingFollowUpPrompt: null, pendingAutoContinueTimer: null, statsHistory: [] }; perPi.set(pi, s); }
+  if (!s.statsHistory) s.statsHistory = [];
   return s;
 };
-const setLastStats = (pi: any, v: CompactionStats | null) => { lastStats = v; const s = getPerPi(pi); if (s) s.lastStats = v; };
+const setLastStats = (pi: any, v: CompactionStats | null) => {
+  if (v && v.timestamp == null) v.timestamp = Date.now();
+  lastStats = v;
+  const s = getPerPi(pi);
+  if (s) {
+    s.lastStats = v;
+    if (v) {
+      s.statsHistory.push(v);
+      if (s.statsHistory.length > 50) s.statsHistory.shift();
+    }
+  }
+  if (v) {
+    globalHistory.push(v);
+    if (globalHistory.length > 50) globalHistory.shift();
+  }
+};
 const setLastCompactWasPiVcc = (pi: any, v: boolean) => { lastCompactWasPiVcc = v; const s = getPerPi(pi); if (s) s.lastCompactWasPiVcc = v; };
 const setPendingFollowUpPrompt = (pi: any, v: string | null) => { pendingFollowUpPrompt = v; const s = getPerPi(pi); if (s) s.pendingFollowUpPrompt = v; };
 const getPendingFollowUpPrompt = (pi: any) => { const s = getPerPi(pi); return s ? s.pendingFollowUpPrompt : pendingFollowUpPrompt; };
@@ -185,6 +204,57 @@ export const formatCompactionStats = (stats: CompactionStats): string => {
   }
   return `omp-vcc: kept ${stats.keptUserTurns}/${stats.totalUserTurns} turns, ~${formatTokens(stats.keptTokensEst)} tok (${notes.join(", ")}).`;
 };
+
+export const getCompactionHistory = (pi?: any): CompactionStats[] => {
+  if (pi) {
+    const s = getPerPi(pi);
+    if (s?.statsHistory) return [...s.statsHistory];
+  }
+  return [...globalHistory];
+};
+
+export const clearCompactionHistoryForTests = () => {
+  globalHistory = [];
+  lastStats = null;
+};
+
+export const formatStatsTable = (history: CompactionStats[]): string => {
+  if (!history || history.length === 0) return "No compactions yet.";
+  const header = "| # | Before → After | Saved | Kept | Summarized | When |";
+  const sep = "|---|---|---|---|---|---|---|";
+  const rows = history.map((s, idx) => {
+    const before = s.tokensBefore ?? 0;
+    const after = s.tokensAfter ?? s.tokensAfterEst ?? 0;
+    const saved = s.tokensSaved ?? s.tokensSavedEst ?? (before > 0 && after > 0 ? Math.max(0, before - after) : 0);
+    const percent = s.savedPercent ?? s.savedPercentEst ?? (before > 0 && saved > 0 ? Math.round((saved / before) * 100) : 0);
+    const beforeAfter = before > 0 && after > 0 ? `${formatTokens(before)}→${formatTokens(after)}` : `${formatTokens(before)}→${formatTokens(after)}`;
+    const savedStr = saved > 0 ? `${formatTokens(saved)} (${percent}%)` : "—";
+    const keptStr = `${s.keptUserTurns}/${s.totalUserTurns} turns, ~${formatTokens(s.keptTokensEst)} tok${s.budgetCut ? ` (${s.budgetCut})` : ""}`;
+    const when = s.timestamp ? new Date(s.timestamp).toISOString().slice(0, 19).replace("T", " ") : "—";
+    return `| ${idx + 1} | ${beforeAfter} | ${savedStr} | ${keptStr} | ${s.summarized} | ${when} |`;
+  });
+  return [header, sep, ...rows].join("\n");
+};
+
+export const formatLastStatsDetail = (stats: CompactionStats | null): string => {
+  if (!stats) return "No compaction has run yet.";
+  const before = stats.tokensBefore ?? 0;
+  const after = stats.tokensAfter ?? stats.tokensAfterEst ?? 0;
+  const saved = stats.tokensSaved ?? stats.tokensSavedEst ?? (before > 0 && after > 0 ? Math.max(0, before - after) : 0);
+  const percent = stats.savedPercent ?? stats.savedPercentEst ?? (before > 0 && saved > 0 ? Math.round((saved / before) * 100) : 0);
+  const lines = [
+    `**Last compaction** ${stats.timestamp ? new Date(stats.timestamp).toISOString() : ""}`,
+    `- Before → After: **${formatTokens(before)} → ${formatTokens(after)}** (${percent}% saved, ~${formatTokens(saved)})`,
+    `- Summary: ~${formatTokens(stats.summaryTokensEst ?? 0)} tok (${stats.summaryChars ?? 0} chars), kept tail ~${formatTokens(stats.keptTokensEst)} tok (${stats.kept} msgs, ${stats.keptUserTurns}/${stats.totalUserTurns} turns)`,
+    `- Summarized: ${stats.summarized} messages${stats.smartKeepAdjusted ? ` (smart-keep ${stats.smartFromKeep}→${stats.keptUserTurns})` : ""}${stats.budgetCut ? ` · budgetCut:${stats.budgetCut}` : ""}`,
+    `- Details: ${stats.reason ? `reason=${stats.reason}` : "reason=auto"}${stats.willRetry ? " willRetry=true" : ""}`,
+  ];
+  if (stats.tokensAfter != null && stats.tokensAfterEst != null && stats.tokensAfter !== stats.tokensAfterEst) {
+    lines.push(`- Note: est after ${formatTokens(stats.tokensAfterEst)} vs authoritative ${formatTokens(stats.tokensAfter)}`);
+  }
+  return lines.join("\n");
+};
+
 
 const readCompactionEventContext = (event: unknown): { reason?: CompactionReason; willRetry: boolean } => {
   const raw = event as { reason?: unknown; willRetry?: unknown };
@@ -896,19 +966,15 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const followUpPrompt = getPendingFollowUpPrompt(pi);
     setPendingFollowUpPrompt(pi, null);
     const per = getPerPi(pi);
-    const isPiVccLast = per ? per.lastCompactWasPiVcc : lastCompactWasPiVcc;
-    if (isPiVccLast) return; // /pi-vcc handles its own toast via onComplete
-    if (willRetry) return;
     const stats = per ? per.lastStats : lastStats;
     if (!stats) return;
-    // Enrich with authoritative tokensAfter from host if available
+    // Enrich with authoritative tokensAfter from host if available (even for pi-vcc manual, before early return)
     const entry: any = (event as any).compactionEntry;
     if (entry && typeof entry.tokensAfter === "number" && typeof entry.tokensBefore === "number") {
       const before = entry.tokensBefore;
       const after = entry.tokensAfter;
       const saved = Math.max(0, before - after);
       const percent = before > 0 && saved > 0 ? Math.round((saved / before) * 100) : 0;
-      // Update both perPi and global
       if (per && per.lastStats) {
         per.lastStats.tokensAfter = after;
         per.lastStats.tokensSaved = saved;
@@ -921,12 +987,10 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         lastStats.savedPercent = percent;
         lastStats.tokensBefore = before;
       }
-      // Also mutate the captured stats ref for the upcoming toast
       (stats as any).tokensAfter = after;
       (stats as any).tokensSaved = saved;
       (stats as any).savedPercent = percent;
       (stats as any).tokensBefore = before;
-      // Persist authoritative savings to debug if enabled (best-effort)
       try {
         const cfg = loadSettings(ctx);
         if (cfg.debug) {
@@ -937,6 +1001,9 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         }
       } catch {}
     }
+    const isPiVccLast = per ? per.lastCompactWasPiVcc : lastCompactWasPiVcc;
+    if (isPiVccLast) return; // /pi-vcc handles its own toast via onComplete
+    if (willRetry) return;
     // omp's SessionCompactEvent is {compactionEntry, fromExtension} only
     // (shared-events.ts:84-89); reason/willRetry are always undefined/false
     // under real omp runs. Treat undefined as auto (threshold/overflow) when
@@ -1115,4 +1182,64 @@ export const registerPiVccCommand = (pi: any) => {
       });
     },
   });
+};
+export const registerVccStatsTool = (pi: any) => {
+  const hasBoolean = typeof pi?.zod?.boolean === "function";
+  const schema = pi?.zod?.object && hasBoolean
+    ? pi.zod.object({
+        history: pi.zod.boolean().optional().describe("Include full history table of all compactions in this session"),
+      })
+    : {};
+  pi.registerTool({
+    name: "vcc_stats",
+    label: "VCC Stats",
+    description: "Show omp-vcc compaction savings — last compaction before→after, tokens saved, percent, and optional history of all compactions in this session. Divider in transcript already shows 256K→20K; this tool surfaces the same numbers with kept/summarized details.",
+    approval: "read",
+    parameters: schema,
+    async execute(_toolCallId: string, params: any, _signal: unknown, _onUpdate: unknown, _ctx: any) {
+      const history = getCompactionHistory(pi);
+      const last = getLastCompactionStats();
+      const wantHistory = params?.history === true;
+      if (!last && history.length === 0) {
+        return { content: [{ type: "text", text: "No compactions yet in this session." }], details: undefined };
+      }
+      if (wantHistory) {
+        const table = formatStatsTable(history);
+        const detail = last ? `\n\n${formatLastStatsDetail(last)}` : "";
+        return { content: [{ type: "text", text: `${table}${detail}` }], details: undefined };
+      }
+      const detail = formatLastStatsDetail(last);
+      const table = history.length > 1 ? `\n\nHistory:\n${formatStatsTable(history)}` : "";
+      return { content: [{ type: "text", text: `${detail}${table}` }], details: undefined };
+    },
+  } as unknown as Parameters<(typeof pi)["registerTool"]>[0]);
+};
+
+export const registerVccStatsCommand = (pi: any) => {
+  const handler = async (args: string, ctx: any) => {
+    const raw = (args || "").trim().toLowerCase();
+    const wantHistory = raw.includes("history") || raw.includes("--history") || raw.includes("all");
+    const history = getCompactionHistory(pi);
+    const last = getLastCompactionStats();
+    const piAny = pi as unknown as { sendMessage?: (msg: unknown, opts?: unknown) => void };
+    if (!last && history.length === 0) {
+      try { piAny.sendMessage?.({ customType: "vcc-stats", content: "No compactions yet in this session.", display: true }, { triggerTurn: false }); } catch {}
+      try { ctx?.ui?.notify?.("No compactions yet.", "info"); } catch {}
+      return;
+    }
+    let output: string;
+    if (wantHistory) {
+      const table = formatStatsTable(history);
+      const detail = last ? `\n\n${formatLastStatsDetail(last)}` : "";
+      output = `${table}${detail}`;
+    } else {
+      const detail = formatLastStatsDetail(last);
+      const table = history.length > 1 ? `\n\nHistory (${history.length} compactions):\n${formatStatsTable(history)}` : "";
+      output = `${detail}${table}`;
+    }
+    try { piAny.sendMessage?.({ customType: "vcc-stats", content: output, display: true }, { triggerTurn: false }); } catch {}
+    try { ctx?.ui?.notify?.(`vcc_stats: ${history.length} compaction(s)`, "info"); } catch {}
+  };
+  pi.registerCommand("vcc-stats", { description: "Show omp-vcc compaction savings (last + history)", handler });
+  pi.registerCommand("omp-vcc-stats", { description: "Alias for /vcc-stats", handler });
 };

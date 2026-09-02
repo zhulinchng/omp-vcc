@@ -6,14 +6,19 @@
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { scaffoldSettings } from "./vcc-core/core/settings";
+import { loadAllMessages } from "./vcc-core/core/load-messages";
 import {
   registerBeforeCompactHook,
   PI_VCC_COMPACT_INSTRUCTION,
   OMP_VCC_COMPACT_INSTRUCTION,
   getLastCompactionStats,
+  getCompactionHistory,
+  formatLastStatsDetail,
+  formatStatsTable,
   scheduleCompactionStatsNotify,
+  registerVccStatsTool as registerVccStatsToolHook,
+  registerVccStatsCommand as registerVccStatsCommandHook,
 } from "./vcc-core/hook";
-import { loadAllMessages } from "./vcc-core/core/load-messages";
 import { searchEntriesDetailed, getTouchedFiles } from "./vcc-core/core/search-entries";
 import { formatRecallOutput, formatTouchedOutput } from "./vcc-core/core/format-recall";
 import { getActiveLineageEntryIds } from "./vcc-core/core/lineage";
@@ -152,15 +157,37 @@ export default function (pi: ExtensionAPI): void {
       return { content: [{ type: "text", text: output }], details: undefined };
     },
   } as unknown as Parameters<ExtensionAPI["registerTool"]>[0]);
+  // ── vcc_stats tool — stats surface for savings (paper § verification) ──
+  registerVccStatsToolHook(pi);
 
-  // ── /omp-vcc command — manual algorithmic compaction (V_ui) ──
+
   pi.registerCommand("omp-vcc", {
-    description: "Compact conversation with omp-vcc structured summary (keep:N + optional focus)",
+    description: "Compact conversation with omp-vcc structured summary (keep:N + optional focus) — add --stats to show savings",
     handler: async (args: string, ctx: unknown) => {
       const c = ctx as {
         compact: (instructions?: string) => Promise<void>;
         ui: { notify: (msg: string, level?: string) => void };
+        sessionManager?: { getSessionFile?: () => string | undefined };
       };
+      const trimmed = (args || "").trim();
+      const lower = trimmed.toLowerCase();
+      if (lower === "--stats" || lower === "stats" || lower.startsWith("--stats ") || lower.startsWith("stats ")) {
+        const wantHistory = lower.includes("history") || lower.includes("all");
+        const history = getCompactionHistory(pi);
+        const last = getLastCompactionStats();
+        const piAny = pi as unknown as { sendMessage?: (msg: unknown, opts?: unknown) => void };
+        if (!last && history.length === 0) {
+          try { piAny.sendMessage?.({ customType: "vcc-stats", content: "No compactions yet. Run /omp-vcc to compact first.", display: true }, { triggerTurn: false }); } catch {}
+          try { c.ui.notify("No compactions yet.", "info"); } catch {}
+          return;
+        }
+        const output = wantHistory
+          ? `${formatStatsTable(history)}\n\n${last ? formatLastStatsDetail(last) : ""}`
+          : `${last ? formatLastStatsDetail(last) : "No last stats"}${history.length > 1 ? `\n\nHistory:\n${formatStatsTable(history)}` : ""}`;
+        try { piAny.sendMessage?.({ customType: "vcc-stats", content: output, display: true }, { triggerTurn: false }); } catch {}
+        try { c.ui.notify(`vcc_stats: ${history.length} compaction(s)`, "info"); } catch {}
+        return;
+      }
       const parsed = parseKeepAndPrompt(args);
       const keep = parsed.keepUserTurns;
       const followUpPrompt = parsed.followUpPrompt;
@@ -309,11 +336,15 @@ export default function (pi: ExtensionAPI): void {
       const header = totalPages > 1 ? `Page ${page}/${totalPages} (${hits.length} total matches${scopeSuffix}${truncationNote})` : `${hits.length} matches${scopeSuffix}${truncationNote}`;
       const footer = page < totalPages ? `\n--- /pi-vcc-recall ${query}${scopeArg} page:${page + 1} ---` : "";
       const output = formatRecallOutput(pageResults, query, header) + footer;
+
       try { piAny.sendMessage?.({ customType: "vcc-recall", content: output, display: true }, { triggerTurn: false }); } catch {}
     },
   });
+  // ── /vcc-stats commands — show savings table (PR3) ──
+  registerVccStatsCommandHook(pi);
+
 }
 // ── Re-exports for pi-vcc test compatibility (not dead: tests import via hook directly,
 // but external consumers and the `vcc-recall` shim may import via main) ──
-export { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, OMP_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, scheduleCompactionStatsNotify, formatCompactionStats, AUTO_CONTINUE_CUSTOM_TYPE, LEGACY_AUTO_CONTINUE_CUSTOM_TYPE, invalidExpandIndices, registerRecallTool, registerVccRecallCommand, registerPiVccCommand } from "./vcc-core/hook";
+export { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, OMP_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, getCompactionHistory, formatCompactionStats, formatStatsTable, formatLastStatsDetail, scheduleCompactionStatsNotify, AUTO_CONTINUE_CUSTOM_TYPE, LEGACY_AUTO_CONTINUE_CUSTOM_TYPE, invalidExpandIndices, registerRecallTool, registerVccRecallCommand, registerPiVccCommand, registerVccStatsTool, registerVccStatsCommand, clearCompactionHistoryForTests } from "./vcc-core/hook";
 export { buildPiVccCustomInstructions, parseKeepAndPrompt } from "./vcc-core/core/compact-args";
