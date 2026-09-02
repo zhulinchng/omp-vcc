@@ -52,6 +52,24 @@ export interface CompactionStats {
   smartFromKeep?: number;
   reason?: CompactionReason;
   willRetry?: boolean;
+  /** Tokens before compaction (from preparation). */
+  tokensBefore?: number;
+  /** Summary char length */
+  summaryChars?: number;
+  /** Summary tokens estimate via calibrated cpt */
+  summaryTokensEst?: number;
+  /** Estimated tokens after = summaryTokensEst + keptTokensEst */
+  tokensAfterEst?: number;
+  /** Authoritative tokensAfter from host (compactionEntry) */
+  tokensAfter?: number;
+  /** Estimated saved = tokensBefore - tokensAfterEst */
+  tokensSavedEst?: number;
+  /** Authoritative saved */
+  tokensSaved?: number;
+  /** Estimated percent 0-100 */
+  savedPercentEst?: number;
+  /** Authoritative percent */
+  savedPercent?: number;
 }
 
 export type BudgetCutKind = "no_anchor" | "oversized_tail";
@@ -143,13 +161,27 @@ const formatTokens = (n: number): string => {
 };
 
 export const formatCompactionStats = (stats: CompactionStats): string => {
+  const before = stats.tokensBefore ?? 0;
+  const after = stats.tokensAfter ?? stats.tokensAfterEst ?? 0;
+  const savedRaw = stats.tokensSaved ?? stats.tokensSavedEst;
+  const saved = typeof savedRaw === "number" ? savedRaw : (before > 0 && after > 0 ? Math.max(0, before - after) : 0);
+  const percentRaw = stats.savedPercent ?? stats.savedPercentEst;
+  const percent = typeof percentRaw === "number" ? percentRaw : (before > 0 && saved > 0 ? Math.round((saved / before) * 100) : 0);
+  const hasSavings = before > 0 && after > 0 && before > after && saved > 0 && percent > 0;
+  const savingsPrefix = hasSavings ? `${formatTokens(before)}→${formatTokens(after)} (${percent}% saved, ~${formatTokens(saved)}) · ` : "";
   if (stats.budgetCut) {
     const reason = stats.budgetCut === "no_anchor" ? "no user anchor" : "oversized tail";
+    if (savingsPrefix) {
+      return `omp-vcc: ${savingsPrefix}kept ~${formatTokens(stats.keptTokensEst)} tok tail (mid-turn cut, ${reason}), summarized ${stats.summarized}.`;
+    }
     return `omp-vcc: kept ~${formatTokens(stats.keptTokensEst)} tok tail (mid-turn cut, ${reason}), summarized ${stats.summarized}.`;
   }
   const notes: string[] = [`summarized ${stats.summarized}`];
   if (stats.smartKeepAdjusted) {
     notes.push("smart-keep");
+  }
+  if (savingsPrefix) {
+    return `omp-vcc: ${savingsPrefix}kept ${stats.keptUserTurns}/${stats.totalUserTurns} turns, ~${formatTokens(stats.keptTokensEst)} tok (${notes.join(", ")}).`;
   }
   return `omp-vcc: kept ${stats.keptUserTurns}/${stats.totalUserTurns} turns, ~${formatTokens(stats.keptTokensEst)} tok (${notes.join(", ")}).`;
 };
@@ -726,21 +758,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       (sum: number, e: any) => sum + estimateMessageContentChars(e.message?.content),
       0,
     );
-    setLastStats(pi, {
-      summarized: agentMessages.length,
-      kept: keptEntries.length,
-      keptUserTurns: ownCut.keptUserTurns,
-      totalUserTurns: ownCut.totalUserTurns,
-      requestedKeepUserTurns: ownCut.requestedKeepUserTurns,
-      keepUserTurnsExplicit,
-      keepFallbackToCompactAll: ownCut.keepFallbackToCompactAll,
-      keptTokensEst: estimateTokensFromChars(keptChars, tokenEstimate.charsPerToken),
-      smartKeepAdjusted: smartKeep.smartAdjusted,
-      smartFromKeep: smartKeep.fromKeep,
-      budgetCut: ownCut.ok ? ownCut.budgetCut : undefined,
-      reason,
-      willRetry,
-    });
+    const keptTokensEst = estimateTokensFromChars(keptChars, tokenEstimate.charsPerToken);
     const config = settings;
 
     // Ranked compaction: keep the highest-signal blocks under a token budget
@@ -776,6 +794,35 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       },
     });
 
+    const tokensBefore = typeof preparation.tokensBefore === "number" ? preparation.tokensBefore : 0;
+    const summaryChars = summary.length;
+    const summaryTokensEst = estimateTokensFromChars(summaryChars, tokenEstimate.charsPerToken);
+    const tokensAfterEst = summaryTokensEst + keptTokensEst;
+    const tokensSavedEst = tokensBefore > 0 ? Math.max(0, tokensBefore - tokensAfterEst) : 0;
+    const savedPercentEst = tokensBefore > 0 && tokensSavedEst > 0 ? Math.round((tokensSavedEst / tokensBefore) * 100) : 0;
+
+    setLastStats(pi, {
+      summarized: agentMessages.length,
+      kept: keptEntries.length,
+      keptUserTurns: ownCut.keptUserTurns,
+      totalUserTurns: ownCut.totalUserTurns,
+      requestedKeepUserTurns: ownCut.requestedKeepUserTurns,
+      keepUserTurnsExplicit,
+      keepFallbackToCompactAll: ownCut.keepFallbackToCompactAll,
+      keptTokensEst,
+      smartKeepAdjusted: smartKeep.smartAdjusted,
+      smartFromKeep: smartKeep.fromKeep,
+      budgetCut: ownCut.ok ? ownCut.budgetCut : undefined,
+      reason,
+      willRetry,
+      tokensBefore,
+      summaryChars,
+      summaryTokensEst,
+      tokensAfterEst,
+      tokensSavedEst,
+      savedPercentEst,
+    });
+
     const branchIds = branchEntries.map((e: any) => e.id);
     const cutIdx = branchIds.indexOf(firstKeptEntryId);
     const cutWindow = cutIdx >= 0
@@ -797,11 +844,20 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       convertedMessages: messages.length,
       firstKeptEntryId,
       cutWindow,
-      tokensBefore: preparation.tokensBefore,
+      tokensBefore,
       tokenEstimate,
       summaryLength: summary.length,
       summaryPreview: summary.slice(0, 500),
       sections: [...summary.matchAll(/^\[(.+?)\]/gm)].map((m) => m[1]),
+      savings: {
+        tokensBefore,
+        summaryChars,
+        summaryTokensEst,
+        keptTokensEst,
+        tokensAfterEst,
+        tokensSavedEst,
+        savedPercentEst,
+      },
     });
 
     const details: PiVccCompactionDetails = {
@@ -836,6 +892,42 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     if (willRetry) return;
     const stats = per ? per.lastStats : lastStats;
     if (!stats) return;
+    // Enrich with authoritative tokensAfter from host if available
+    const entry: any = (event as any).compactionEntry;
+    if (entry && typeof entry.tokensAfter === "number" && typeof entry.tokensBefore === "number") {
+      const before = entry.tokensBefore;
+      const after = entry.tokensAfter;
+      const saved = Math.max(0, before - after);
+      const percent = before > 0 && saved > 0 ? Math.round((saved / before) * 100) : 0;
+      // Update both perPi and global
+      if (per && per.lastStats) {
+        per.lastStats.tokensAfter = after;
+        per.lastStats.tokensSaved = saved;
+        per.lastStats.savedPercent = percent;
+        per.lastStats.tokensBefore = before;
+      }
+      if (lastStats) {
+        lastStats.tokensAfter = after;
+        lastStats.tokensSaved = saved;
+        lastStats.savedPercent = percent;
+        lastStats.tokensBefore = before;
+      }
+      // Also mutate the captured stats ref for the upcoming toast
+      (stats as any).tokensAfter = after;
+      (stats as any).tokensSaved = saved;
+      (stats as any).savedPercent = percent;
+      (stats as any).tokensBefore = before;
+      // Persist authoritative savings to debug if enabled (best-effort)
+      try {
+        const cfg = loadSettings(ctx);
+        if (cfg.debug) {
+          dbg(cfg, {
+            authoritativeSavings: { tokensBefore: before, tokensAfter: after, tokensSaved: saved, savedPercent: percent },
+            eventEntry: { id: entry.id, tokensBefore: entry.tokensBefore, tokensAfter: entry.tokensAfter },
+          });
+        }
+      } catch {}
+    }
     // omp's SessionCompactEvent is {compactionEntry, fromExtension} only
     // (shared-events.ts:84-89); reason/willRetry are always undefined/false
     // under real omp runs. Treat undefined as auto (threshold/overflow) when

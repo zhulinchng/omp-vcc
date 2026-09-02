@@ -154,7 +154,7 @@ describe("registerPiVccCommand", () => {
     expect(notifyCalls).toEqual([]);
 
     await new Promise((resolve) => setTimeout(resolve, 550));
-    expect(notifyCalls.some((call) => call.msg.startsWith("omp-vcc: kept 1/2 turns,"))).toBe(true);
+    expect(notifyCalls.some((call) => call.msg.includes("kept 1/2 turns,"))).toBe(true);
   });
 
   test("handles rejected follow-up send without throwing", async () => {

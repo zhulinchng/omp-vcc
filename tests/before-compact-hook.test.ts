@@ -336,7 +336,7 @@ describe("registerBeforeCompactHook: compact-all path", () => {
     await invokeCompact({ type: "session_compact", fromExtension: true });
     await new Promise((resolve) => setTimeout(resolve, 550));
     expect(userMessages).toEqual(["continue"]);
-    expect(notifyCalls.some((call) => call.msg.startsWith("omp-vcc: kept 1/2 turns,"))).toBe(true);
+    expect(notifyCalls.some((call) => call.msg.includes("kept 1/2 turns,"))).toBe(true);
   });
 
   test("follow-up prompt does not block compact metrics notify", async () => {
@@ -354,7 +354,7 @@ describe("registerBeforeCompactHook: compact-all path", () => {
     await new Promise((resolve) => setTimeout(resolve, 550));
 
     expect(userMessages).toEqual(["continue"]);
-    expect(notifyCalls.some((call) => call.msg.startsWith("omp-vcc: kept 1/2 turns,"))).toBe(true);
+    expect(notifyCalls.some((call) => call.msg.includes("kept 1/2 turns,"))).toBe(true);
   });
 
   test("override=true + /compact keep prefix keeps requested turns and strips follow-up", async () => {
