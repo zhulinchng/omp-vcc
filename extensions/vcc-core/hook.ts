@@ -942,6 +942,9 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         }))
       : [];
 
+    const KNOWN_SECTIONS = new Set(["Session Goal", "Files And Changes", "Commits", "Outstanding Context", "User Preferences"]);
+    const extractKnownSections = (text: string) =>
+      [...text.matchAll(/^\[(.+?)\]/gm)].map((m) => m[1]).filter((h) => KNOWN_SECTIONS.has(h));
     dbg(config, {
       usedOwnCut: true,
       budgetCut: ownCut.budgetCut,
@@ -956,7 +959,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       tokenEstimate,
       summaryLength: summary.length,
       summaryPreview: summary.slice(0, 500),
-      sections: [...summary.matchAll(/^\[(.+?)\]/gm)].map((m) => m[1]),
+      sections: extractKnownSections(summary),
       savings: {
         tokensBefore,
         summaryChars,
@@ -971,7 +974,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const details: PiVccCompactionDetails = {
       compactor: "omp-vcc",
       version: 2,
-      sections: [...summary.matchAll(/^\[(.+?)\]/gm)].map((m) => m[1]),
+      sections: extractKnownSections(summary),
       sourceMessageCount: agentMessages.length,
       previousSummaryUsed: Boolean(preparation.previousSummary),
       reason,

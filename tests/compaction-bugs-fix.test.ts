@@ -259,3 +259,40 @@ describe("bug fix: vcc_stats per-pi (was global last)", () => {
     expect(outB).not.toContain("11.1k");
   });
 });
+describe("bug fix: details.sections should not include [user]/[assistant] brief headers", () => {
+  beforeEach(() => clearCompactionHistoryForTests());
+
+  test("compaction details.sections filtered to known headers only", async () => {
+    const handlers = new Map<string, any>();
+    const mockPi: any = {
+      on: (e: string, h: any) => handlers.set(e, h),
+      registerTool: () => {},
+      registerCommand: () => {},
+      zod: { object: (o: any) => o, string: () => ({ optional: () => ({ describe: () => ({}) }) }), array: (x: any) => ({ optional: () => ({ describe: () => ({}) }) }), number: () => ({ optional: () => ({ describe: () => ({}) }) }), boolean: () => ({ optional: () => ({ describe: () => ({}) }) }), enum: (x: any) => ({ optional: () => ({ describe: () => ({}) }) }) },
+    };
+    const { registerBeforeCompactHook } = await import("../extensions/vcc-core/hook");
+    await registerBeforeCompactHook(mockPi);
+    const beforeCompact = handlers.get("session_before_compact") as any;
+    const mkMsg = (id: string, role: any, content: any) => ({ id, type: "message", message: { role, content, timestamp: Date.now() } });
+    const branch: any[] = [];
+    for (let i = 0; i < 20; i++) {
+      branch.push(mkMsg(`u${i}`, "user", `Goal: fix auth ${i} — some user text`));
+      branch.push(mkMsg(`a${i}`, "assistant", [{ type: "text", text: `assistant reply ${i}` }]));
+      branch.push(mkMsg(`t${i}`, "toolResult", [{ type: "text", text: `tool result ${i}` }]));
+    }
+    const prep: any = { tokensBefore: 50000, previousSummary: "", fileOps: { read: new Set(["src/auth.ts"]), written: new Set(), edited: new Set() } };
+    const res: any = await beforeCompact({ preparation: prep, branchEntries: branch, customInstructions: "__omp_vcc__ keep:1" }, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} }, logger: { debug: () => {} } });
+    expect(res?.compaction?.details?.sections).toBeDefined();
+    const sections: string[] = res.compaction.details.sections;
+    for (const s of sections) {
+      expect(["Session Goal", "Files And Changes", "Commits", "Outstanding Context", "User Preferences"]).toContain(s);
+    }
+    expect(sections).not.toContain("user");
+    expect(sections).not.toContain("assistant");
+    expect(sections).not.toContain("[user]");
+    expect(sections).not.toContain("[assistant]");
+    expect(res.compaction.summary).toContain("[user]");
+    expect(res.compaction.summary).toContain("[assistant]");
+    expect(sections.length).toBeGreaterThan(0);
+  });
+});
