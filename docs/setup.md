@@ -51,7 +51,7 @@ bun test
 bun run smoke
 ```
 
-Update: `git pull && omp plugin link .` (re-links). Uninstall: `omp plugin uninstall omp-vcc` (see [Uninstall & reset](#uninstall--reset) for stale `@zhu`/`@zhulinchng` keys).
+Update: `git pull && omp plugin link .` (re-links). Uninstall: see [Uninstall & reset](#uninstall--reset).
 
 ## Option B — npm (stable release)
 
@@ -341,51 +341,29 @@ bunx tsc --noEmit && bun test && bun run smoke && omp plugin doctor
 
 ## Uninstall & reset
 
-> **Stale `@zhu/omp-vcc`**: early `v0.1.0` used `package.json:name` `@zhu/omp-vcc`; renames to `@zhulinchng/omp-vcc` → `omp-vcc` left a `~/.omp/plugins/omp-plugins.lock.json` entry + `node_modules/@zhu/omp-vcc` symlink that `omp plugin uninstall omp-vcc` (old host) reported as `✔ Uninstalled` but left behind (`doctor` still `✔ plugin:@zhu/omp-vcc`, `list` showed duplicate). Since `v0.1.5` the plugin auto-migrates this on startup (`extensions/vcc-core/core/migrate-stale.ts`) and `node scripts/uninstall-reset.js` (also `postuninstall`) cleans it. The manual steps below are fallback for old plugin/host.
-
-`omp plugin list` shows the **resolved** `package.json:name` (today `omp-vcc`); `omp plugin doctor` / `~/.omp/plugins/omp-plugins.lock.json` shows the **key used at install time** (could be `omp-vcc`, `@zhu/omp-vcc`, or `@zhulinchng/omp-vcc` after renames). `omp plugin uninstall <name>` only removes that key — a renamed/linked install can leave a stale key + symlink that still appears healthy. Verify both views and fall back to manual removal.
-
 ```sh
-# 1. discover what is actually installed (resolved vs locked vs filesystem)
+# linked dev (Option A)
+omp plugin uninstall omp-vcc
+
+# registry / git (Option B/C) — use the name you installed with
+omp plugin uninstall omp-vcc               # npmjs (unscoped)
+omp plugin uninstall @zhulinchng/omp-vcc   # GPR or github: spec (scoped)
+# if unsure:
 omp plugin list --json | jq -r '.npm[].name | select(contains("omp-vcc"))'
-# → omp-vcc  (resolved name)
-cat ~/.omp/plugins/omp-plugins.lock.json | jq -r '.plugins | keys[] | select(contains("omp-vcc"))'
-# → @zhu/omp-vcc  (historic example — if present, CLI uninstall below will miss it)
-ls -l ~/.omp/plugins/node_modules/omp-vcc ~/.omp/plugins/node_modules/@zhu/omp-vcc ~/.omp/plugins/node_modules/@zhulinchng/omp-vcc 2>&1
 
-# 2. try CLI uninstall for every historic name (missing is no-op)
-for n in omp-vcc @zhulinchng/omp-vcc @zhu/omp-vcc; do
-  omp plugin uninstall "$n" 2>/dev/null || true
-done
-# npm/git installs (Option B/C) that added a dependency are removed here;
-# linked dev installs (Option A / README `omp plugin link .`) often still show in doctor
-# because `bun uninstall` is a no-op for a symlink and the lock key mismatches — see step 3
-
-# 3. if `omp plugin doctor` or `omp plugin list` still shows omp-vcc — manual fallback
-rm -rf ~/.omp/plugins/node_modules/omp-vcc
-rm -rf ~/.omp/plugins/node_modules/@zhu/omp-vcc ~/.omp/plugins/node_modules/@zhulinchng/omp-vcc
-rmdir ~/.omp/plugins/node_modules/@zhu ~/.omp/plugins/node_modules/@zhulinchng 2>/dev/null || true
-# delete lock entries for all historic names (and any settings)
-tmp=$(mktemp)
-jq 'del(.plugins["omp-vcc"], .plugins["@zhu/omp-vcc"], .plugins["@zhulinchng/omp-vcc"])
-  | del(.settings["omp-vcc"], .settings["@zhu/omp-vcc"], .settings["@zhulinchng/omp-vcc"])' \
-  ~/.omp/plugins/omp-plugins.lock.json > "$tmp" && mv "$tmp" ~/.omp/plugins/omp-plugins.lock.json
-# after symlinks are gone, `omp plugin doctor --fix` would also clear an orphan lock entry,
-# but it only fixes orphans with missing path — the `rm` above makes it an orphan first
-
-# 4. optional: remove config + debug snapshot (either case)
+# config + debug snapshot (either case)
 rm -rf ~/.omp/omp-vcc
 rm -f /tmp/omp-vcc-debug.json /tmp/pi-vcc-debug.json
 
-# repo helper (also runs on npm postuninstall — now warning-free via "type": "module")
+# historic rename leftovers (@zhu/omp-vcc → omp-vcc) and orphaned
+# symlinks left by old hosts are auto-cleaned here and on next
+# extension startup (migrate-stale.ts); also runs on npm postuninstall
 node scripts/uninstall-reset.js
 
-# 5. verify — both views should be empty
-omp plugin list --json | jq -r '.npm[].name | select(contains("omp-vcc"))'  # → no output
-omp plugin doctor  # → no plugin:@zhu/omp-vcc line, "5 ok" or fewer plugins
+omp plugin doctor  # should show no omp-vcc
 ```
 
-Re-install: `omp plugin link .` (dev) or `omp plugin install omp-vcc` / `omp plugin install github:zhulinchng/omp-vcc` (registry/git).
+Re-install: `omp plugin link .` (dev) or `omp plugin install omp-vcc` / `omp plugin install github:zhulinchng/omp-vcc`.
 
 ## Troubleshooting
 
