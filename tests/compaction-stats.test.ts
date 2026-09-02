@@ -362,7 +362,7 @@ describe("registerVccStatsTool + Command", () => {
     };
     registerVccStatsCommand(pi);
     expect(cmds.some((c) => c.name === "vcc-stats")).toBe(true);
-    expect(cmds.some((c) => c.name === "omp-vcc-stats")).toBe(true);
+    expect(cmds.some((c) => c.name === "omp-vcc-stats")).toBe(false);
     const handler = cmds.find((c) => c.name === "vcc-stats").handler;
     let sent: any = null;
     pi.sendMessage = (msg: any) => { sent = msg; };

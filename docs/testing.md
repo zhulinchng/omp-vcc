@@ -9,7 +9,7 @@ bunx tsc --noEmit          # typecheck — 0 errors, vendored core // @ts-nochec
 bun test                   # 515 tests, 48 files, 1443 expects, 0 fail  (~6s)
 bun test tests/e2e --timeout 120000   # 111 E2E only
 bun test tests/before-compact.test.ts # single suite
-bun run smoke              # 9 host-free checks: 3 hooks + 4 commands + 2 tools
+bun run smoke              # 12 checks: 3 hooks + 5 commands (omp-vcc/pi-vcc/vcc-recall/pi-vcc-recall/vcc-stats, no alias) + 2 tools + dedup
 bun run e2e                # isolated OMP_DIR, omp plugin link, probe, then 111 E2E + artifacts/e2e-debug/
 bun run e2e:direct         # alias for bun test tests/e2e
 ```
@@ -84,7 +84,7 @@ flowchart TB
 | `bun test tests/e2e --timeout 120000` | 99 E2E only | local E2E loop |
 | `bun test tests/before-compact.test.ts` | single suite | targeted |
 | `bun test --watch` | watch mode | dev |
-| `bun run smoke` | host-free 9 checks: `session_before_compact`/`context`/`session_compact` hooks + `vcc_recall`/`vcc_stats` tools + `omp-vcc`/`pi-vcc`/`vcc-recall`/`vcc-stats`+aliases | CI third, `prepublishOnly` |
+| `bun run smoke` | 12 checks: `session_before_compact`/`context`/`session_compact` hooks + `vcc_recall`/`vcc_stats` tools + `omp-vcc`/`pi-vcc`/`vcc-recall`/`pi-vcc-recall`/`vcc-stats` (single, no `omp-vcc-stats`) + dedup guards | CI third, `prepublishOnly` |
 | `bun run e2e` | probe `omp --help`, `omp plugin link` in `mkdtempSync` `OMP_DIR`, then `bun test tests/e2e`, collect `artifacts/e2e-debug/` | separate CI job `e2e.yml`, not blocking publish |
 | `omp plugin doctor` | 6 ok 0 warnings | manual, also run inside `e2e.ts` |
 
@@ -223,7 +223,7 @@ Support:
 | XDG priority | `OMP_VCC_CONFIG_PATH` custom wins, then `PI_VCC_CONFIG_PATH` fallback, still respects `OMP` > `PI` |
 | `loadSettings(ctx)` overlay | file `debug false` + `ctx.settings.get("plugins.@zhulinchng/omp-vcc.debug") true` → `true`; `plugins.omp-vcc.debug` variation; no overlay → `false` |
 | `debug` toggle dual write | `debug false` → no `/tmp/omp-vcc-debug.json`, `true` → both `omp-vcc` + `pi-vcc` exist `usedOwnCut true` |
-| `package.json` manifest | `omp.extensions ["./extensions/main.ts"]`, `pi.extensions`, `omp.commands` contains `omp-vcc`/`vcc-recall`, `omp.settings` 5 keys, `files ["extensions","skills","commands"]` |
+| `package.json` manifest | `omp.extensions ["./extensions/main.ts"]`, `pi.extensions`, no `commands` (extension-only, avoids duplicate `/omp-vcc`), `omp.settings` 6 keys, `files ["extensions","skills","scripts","types.d.ts"]` |
 | per-flag semantics | file `vccEnabled true override false smartKeep false continue false debug false` propagates |
 
 ### `recall.e2e.test.ts` (13)

@@ -76,8 +76,16 @@ try {
     commands.some((c) => c.name === "vcc-stats"),
   );
   check(
-    "omp-vcc-stats alias registered",
-    commands.some((c) => c.name === "omp-vcc-stats"),
+    "no omp-vcc-stats duplicate",
+    !commands.some((c) => c.name === "omp-vcc-stats"),
+  );
+  check(
+    "pi-vcc-recall alias registered",
+    commands.some((c) => c.name === "pi-vcc-recall"),
+  );
+  check(
+    "no file slash command duplication (only extension commands)",
+    commands.filter((c) => c.name === "omp-vcc").length === 1,
   );
   } catch (e) {
   check("extension loads", false, String(e));

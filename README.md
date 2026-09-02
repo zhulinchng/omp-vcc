@@ -23,13 +23,12 @@ New here → [`docs/setup.md`](docs/setup.md).
 ## Commands
 
 | `/omp-vcc [keep:N] [focus]` | Compaction + inline savings. `keep:0` = all. Smart-keep boosts `keep:1` (5k→25k) unless explicit. |
-| `/pi-vcc` | Alias |
+| `/pi-vcc` | Legacy alias for `/omp-vcc` |
 | `/vcc-recall [query] [scope:all] [page:N] [mode:touched]` | Search compacted history |
-| `/pi-vcc-recall` | Alias |
-| `/vcc-stats [history\|all]` | Last savings + history table |
-| `/omp-vcc-stats` | Alias |
+| `/pi-vcc-recall` | Legacy alias for `/vcc-recall` |
+| `/vcc-stats [history\|all]` | Last savings + history table (single, no alias) |
 
-Tools: `vcc_recall` (alias `pi-vcc-recall`), `vcc_stats` (approval `read`).
+Tools: `vcc_recall`, `vcc_stats` (approval `read`). Extension-only — no `commands/*.md` file slash commands (avoids duplicate `/omp-vcc`).
 
 ## Configuration
 

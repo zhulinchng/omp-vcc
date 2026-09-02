@@ -206,7 +206,7 @@ sequenceDiagram
   Factory->>Host: pi.registerTool vcc_stats<br/>approval:read, history? boolean
   Factory->>Host: pi.registerCommand omp-vcc<br/>/pi-vcc alias (compact + inline stats)
   Factory->>Host: pi.registerCommand vcc-recall<br/>/pi-vcc-recall alias
-  Factory->>Host: pi.registerCommand vcc-stats<br/>/omp-vcc-stats alias
+  Factory->>Host: pi.registerCommand vcc-stats<br/>single (no alias)
 
   Note over Host,Hook: --- runtime: user types /omp-vcc or host hits threshold ---
   Host->>Hook: session_before_compact<br/>{branchEntries, customInstructions, preparation}
@@ -226,7 +226,7 @@ sequenceDiagram
   Host->>Hook: vcc_recall {query, scope, page}<br/>→ searchEntriesDetailed → formatRecall
 ```
 
-**Counts** at this checkout: 3 event handlers (`context`, `before_agent_start`, dual `session_*`), 2 tools (`vcc_recall`, `vcc_stats`), 5 command registrations (`omp-vcc`, `pi-vcc`, `vcc-recall`, `pi-vcc-recall`, `vcc-stats`+`omp-vcc-stats` alias) — `extensions/main.ts:164-337` and `hook.ts:708-1324`.
+**Counts** at this checkout: 3 event handlers (`context`, `before_agent_start`, dual `session_*`), 2 tools (`vcc_recall`, `vcc_stats`), 5 command registrations (`omp-vcc`+`pi-vcc` legacy, `vcc-recall`+`pi-vcc-recall` legacy, `vcc-stats` single) — `extensions/main.ts:164-337` and `hook.ts:708-1324`. No file-based `commands/*.md` — extension-only to avoid duplicate `/omp-vcc`.
 
 ### 5.2 Compaction dispatch — when omp-vcc owns vs defers
 

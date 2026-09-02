@@ -124,10 +124,9 @@ describe("settings E2E — file source, XDG priority, migration, overlay, manife
     const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf-8"));
     expect(pkg.omp.extensions).toContain("./extensions/main.ts");
     expect(pkg.pi.extensions).toContain("./extensions/main.ts");
-    // commands should include omp-vcc and vcc-recall
-    const allCommands = [...(pkg.omp.commands ?? []), ...(pkg.pi.commands ?? [])].join(" ");
-    expect(allCommands).toMatch(/omp-vcc/);
-    expect(allCommands).toMatch(/vcc-recall/);
+    // manifest commands removed to avoid file+extension duplicate — extension registers programmatically
+    expect(pkg.omp.commands).toBeUndefined();
+    expect(pkg.pi.commands).toBeUndefined();
     // settings should have 6 keys
     const settingsKeys = Object.keys(pkg.omp.settings ?? {});
     expect(settingsKeys.length).toBe(6);
@@ -137,10 +136,10 @@ describe("settings E2E — file source, XDG priority, migration, overlay, manife
     expect(settingsKeys).toContain("continueAfterThresholdCompact");
     expect(settingsKeys).toContain("debug");
     expect(settingsKeys).toContain("chainShakeHint");
-    // files should include extensions, skills, commands
+    // files should include extensions, skills (no commands — extension-only to avoid duplicate /omp-vcc)
     expect(pkg.files).toContain("extensions");
     expect(pkg.files).toContain("skills");
-    expect(pkg.files).toContain("commands");
+    expect(pkg.files).not.toContain("commands");
   });
 
   test("per-flag semantics verified via loadSettings and hook gate", async () => {

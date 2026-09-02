@@ -1320,5 +1320,4 @@ export const registerVccStatsCommand = (pi: any) => {
     try { ctx?.ui?.notify?.(`vcc_stats: ${history.length} compaction(s)`, "info"); } catch {}
   };
   pi.registerCommand("vcc-stats", { description: "Show omp-vcc compaction savings (last + history)", handler });
-  pi.registerCommand("omp-vcc-stats", { description: "Alias for /vcc-stats", handler });
 };

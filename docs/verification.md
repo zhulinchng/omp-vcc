@@ -88,7 +88,7 @@ flowchart TB
 ```sh
 omp plugin link /Users/zhu/code/projects/omp-vcc
 omp plugin list --json | jq '.[] | select(.name|contains("omp-vcc"))'
-# expect enabled:true, version 0.1.0, extensions ["./extensions/main.ts"], commands ["./commands/omp-vcc.md","./commands/vcc-recall.md"]
+# expect enabled:true, version 0.1.0, extensions ["./extensions/main.ts"], no file commands (extension-only)
 
 omp plugin doctor
 # expect 0 errors for this plugin (or only missing marketplace)
@@ -262,7 +262,7 @@ flowchart LR
 - Savings: `before=0` → no prefix, `percent 0` → no prefix, `saved 0` → `—`, `after>before` → `0`, budgetCut + savings prefix, boundaries 999/1000, negative → no prefix
 - Table: `timestamp null` → `—`, `budgetCut` suffix, `undefined` history → `No compactions yet.`, `perPi` vs `global` copy isolation, capping 50 (global + perPi), `authoritative > est` note
 - History: `clearCompactionHistoryForTests()` clears `global` + `perPi` via `perPiKeys` set, `timestamp` assigned once, `setLastStats(null)` no push, `willRetry` enrichment before early return
-- Commands: `vcc-stats` vs `omp-vcc-stats`, `history`/`all` variants, `vcc_stats({history:true})` schema fallback when `zod.boolean` missing; `/omp-vcc` single option (compact + inline stats)
+- Commands: `vcc-stats` `history`/`all` variants, `vcc_stats({history:true})` schema fallback when `zod.boolean` missing; `/omp-vcc` single option (compact + inline stats) — no `omp-vcc-stats` alias
 - Docs: harness impact table pipes fixed (`&#124;` escaped as `/` in cells) and setup mermaid labels quoted — see [harness.md §9](harness.md#9-verification-map-claim--evidence) for table/mermaid lint.
 
 

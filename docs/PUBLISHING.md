@@ -17,7 +17,6 @@ execute verbatim (`allowImportingTsExtensions: true`, `type: module`, zero
 | Tarball entry | Role |
 |---|---|
 | `extensions/main.ts` + `extensions/vcc-core/**` | Hook + `vcc_recall` — the entire runtime |
-| `commands/omp-vcc.md`, `commands/vcc-recall.md` | `omp` command shims |
 | `skills/omp-vcc/SKILL.md` | Skill |
 | `scripts/uninstall-reset.js` | `postuninstall` hook — restores `~/.omp/omp-vcc` ownership |
 | `types.d.ts` | Ambient host-API shims (typecheck only) |
@@ -26,7 +25,7 @@ execute verbatim (`allowImportingTsExtensions: true`, `type: module`, zero
 
 Dual manifest (`package.json#omp.extensions` / `#pi.extensions`) points at
 `./extensions/main.ts`; that is the entire “build output”. Keep `files`
-exactly `["extensions","skills","commands","scripts","types.d.ts"]` —
+exactly `["extensions","skills","scripts","types.d.ts"]` —
 omitting `scripts` silently drops the `postuninstall` hook (seen as missing
 `scripts/uninstall-reset.js` in `npm pack --dry-run` when `files` still listed
 `tools/hooks/...` stubs). `README.md`/`LICENSE` need not be in `files`.
