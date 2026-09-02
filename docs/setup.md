@@ -51,7 +51,7 @@ bun test
 bun run smoke
 ```
 
-Update: `git pull && omp plugin link .` (re-links). Unlink: `omp plugin unlink @zhulinchng/omp-vcc`.
+Update: `git pull && omp plugin link .` (re-links). Uninstall: `omp plugin uninstall omp-vcc` (see [Uninstall & reset](#uninstall--reset) for stale `@zhu`/`@zhulinchng` keys).
 
 ## Option B — npm (stable release)
 
@@ -341,38 +341,49 @@ bunx tsc --noEmit && bun test && bun run smoke && omp plugin doctor
 
 ## Uninstall & reset
 
-Linked for development (Option A / README `omp plugin link .`):
+`omp plugin list` shows the **resolved** `package.json:name` (today `omp-vcc`); `omp plugin doctor` / `~/.omp/plugins/omp-plugins.lock.json` shows the **key used at install time** (could be `omp-vcc`, `@zhu/omp-vcc`, or `@zhulinchng/omp-vcc` after renames). `omp plugin uninstall <name>` only removes that key — a renamed/linked install can leave a stale key + symlink that still appears healthy. Verify both views and fall back to manual removal.
 
 ```sh
-omp plugin uninstall @zhulinchng/omp-vcc
-# if installed as unscoped alias
-omp plugin uninstall omp-vcc
-omp plugin list | grep omp-vcc  # should be empty
-```
+# 1. discover what is actually installed (resolved vs locked vs filesystem)
+omp plugin list --json | jq -r '.npm[].name | select(contains("omp-vcc"))'
+# → omp-vcc  (resolved name)
+cat ~/.omp/plugins/omp-plugins.lock.json | jq -r '.plugins | keys[] | select(contains("omp-vcc"))'
+# → @zhu/omp-vcc  (historic example — if present, CLI uninstall below will miss it)
+ls -l ~/.omp/plugins/node_modules/omp-vcc ~/.omp/plugins/node_modules/@zhu/omp-vcc ~/.omp/plugins/node_modules/@zhulinchng/omp-vcc 2>&1
 
-Installed via registry or git (Option B/C / README `omp plugin install ...`):
+# 2. try CLI uninstall for every historic name (missing is no-op)
+for n in omp-vcc @zhulinchng/omp-vcc @zhu/omp-vcc; do
+  omp plugin uninstall "$n" 2>/dev/null || true
+done
+# npm/git installs (Option B/C) that added a dependency are removed here;
+# linked dev installs (Option A / README `omp plugin link .`) often still show in doctor
+# because `bun uninstall` is a no-op for a symlink and the lock key mismatches — see step 3
 
-```sh
-# discover installed name (scoped vs unscoped)
-omp plugin list --json | jq -r '.[].name | select(contains("omp-vcc"))'
+# 3. if `omp plugin doctor` or `omp plugin list` still shows omp-vcc — manual fallback
+rm -rf ~/.omp/plugins/node_modules/omp-vcc
+rm -rf ~/.omp/plugins/node_modules/@zhu/omp-vcc ~/.omp/plugins/node_modules/@zhulinchng/omp-vcc
+rmdir ~/.omp/plugins/node_modules/@zhu ~/.omp/plugins/node_modules/@zhulinchng 2>/dev/null || true
+# delete lock entries for all historic names (and any settings)
+tmp=$(mktemp)
+jq 'del(.plugins["omp-vcc"], .plugins["@zhu/omp-vcc"], .plugins["@zhulinchng/omp-vcc"])
+  | del(.settings["omp-vcc"], .settings["@zhu/omp-vcc"], .settings["@zhulinchng/omp-vcc"])' \
+  ~/.omp/plugins/omp-plugins.lock.json > "$tmp" && mv "$tmp" ~/.omp/plugins/omp-plugins.lock.json
+# after symlinks are gone, `omp plugin doctor --fix` would also clear an orphan lock entry,
+# but it only fixes orphans with missing path — the `rm` above makes it an orphan first
 
-# remove by that name — same command for npm and git installs
-omp plugin uninstall @zhulinchng/omp-vcc  # scoped (GPR / github:...)
-omp plugin uninstall omp-vcc              # unscoped (npmjs) — run both if unsure, missing is no-op
-```
-
-Common cleanup (either case):
-
-```sh
-# optional: remove config + debug snapshot
+# 4. optional: remove config + debug snapshot (either case)
 rm -rf ~/.omp/omp-vcc
 rm -f /tmp/omp-vcc-debug.json /tmp/pi-vcc-debug.json
 
-# repo helper (also runs on npm postuninstall)
+# repo helper (also runs on npm postuninstall — now warning-free via "type": "module")
 node scripts/uninstall-reset.js
 
-omp plugin doctor
+# 5. verify — both views should be empty
+omp plugin list --json | jq -r '.npm[].name | select(contains("omp-vcc"))'  # → no output
+omp plugin doctor  # → no plugin:@zhu/omp-vcc line, "5 ok" or fewer plugins
 ```
+
+Re-install: `omp plugin link .` (dev) or `omp plugin install omp-vcc` / `omp plugin install github:zhulinchng/omp-vcc` (registry/git).
 
 ## Troubleshooting
 
