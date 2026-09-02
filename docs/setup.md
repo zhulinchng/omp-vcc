@@ -341,17 +341,37 @@ bunx tsc --noEmit && bun test && bun run smoke && omp plugin doctor
 
 ## Uninstall & reset
 
-```sh
-omp plugin unlink @zhulinchng/omp-vcc
-# or
-omp plugin uninstall @zhulinchng/omp-vcc
+Linked for development (Option A / README `omp plugin link .`):
 
+```sh
+omp plugin uninstall @zhulinchng/omp-vcc
+# if installed as unscoped alias
+omp plugin uninstall omp-vcc
+omp plugin list | grep omp-vcc  # should be empty
+```
+
+Installed via registry or git (Option B/C / README `omp plugin install ...`):
+
+```sh
+# discover installed name (scoped vs unscoped)
+omp plugin list --json | jq -r '.[].name | select(contains("omp-vcc"))'
+
+# remove by that name — same command for npm and git installs
+omp plugin uninstall @zhulinchng/omp-vcc  # scoped (GPR / github:...)
+omp plugin uninstall omp-vcc              # unscoped (npmjs) — run both if unsure, missing is no-op
+```
+
+Common cleanup (either case):
+
+```sh
 # optional: remove config + debug snapshot
 rm -rf ~/.omp/omp-vcc
 rm -f /tmp/omp-vcc-debug.json /tmp/pi-vcc-debug.json
 
 # repo helper (also runs on npm postuninstall)
 node scripts/uninstall-reset.js
+
+omp plugin doctor
 ```
 
 ## Troubleshooting
