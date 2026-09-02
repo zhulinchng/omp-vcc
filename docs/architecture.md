@@ -296,3 +296,7 @@ stateDiagram-v2
     stable across Views
   end note
 ```
+
+---
+
+See also: [Harness Impact](harness.md) — what omp-vcc adds vs intercepts in oh-my-pi, with verified citations and mermaid.

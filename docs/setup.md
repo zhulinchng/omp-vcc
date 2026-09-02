@@ -191,6 +191,109 @@ Resolution order for the file path: `$OMP_VCC_CONFIG_PATH` > `$PI_VCC_CONFIG_PAT
 
 See [`configuration.md`](configuration.md) for full flag semantics and the optional one-file core patch for a native `/settings` → Context → Compaction dropdown.
 
+## Working with existing compaction strategies
+
+`oh-my-pi` ships 5 ordered strategies — `remote` (provider-native), `snapcompact` (bitmap archive, vision only), `handoff` (markdown doc), `shake` (local `artifact://` elision), `soft` (local LLM summary) — walked from `compaction.methodOrder` → `packages/coding-agent/src/session/compaction-methods.ts:10-84` (default `["remote","snapcompact","handoff","shake","soft"]`, `docs/compaction.md:142-151`). `omp-vcc` does not replace them in `methodOrder` — it adds a `context-full` extension hook (`session_before_compact` → `hook.ts:708-850`) that preempts the walk when it returns `{compaction}`. Full harness map: [`harness.md §8`](harness.md#8-working-with-existing-compaction-strategies).
+
+```mermaid
+flowchart TB
+  TRIG["auto trigger\nthreshold / overflow"] --> GATE{"omp-vcc gate\nvccEnabled && (sentinel || overrideDefaultCompaction)"}
+  GATE -->|"override:true (default)"| VUI["omp-vcc handles → V_ui (no LLM)\nmethodOrder ignored for auto"]
+  GATE -->|"override:false + no sentinel"| WALK["host walks methodOrder\nremote → snapcompact* → handoff → shake → soft\n*vision gate"]
+  VUI --> NEXT["next turn from summary + kept tail"]
+  WALK --> NEXT
+
+  subgraph Legend["You choose by toggling override"]
+    direction LR
+    O1["override:true = deterministic"] --> O2["override:false = native order"]
+  end
+  classDef vcc fill:#e3f2fd,stroke:#1565c0
+  class VUI vcc
+  classDef host fill:#fff3e0,stroke:#ef6c00
+  class WALK host
+```
+
+### Recommended: keep `omp-vcc` for auto, keep `shake` always
+
+The default `omp-vcc` `overrideDefaultCompaction:true` already handles every auto compaction deterministically and cheaply (`30–470 ms`, no model call, any model). The host's `shake` is not a summarizer — it replaces heavy tool output with `artifact://` refs behind a `0.8×threshold` hysteresis band (`docs/compaction.md:136-141` / `session-maintenance.ts:190`) — and can reclaim a bit more headroom **after** an `omp-vcc` pass without a second summary. Leave it in `methodOrder` (the default does): it costs nothing when `omp-vcc` already recovered enough and is the fallback between `omp-vcc` passes if the next turn is a fat tool result.
+
+No action needed — default is correct:
+
+```sh
+# file is source of truth, but /settings overlay works immediately
+cat ~/.omp/omp-vcc/config.json
+# { "overrideDefaultCompaction": true, "vccEnabled": true, ... }
+
+# host order can stay at default — it is dormant for auto while omp-vcc handles
+omp config list | grep compaction.methodOrder
+# ["remote","snapcompact","handoff","shake","soft"]  (dormant for threshold)
+
+# manual /omp-vcc always works, and /vcc-recall works regardless of override
+/omp-vcc keep:2 fix auth      # V_ui
+/vcc-recall hook scope:all    # V_adapt
+```
+
+### If you want native strategies to own auto (e.g., `snapcompact`/`handoff`)
+
+Flip the intercept off - the walk resumes, `omp-vcc` only handles explicit `/omp-vcc` (sentinel path at `hook.ts:733` bypasses the flag):
+
+```sh
+# let host own threshold/overflow via methodOrder
+omp config set plugins."@zhulinchng/omp-vcc".overrideDefaultCompaction false
+# or edit file: "overrideDefaultCompaction": false  then restart TUI
+
+# pick your preferred order in /settings → Context → General → Compaction method order
+# or via CLI (example: prefer handoff + shake, no remote)
+omp config set compaction.methodOrder '["handoff","shake","soft"]'
+# example: prefer provider-native when available, else handoff
+omp config set compaction.methodOrder '["remote","handoff","shake"]'
+
+# verify host will walk it
+omp config list | grep -E "compaction.enabled|compaction.methodOrder"
+# expect at least one method + enabled:true
+
+# explicit omp-vcc still works even with override:false
+/omp-vcc keep:1    # still V_ui — sentinel is exempt
+/compact           # now uses host order (remote/handoff/…), not omp-vcc
+```
+
+**When to keep `snapcompact` alongside `omp-vcc`**: `snapcompact` needs a vision model (`model.input includes "image"` → `compaction-methods.ts:124`). Keep `snapcompact` in `methodOrder` if you sometimes use vision models and want a *verbatim* image archive (costs vision tokens but preserves every char) vs `omp-vcc`'s distilled `V_ui` (5 sections + 1100→2000 tok brief, cheaper). With `override:true` manual `/snapcompact` still requires an explicit `snapcompact` mode — leave the method in order and it stays reachable for deliberate archival; with `override:false` the walk can pick it automatically for vision models.
+
+**When to keep `handoff`**: `handoff` writes a long-form markdown doc via `handoff-document.md` and preserves it on disk (`docs/compaction.md:261-268`). Choose it if your workflow hands the session doc to another agent. Note auto `overflow` skips `handoff` (its request would reuse overflowing input → `docs/compaction.md:112`), so even first in order it will not run for overflow — `omp-vcc`'s cancel heuristic (`hook.ts:817` `tokensBefore>50k → defer to host`) then falls to `shake`/`soft`.
+
+```mermaid
+flowchart LR
+  subgraph OverrideTrue["override:true (default) — omp-vcc owns auto"]
+    T1["threshold"] --> V1["omp-vcc V_ui"]
+    O1["overflow"] --> V2["omp-vcc V_ui\n(can defer to host if too few msgs)"]
+    M1["/omp-vcc"] --> V3["omp-vcc V_ui"]
+    C1["/compact"] --> V4["omp-vcc V_ui (non-sentinel)"]
+    SC1["/snapcompact (explicit)"] -. "needs override:false\nto stay snapcompact" .-> S1["snapcompact bitmap"]
+  end
+  subgraph OverrideFalse["override:false — host owns auto"]
+    T2["threshold"] --> W1["walk methodOrder\nremote/handoff/shake..."]
+    O2["overflow"] --> W2["walk (handoff skipped)"]
+    M2["/omp-vcc"] --> V5["omp-vcc V_ui (sentinel)"]
+    C2["/compact"] --> W3["walk methodOrder"]
+    SC2["/snapcompact"] --> S2["snapcompact"]
+  end
+  classDef vcc fill:#e3f2fd,stroke:#1565c0
+  class V1,V2,V3,V4,V5 vcc
+  classDef snap fill:#ede7f6,stroke:#5e35b1
+  class S1,S2 snap
+```
+
+### Optional native dropdown (`vcc` in methodOrder)
+
+Without a patch `/settings` shows `omp-vcc` as a separate **plugin section** `@zhulinchng/omp-vcc` (5 toggles) and `override` drives interception — no core edit needed. If you want `VCC` as a first-class entry in `/settings → Context → General → Compaction method order`, apply the one-file patch from `configuration.md:243` (`packages/coding-agent/src/session/compaction-methods.ts:11` add `{value:"vcc",...}` + `STRATEGY_BY["vcc"]="context-full"` + `DEFAULT` put `vcc` first, `isCompactionMethod = Object.hasOwn` at `60`). Then set `methodOrder = ["vcc","remote","snapcompact","handoff","shake","soft"]` and `override:false` so the walk treats `vcc` as the preferred `context-full` candidate whose impl is still the extension hook. See [`configuration.md#optional-native-strategy-patch`](configuration.md#optional-native-strategy-patch) for the full diff.
+
+```sh
+# verify where auto will go without switching TUI
+grep -q '"overrideDefaultCompaction": true' ~/.omp/omp-vcc/config.json && echo "auto: omp-vcc" || echo "auto: host methodOrder"
+omp config list | grep compaction.methodOrder
+# with patch: expect ["vcc",...] when you set it; without patch: unknown "vcc" is filtered by resolveCompactionMethodOrder
+```
+
 ## Updating
 
 ```sh
@@ -251,3 +354,4 @@ Open an issue at `https://github.com/zhulinchng/omp-vcc/issues` with that output
 - **Flags & XDG** → [`configuration.md`](configuration.md)
 - **Paper mapping** → [`paper-notes.md`](paper-notes.md)
 - **Tests & proof** → [`verification.md`](verification.md)
+- **Harness impact** → [`harness.md`](harness.md) (what is added vs intercepted, with mermaid)

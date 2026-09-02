@@ -198,8 +198,7 @@ bun run smoke     # 9 checks: 3 hooks + 4 commands + 2 tools (vcc_recall, vcc_st
 omp plugin link /Users/zhu/code/projects/omp-vcc && omp plugin doctor
 ```
 
-In a live `omp` session: `/omp-vcc keep:1` shows `[Session Goal]` with toast `omp-vcc: 90.0k→22.0k (76% saved, ~68.0k) · kept 1/5 turns, ~2.1k tok` (fallback `omp-vcc: kept 1/5 turns…` when `tokensBefore` unavailable) + divider `── compacted · 90K→22K · ctrl+o ──`; with `debug:true` check `/tmp/omp-vcc-debug.json` (`savings` + `authoritativeSavings`). `/vcc-stats` / `/omp-vcc --stats` / `vcc_stats({history:true})` show the 50-capped `Before→After/Saved/Kept/Summarized/When` table. Full proof matrix and mermaid flows in [`docs/verification.md`](docs/verification.md).
-## Publish
+In a live `omp` session: `/omp-vcc keep:1` shows `[Session Goal]` with toast `omp-vcc: 90.0k→22.0k (76% saved, ~68.0k) · kept 1/5 turns, ~2.1k tok` (fallback `omp-vcc: kept 1/5 turns…` when `tokensBefore` unavailable) + divider `── compacted · 90K→22K · ctrl+o ──`; with `debug:true` check `/tmp/omp-vcc-debug.json` (`savings` + `authoritativeSavings`). `/vcc-stats` / `/omp-vcc --stats` / `vcc_stats({history:true})` show the 50-capped `Before→After/Saved/Kept/Summarized/When` table. Full proof matrix and mermaid flows in [`docs/verification.md`](docs/verification.md); harness impact (adds vs intercepts) in [`docs/harness.md`](docs/harness.md).
 
 See [`docs/PUBLISHING.md`](docs/PUBLISHING.md) for the full checklist (package shape, gates, dual `omp-vcc` / `@zhulinchng/omp-vcc` flow, verification, deployment matrix, and troubleshooting). TL;DR:
 
