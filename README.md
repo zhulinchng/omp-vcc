@@ -1,4 +1,4 @@
-# @zhulinchng/omp-vcc — Algorithmic VCC Compaction for oh-my-pi
+# Algorithmic VCC Compaction for oh-my-pi
 
 > Fast, deterministic, lossless compaction with no LLM calls. Port of [`sting8k/pi-vcc`](https://github.com/sting8k/pi-vcc) (`@0.7.0`) into [oh-my-pi](https://github.com/can1357/oh-my-pi), inspired by [`lllyasviel/VCC`](https://github.com/lllyasviel/VCC) and paper [`arxiv:2603.29678`](https://arxiv.org/pdf/2603.29678) *View-oriented Conversation Compiler for Agent Trace Analysis* (Zhang & Agrawala, 2026-03-31).
 
