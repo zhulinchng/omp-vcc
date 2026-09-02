@@ -34,13 +34,14 @@ function mockCtxWithSettings(settings: Record<string, unknown>): any {
 }
 
 describe("settings E2E — file source, XDG priority, migration, overlay, manifest", () => {
-  test("DEFAULT_SETTINGS has 5 booleans with expected defaults", () => {
+  test("DEFAULT_SETTINGS has 6 booleans with expected defaults", () => {
     expect(DEFAULT_SETTINGS.vccEnabled).toBe(true);
     expect(DEFAULT_SETTINGS.overrideDefaultCompaction).toBe(true);
     expect(DEFAULT_SETTINGS.smartKeepTail).toBe(true);
     expect(DEFAULT_SETTINGS.continueAfterThresholdCompact).toBe(true);
     expect(DEFAULT_SETTINGS.debug).toBe(false);
-    expect(Object.keys(DEFAULT_SETTINGS).length).toBe(5);
+    expect(DEFAULT_SETTINGS.chainShakeHint).toBe(false);
+    expect(Object.keys(DEFAULT_SETTINGS).length).toBe(6);
   });
 
   test("scaffoldSettings creates file with defaults without clobbering existing keys", () => {
@@ -119,7 +120,6 @@ describe("settings E2E — file source, XDG priority, migration, overlay, manife
     expect(dbg.usedOwnCut).toBe(true);
     delete process.env.OMP_VCC_CONFIG_PATH;
   });
-
   test("package.json plugin manifest has correct extensions, commands, settings", () => {
     const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf-8"));
     expect(pkg.omp.extensions).toContain("./extensions/main.ts");
@@ -128,14 +128,15 @@ describe("settings E2E — file source, XDG priority, migration, overlay, manife
     const allCommands = [...(pkg.omp.commands ?? []), ...(pkg.pi.commands ?? [])].join(" ");
     expect(allCommands).toMatch(/omp-vcc/);
     expect(allCommands).toMatch(/vcc-recall/);
-    // settings should have 5 keys
+    // settings should have 6 keys
     const settingsKeys = Object.keys(pkg.omp.settings ?? {});
-    expect(settingsKeys.length).toBe(5);
+    expect(settingsKeys.length).toBe(6);
     expect(settingsKeys).toContain("vccEnabled");
     expect(settingsKeys).toContain("overrideDefaultCompaction");
     expect(settingsKeys).toContain("smartKeepTail");
     expect(settingsKeys).toContain("continueAfterThresholdCompact");
     expect(settingsKeys).toContain("debug");
+    expect(settingsKeys).toContain("chainShakeHint");
     // files should include extensions, skills, commands
     expect(pkg.files).toContain("extensions");
     expect(pkg.files).toContain("skills");

@@ -5,8 +5,9 @@
 
 > Verified against [`packages/snapcompact/src/snapcompact.ts`](https://github.com/can1357/oh-my-pi/blob/main/packages/snapcompact/src/snapcompact.ts) and [`crates/pi-natives/src/snapcompact.rs`](https://github.com/can1357/oh-my-pi/blob/main/crates/pi-natives/src/snapcompact.rs) (2026-09-02) @ `18781d8295`. Every constant, variant name, cap, and gate below quotes a live literal; drift since that cut is an intentional doc bug.
 
-See also: [Compaction architecture](./omp-compaction.md) (method order & triggers) · [`@oh-my-pi/snapcompact` README](https://github.com/can1357/oh-my-pi/blob/main/packages/snapcompact/README.md) (public API) · [`crates/pi-natives/src/snapcompact.rs`](https://github.com/can1357/oh-my-pi/blob/main/crates/pi-natives/src/snapcompact.rs) (rasterizer) — all pinned to `18781d8295`
+> **omp-vcc interplay**: Snapcompact and VCC both archive `messagesToSummarize` — they are alternative history paths. With default `override:true`, snapcompact is dormant for auto thresholds; explicit `snapcompact` via `compactMode` bypass at `hook.ts:733-743` or via two manual compactions (`/omp-vcc` then `/compact snapcompact`) gives sequential VCC → snapcompact. VCC+shake is additive (different slices) via host rescue `#rescueCompactionDeadEnd` (`session-maintenance.ts:2604`) or eager `chainShakeHint`. See [setup: Combining](setup.md#combining-omp-vcc-with-shake-and-snapcompact) and [harness §8.7](harness.md).
 
+See also: [Compaction architecture](./omp-compaction.md) (method order & triggers) · [`@oh-my-pi/snapcompact` README](https://github.com/can1357/oh-my-pi/blob/main/packages/snapcompact/README.md) (public API) · [`crates/pi-natives/src/snapcompact.rs`](https://github.com/can1357/oh-my-pi/blob/main/crates/pi-natives/src/snapcompact.rs) (rasterizer) — all pinned to `18781d8295`
 - [Overview](#overview)
 - [When it runs (method order gate)](#when-it-runs-method-order-gate)
 - [How it works & vision detection](#how-it-works--vision-detection)

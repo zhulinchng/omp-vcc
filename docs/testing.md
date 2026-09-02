@@ -6,11 +6,11 @@ Comprehensive reference for the `omp-vcc` test corpus: unit, integration, sessio
 
 ```sh
 bunx tsc --noEmit          # typecheck — 0 errors, vendored core // @ts-nocheck, skipLibCheck
-bun test                   # 477 tests, 46 files, 1359 expects, 0 fail  (~6s)
-bun test tests/e2e --timeout 120000   # 99 E2E only
+bun test                   # 515 tests, 48 files, 1443 expects, 0 fail  (~6s)
+bun test tests/e2e --timeout 120000   # 111 E2E only
 bun test tests/before-compact.test.ts # single suite
 bun run smoke              # 9 host-free checks: 3 hooks + 4 commands + 2 tools
-bun run e2e                # isolated OMP_DIR, omp plugin link, probe, then 99 E2E + artifacts/e2e-debug/
+bun run e2e                # isolated OMP_DIR, omp plugin link, probe, then 111 E2E + artifacts/e2e-debug/
 bun run e2e:direct         # alias for bun test tests/e2e
 ```
 
@@ -18,9 +18,9 @@ No API key required. E2E `vcc_recall` live LLM turn is `skipIf` when `ANTHROPIC_
 
 ```mermaid
 flowchart LR
-  TSC["bunx tsc --noEmit"] --> TEST["bun test\n477 pass"]
+  TSC["bunx tsc --noEmit"] --> TEST["bun test\n515 pass"]
   TEST --> SMOKE["bun run smoke\n3 hooks + 4 cmds + 2 tools"]
-  SMOKE --> E2E["bun run e2e\n99 E2E isolated OMP_DIR"]
+  SMOKE --> E2E["bun run e2e\n111 E2E isolated OMP_DIR"]
   E2E --> PUB{"prepublishOnly?"}
   PUB -->|yes| OK["publish ok"]
   PUB -->|no| DEV["dev loop"]

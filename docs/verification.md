@@ -27,10 +27,9 @@ flowchart LR
 ## Test matrix
 
 ```sh
-bun test            # 378 tests across 36 files, 1007 expect() calls, 0 fail
+bun test            # 515 tests across 48 files, 1443 expect() calls, 0 fail
 bun run smoke       # 9 checks: 3 hooks + 4 commands + 2 tools (vcc_recall, vcc_stats)
 ```
-
 Ported from `pi-vcc@0.7.0` 31 suites (28 required) via `bun:test` + `node:test` hybrids, imports remapped `src/core`→`extensions/vcc-core/core`, `src/hooks/before-compact`→`extensions/vcc-core/hook`, sentinel `__pi_vcc__` also accepts `__omp_vcc__`, debug path `/tmp/omp-vcc-debug.json` (and legacy `/tmp/pi-vcc-debug.json`):
 
 ```mermaid
@@ -52,7 +51,7 @@ flowchart TB
     H["compaction-stats-gaps 36 tests\npercent 0, budgetCut, boundaries\ncopy isolation, capping, timestamp\ntool/command --stats variants\nperPi clear, enrichment edge\nmain inline --stats"]
     I["compaction-bugs-fix 10 tests\nfallback 0, perPi isolation\nvcc_stats perPi, sections filter\nperPiKeys leak"]
   end
-  Unit & Integration & Sessions & Savings --> ALL["bun test: 378 pass (all)\n1007 expects, 0 fail"]
+  Unit & Integration & Sessions & Savings --> ALL["bun test: 515 pass (all)\n1443 expects, 0 fail"]
   ALL --> SMOKE["bun run smoke\n9 checks ok\n3 hooks + 4 cmds + 2 tools\n+ buildOwnCut + calibrate"]
 | Suite | What it checks | Status |
 | --- | --- | --- |
@@ -64,7 +63,7 @@ flowchart TB
 | `real-sessions.test.ts` + `review-gaps.test.ts` | Copied large sessions (synthetic fallback) + `reset_boundary` supersession, ENOENT graceful, approval read, manifest overlay, fallback heuristic, per-pi WeakMap | 17 pass |
 | `compaction-stats.test.ts` | Toast savings prefix (budgetCut, zero, large, small, smart-keep), table/detail, history cap/copy, tool/command, details v2, authoritative refine, debug | 22 pass |
 | `compaction-stats-gaps.test.ts` | Edge gaps: percent 0, boundaries 999/1000, negative, empty table, budgetCut suffix, timestamp null, derived saved, smartKeep/budgetCut/willRetry, perPi isolation & clear, capping 50 global+perPi, timestamp, enrichment missing/after>before/willRetry, debug authoritativeSavings, tool schema fallback, command arg variants, main `--stats` inline, tokensBefore undefined | 36 pass |
-Fixtures: `tests/fixtures.ts` helpers `userMsg`, `assistantText`, `toolResult`; `tests/support/load-session.ts` + `real-sessions.ts` (stubbed for CI). Helper `makeMockApi`/`makeMockCtx`.
+| `combined-compaction.test.ts` + `combined-compaction.e2e.test.ts` | VCC+shake/snapcompact explicit-mode bypass, override gate, sequential VCC→VCC, edge orphan/reset/toolResult/applyTailBudget/calibrate, chainShakeHint eager chain (WeakSet guard), per-pi isolation, large brief cap, mixed recall→stats | 38 pass (26+12) |
 
 Run single file:
 

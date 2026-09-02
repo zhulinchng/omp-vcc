@@ -213,11 +213,37 @@ flowchart TB
   class WALK host
 ```
 
-### Recommended: keep `omp-vcc` for auto, keep `shake` always
+### Combining omp-vcc with shake and snapcompact
 
-The default `omp-vcc` `overrideDefaultCompaction:true` already handles every auto compaction deterministically and cheaply (`30–470 ms`, no model call, any model). The host's `shake` is not a summarizer — it replaces heavy tool output with `artifact://` refs behind a `0.8×threshold` hysteresis band (`docs/compaction.md:136-141` / `session-maintenance.ts:190`) — and can reclaim a bit more headroom **after** an `omp-vcc` pass without a second summary. Leave it in `methodOrder` (the default does): it costs nothing when `omp-vcc` already recovered enough and is the fallback between `omp-vcc` passes if the next turn is a fat tool result.
+`omp-vcc` summarizes **history** (`V_ui` 5 sections + ranked brief) while `shake` elides **kept tail** heavy blocks and `snapcompact` is an alternative history archiver (vision bitmaps). They touch disjoint regions or are mutually exclusive history paths, so combinations are additive or sequential — never simultaneous double-summarization.
 
-No action needed — default is correct:
+> **One entry per trigger**: host commits exactly one `CompactionEntry` per `session_before_compact` (`shared-events.ts:375-381`). A “combo” is either (a) one Entry that merges VCC history + shake tail, or (b) two Entries chained across triggers/fallbacks (VCC then snapcompact/shake).
+
+| Trigger | `override` | `methodOrder` | Result |
+|---|---|---|---|
+| threshold, `override:true`, `["remote","snapcompact","handoff","shake","soft"]` (default) | VCC handles, host rescue may shake if still over band | VCC + (shake if dead-end) |
+| threshold, `override:false`, `["vcc","remote","snapcompact","handoff","shake","soft"]` (with patch) | walker picks VCC via `methodOrder`, fallback to snapcompact/shake | VCC → snapcompact/shake fallback |
+| manual `/omp-vcc keep:2` | always VCC (sentinel `__omp_vcc__`) | VCC |
+| manual `/omp-vcc keep:2` then `/compact snapcompact` | second call with `override:false` or explicit mode | VCC entry + snapcompact entry (sequential) |
+
+```mermaid
+flowchart LR
+  VCC["VCC V_ui\n(history)"] -->|cancel / void| SNAP["snapcompact\n(bitmap, vision only)\nmodel.input includes image"]
+  SNAP -->|fail / not vision| SHAKE["shake\nartifact:// elision\ntail only"]
+  SHAKE -->|fail| SOFT["soft / remote\nLLM summary"]
+  VCC -. "additive\n(disjoint regions)" .-> SHAKE
+
+  classDef vcc fill:#e3f2fd,stroke:#1565c0
+  class VCC vcc
+  classDef host fill:#fff3e0,stroke:#ef6c00
+  class SNAP,SHAKE,SOFT host
+```
+
+*Additive*: VCC summarizes history, shake elides kept tail — disjoint, so both can apply across one or two Entries. With default `methodOrder` containing `shake`, host's `#rescueCompactionDeadEnd` (`session-maintenance.ts:2604`) runs `shake elide` automatically after VCC if `!compactionCreatedHeadroom()`. No second summary needed.
+
+*Sequential*: VCC and snapcompact both archive the same `messagesToSummarize` slice; running both on the same cut would double-summarize. Valid sequential is: `/omp-vcc keep:2` (entry 1: VCC), do 10 more turns, then `/compact snapcompact` (entry 2: bitmap). For auto, put `vcc` first in `methodOrder` via the optional patch so the walk prefers VCC and falls to snapcompact/shake when VCC cancels or vision gate passes — see [harness §8.4](harness.md).
+
+No action needed for the common case — default is correct:
 
 ```sh
 # file is source of truth, but /settings overlay works immediately
@@ -231,7 +257,11 @@ omp config list | grep compaction.methodOrder
 # manual /omp-vcc always works, and /vcc-recall works regardless of override
 /omp-vcc keep:2 fix auth      # V_ui
 /vcc-recall hook scope:all    # V_adapt
+
+# eager post-VCC shake (forces second shake even when headroom made) — opt-in
+omp config set plugins."@zhulinchng/omp-vcc".chainShakeHint true
 ```
+
 
 ### If you want native strategies to own auto (e.g., `snapcompact`/`handoff`)
 

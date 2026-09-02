@@ -12,7 +12,8 @@ Declared in `package.json` `omp.settings` and `pi.settings` (dual manifest via `
       "overrideDefaultCompaction": { "type": "boolean", "default": true },
       "smartKeepTail": { "type": "boolean", "default": true },
       "continueAfterThresholdCompact": { "type": "boolean", "default": true },
-      "debug": { "type": "boolean", "default": false }
+      "debug": { "type": "boolean", "default": false },
+      "chainShakeHint": { "type": "boolean", "default": false, "description": "Eager post-VCC shake chain (host rescue is automatic; this forces a second shake even when VCC created headroom)" }
     }
   }
 }
@@ -70,7 +71,6 @@ flowchart LR
   classDef use fill:#e8f5e9,stroke:#2e7d32
   class USE1,USE2,USE3,USE4 use
 ```
-
 Defaults (same as `DEFAULT_SETTINGS` in `extensions/vcc-core/core/settings.ts`):
 
 ```json
@@ -79,7 +79,8 @@ Defaults (same as `DEFAULT_SETTINGS` in `extensions/vcc-core/core/settings.ts`):
   "overrideDefaultCompaction": true,
   "smartKeepTail": true,
   "continueAfterThresholdCompact": true,
-  "debug": false
+  "debug": false,
+  "chainShakeHint": false
 }
 ```
 
@@ -90,6 +91,7 @@ Defaults (same as `DEFAULT_SETTINGS` in `extensions/vcc-core/core/settings.ts`):
 | `smartKeepTail` | `true`: when default `keep:1` tail ≤ `MIN_SMART_TAIL_TOKENS 5_000`, grow `keep` to largest N with tail ≤ `MAX_SMART_TAIL_TOKENS 25_000`. Explicit `keep:N` always respected. `false`: old behavior `keep:1`. |
 | `continueAfterThresholdCompact` | `true`: after successful `threshold`/`overflow` compaction (and not `willRetry`), schedule invisible-continue (`customType:"omp-vcc-auto-continue"` display:false triggerTurn:followUp, filtered in `on('context')`) so agent continues without UX cliff. `false`: stop after compaction. |
 | `debug` | `true`: write snapshot to `/tmp/omp-vcc-debug.json` (and legacy `/tmp/pi-vcc-debug.json`) on each `session_before_compact` and `session_compact` with `counts`, `liveMessages.roleSequence`, `tail` previews, `tokenEstimate`, `sections`, `savings {tokensBefore, summaryChars, summaryTokensEst, keptTokensEst, tokensAfterEst, tokensSavedEst, savedPercentEst}` and after `session_compact` also `authoritativeSavings {tokensBefore, tokensAfter, tokensSaved, savedPercent}`. |
+| `chainShakeHint` | `false` (default): host rescue already runs `shake elide` after VCC when VCC didn't create headroom (`session-maintenance.ts:2604`); `true`: after every successful VCC `threshold`/`overflow` (not `willRetry`, not `/pi-vcc`), eagerly call `ctx.compact({mode:"shake"})` guarded by `pendingChainShake` WeakSet to avoid recursion — costs a second `CompactionEntry` even when headroom was already made. Opt-in only for workloads where you want VCC history + guaranteed tail elision in one auto trigger. |
 Edit file directly or via `omp config`; `scaffoldSettings()` auto-creates missing keys without clobbering.
 
 ### Token-savings observability (always on)

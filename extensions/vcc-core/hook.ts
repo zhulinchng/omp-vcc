@@ -89,6 +89,8 @@ const perPi = new WeakMap<any, { lastStats: CompactionStats | null; lastCompactW
 // Track strong refs for test helper clearCompactionHistoryForTests: WeakMap keys
 // cannot be enumerated, so keep a Set for test-only cleanup.
 const perPiKeys = new Set<any>();
+// Guard eager chainShakeHint to avoid recursion: tracks pis currently chaining.
+const pendingChainShake = new WeakSet<object>();
 const getPerPi = (pi: any) => {
   if (!pi || typeof pi !== "object") return null;
   let s = perPi.get(pi);
@@ -730,6 +732,17 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     // Otherwise, only handle when user opted in via settings.
     const { isPiVcc, keepUserTurns, keepUserTurnsExplicit, followUpPrompt } = parseCompactionInstructions(customInstructions);
     setPendingFollowUpPrompt(pi, null);
+    // Explicit host mode bypass: when the host signals an explicit compact mode
+    // (e.g. /compact snapcompact or --mode shake), let the host walker handle it
+    // even though overrideDefaultCompaction is true. This enables sequential
+    // VCC → snapcompact/shake combinations. The event field is only present when
+    // the optional native vcc patch is applied or a future host exposes it; when
+    // absent this branch is no-op and the existing override semantics remain.
+    const explicitMode = (event as any).compactMode ?? (event as any).explicitMode ?? (event as any).mode;
+    if (!isPiVcc && typeof explicitMode === "string" && explicitMode) {
+      const m = explicitMode.toLowerCase();
+      if (m === "snapcompact" || m === "shake" || m === "soft" || m === "remote" || m === "handoff") return;
+    }
     if (!isPiVcc && !settings.overrideDefaultCompaction) return;
 
     const calibrationCut = buildOwnCut(branchEntries as any[], 0);
@@ -1058,6 +1071,25 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const isLargeCompaction = (stats.summarized > 10) || (stats.kept > 5) || (stats.keptTokensEst > 2000);
     const shouldContinueAfterAutoCompact = (reason === "threshold" || reason === "overflow" || (reason == null && isLargeCompaction)) && loadSettings(ctx).continueAfterThresholdCompact;
     scheduleCompactionStatsNotify(ctx, stats);
+    // Eager post-VCC shake chain (chainShakeHint). Host rescue already handles
+    // dead-end; this forces a second shake entry even when headroom was made.
+    try {
+      const cfgChain = loadSettings(ctx);
+      const ctxMaybe = ctx as unknown as Record<string, unknown>;
+      const compactFn = ctxMaybe["compact"];
+      if (cfgChain.chainShakeHint && typeof compactFn === "function" && !pendingChainShake.has(pi as unknown as object) && !willRetry && !isPiVccLast) {
+        pendingChainShake.add(pi as unknown as object);
+        const maybePromise = (compactFn as unknown as (o: unknown) => Promise<void>).call(ctx, { mode: "shake" } as unknown);
+        const asPromise = maybePromise as unknown as Promise<void> | void;
+        if (asPromise && typeof (asPromise as unknown as Promise<void>).catch === "function") {
+          (asPromise as unknown as Promise<void>).catch(() => {}).finally(() => {
+            setTimeout(() => { try { pendingChainShake.delete(pi as unknown as object); } catch {} }, 2000);
+          });
+        } else {
+          setTimeout(() => { try { pendingChainShake.delete(pi as unknown as object); } catch {} }, 2000);
+        }
+      }
+    } catch {}
     if (followUpPrompt) {
       try {
         await pi.sendUserMessage(followUpPrompt);

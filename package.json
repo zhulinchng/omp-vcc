@@ -63,6 +63,11 @@
         "type": "boolean",
         "default": false,
         "description": "Write debug snapshot to /tmp/omp-vcc-debug.json"
+      },
+      "chainShakeHint": {
+        "type": "boolean",
+        "default": false,
+        "description": "Eager post-VCC shake chain (host rescue is automatic; this forces a second shake even when VCC created headroom)"
       }
     }
   },
@@ -100,6 +105,11 @@
         "type": "boolean",
         "default": false,
         "description": "Write debug snapshot to /tmp/omp-vcc-debug.json"
+      },
+      "chainShakeHint": {
+        "type": "boolean",
+        "default": false,
+        "description": "Eager post-VCC shake chain (host rescue is automatic; this forces a second shake even when VCC created headroom)"
       }
     }
   },

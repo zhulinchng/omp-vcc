@@ -56,6 +56,16 @@ export interface PiVccSettings {
   continueAfterThresholdCompact: boolean;
   /** Write debug snapshot to /tmp/omp-vcc-debug.json on each compaction. */
   debug: boolean;
+  /**
+   * When true, after a successful VCC threshold/overflow compaction, eagerly
+   * trigger a follow-up shake via ctx.compact when the host rescue would not.
+   * Default false: host's #rescueCompactionDeadEnd already runs shake elide
+   * automatically when VCC didn't create enough headroom, and leaving shake in
+   * methodOrder covers that case without a second entry. Set true only if you
+   * want a chained shake even when VCC already made headroom (costs a second
+   * CompactionEntry).
+   */
+  chainShakeHint: boolean;
 }
 
 export const DEFAULT_SETTINGS: PiVccSettings = {
@@ -64,6 +74,7 @@ export const DEFAULT_SETTINGS: PiVccSettings = {
   smartKeepTail: true,
   continueAfterThresholdCompact: true,
   debug: false,
+  chainShakeHint: false,
 };
 
 const readJson = (path: string): Record<string, unknown> | null => {
