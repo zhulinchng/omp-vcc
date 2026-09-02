@@ -26,18 +26,20 @@ omp plugin install github:zhulinchng/omp-vcc
 - **Auto** threshold/overflow compaction via `session_before_compact` hook — no LLM summary, 30–470 ms, 35–99% reduction.
 - **Manual** `/omp-vcc [keep:N] [focus]` (and `/pi-vcc` alias) — e.g. `/omp-vcc keep:2 fix auth` keeps last 2 user turns.
 - **Recall** `vcc_recall({query:"redis cache", scope:"all", page:1})` or `/vcc-recall hook|inject scope:all page:2` — ranked regex → TF-IDF OR, 5/page, `mode:'touched'` and `#N:path` drill-down.
+- **Savings observability** — toast `90.0k→22.0k (76% saved, ~68.0k)`, divider `── compacted · 90K→22K ·`, `vcc_stats` tool + `/vcc-stats` table + `details.savings` + `/tmp/omp-vcc-debug.json` (authoritative `tokensAfter` from host).
 
 ## Commands
 
 | Command | Description |
 | --- | --- |
-| `/omp-vcc [keep:N] [focus]` | Algorithmic compaction, smart-keep may boost `keep:1` to keep more when tail small (5 k → 25 k). `keep:0` compacts all. |
+| `/omp-vcc [keep:N] [focus]` | Algorithmic compaction, smart-keep may boost `keep:1` to keep more when tail small (5 k → 25 k). `keep:0` compacts all. Add `--stats` / `stats` to show last savings without compacting. |
 | `/pi-vcc` | Alias for migration |
 | `/vcc-recall [query] [scope:all] [page:N]` | Search compacted history (V_adapt). Plain keywords best. |
 | `/pi-vcc-recall` | Alias |
+| `/vcc-stats [history\|all]` | Show last compaction `Before→After/Saved/Kept` + history table (from `CompactionStats` 50-capped). |
+| `/omp-vcc-stats` | Alias for `/vcc-stats` |
 
-Tool `vcc_recall` mirrors the command, plus `expand:[indices]` and `mode:'touched'` for file index.
-
+Tool `vcc_recall` mirrors the command, plus `expand:[indices]` and `mode:'touched'` for file index. Tool `vcc_stats({history:true})` mirrors `/vcc-stats` (approval `read`), same 50-capped table.
 ## Configuration
 
 File `~/.omp/omp-vcc/config.json` (XDG-aware: `$OMP_VCC_CONFIG_PATH` > `$PI_VCC_CONFIG_PATH` (legacy) > `$OMP_DIR`/`$PI_CODING_AGENT_DIR` > `~/.omp/omp-vcc/config.json`, migrates legacy `~/.pi/agent/pi-vcc-config.json`):
@@ -191,12 +193,12 @@ Capabilities: `extension`, `skill`, `command` — entry `extensions/main.ts`.
 
 ```sh
 bunx tsc --noEmit
-bun test          # 310 tests across 33 files, 768 expects
-bun run smoke     # ok: session_before_compact hooked, vcc_recall registered
+bun test          # 368 tests across 35 files, 945 expects
+bun run smoke     # 9 checks: 3 hooks + 4 commands + 2 tools (vcc_recall, vcc_stats)
 omp plugin link /Users/zhu/code/projects/omp-vcc && omp plugin doctor
 ```
 
-In a live `omp` session: `/omp-vcc keep:1` shows `[Session Goal]` toast `omp-vcc: kept 1/5 turns, ~2.1k tok`; with `debug:true` check `/tmp/omp-vcc-debug.json`. Full proof matrix and mermaid flows in [`docs/verification.md`](docs/verification.md).
+In a live `omp` session: `/omp-vcc keep:1` shows `[Session Goal]` with toast `omp-vcc: 90.0k→22.0k (76% saved, ~68.0k) · kept 1/5 turns, ~2.1k tok` (fallback `omp-vcc: kept 1/5 turns…` when `tokensBefore` unavailable) + divider `── compacted · 90K→22K · ctrl+o ──`; with `debug:true` check `/tmp/omp-vcc-debug.json` (`savings` + `authoritativeSavings`). `/vcc-stats` / `/omp-vcc --stats` / `vcc_stats({history:true})` show the 50-capped `Before→After/Saved/Kept/Summarized/When` table. Full proof matrix and mermaid flows in [`docs/verification.md`](docs/verification.md).
 
 ## Publish
 

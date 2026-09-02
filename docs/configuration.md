@@ -87,9 +87,35 @@ Defaults (same as `DEFAULT_SETTINGS` in `extensions/vcc-core/core/settings.ts`):
 | `overrideDefaultCompaction` | `true` (default): omp-vcc handles **all** compactions — `/compact`, threshold, overflow, `/omp-vcc`. `false`: only `/omp-vcc`/`/pi-vcc` handled, rest falls back to core LLM compaction. |
 | `smartKeepTail` | `true`: when default `keep:1` tail ≤ `MIN_SMART_TAIL_TOKENS 5_000`, grow `keep` to largest N with tail ≤ `MAX_SMART_TAIL_TOKENS 25_000`. Explicit `keep:N` always respected. `false`: old behavior `keep:1`. |
 | `continueAfterThresholdCompact` | `true`: after successful `threshold`/`overflow` compaction (and not `willRetry`), schedule invisible-continue (`customType:"omp-vcc-auto-continue"` display:false triggerTurn:followUp, filtered in `on('context')`) so agent continues without UX cliff. `false`: stop after compaction. |
-| `debug` | `true`: write snapshot to `/tmp/omp-vcc-debug.json` (and legacy `/tmp/pi-vcc-debug.json`) on each `session_before_compact` and cancel path with `counts`, `liveMessages.roleSequence`, `tail` previews, `tokenEstimate`, `sections`. |
-
+| `debug` | `true`: write snapshot to `/tmp/omp-vcc-debug.json` (and legacy `/tmp/pi-vcc-debug.json`) on each `session_before_compact` and `session_compact` with `counts`, `liveMessages.roleSequence`, `tail` previews, `tokenEstimate`, `sections`, `savings {tokensBefore, summaryChars, summaryTokensEst, keptTokensEst, tokensAfterEst, tokensSavedEst, savedPercentEst}` and after `session_compact` also `authoritativeSavings {tokensBefore, tokensAfter, tokensSaved, savedPercent}`. |
 Edit file directly or via `omp config`; `scaffoldSettings()` auto-creates missing keys without clobbering.
+
+### Token-savings observability (always on)
+
+Even with `debug:false`, every compaction computes and surfaces savings:
+
+- **Toast** `session_compact` → `ctx.ui.notify(formatCompactionStats(stats))` where `formatCompactionStats` prefixes `90.0k→22.0k (76% saved, ~68.0k) · ` when `before>after>0 && percent>0`, else falls back to `kept 1/5 turns`. Handles `budgetCut` (`no_anchor`/`oversized_tail`) with same prefix, `999→500` vs `1.0k`, and `after>before` → `0`.
+- **Divider** host renders `── compacted · 90K→22K · ctrl+o ──` from `CompactionEntry.tokensBefore/tokensAfter` (already persisted before plugin).
+- **`vcc_stats` tool** (`approval: read`, `{history?:boolean}`) + **`/vcc-stats` / `/omp-vcc-stats` commands** + **`/omp-vcc --stats`** inline: `getCompactionHistory(pi)` (per-pi `WeakMap` + `perPiKeys` set, global fallback, 50-capped, copy-isolated) → `formatStatsTable` (`| # | Before → After | Saved | Kept | Summarized | When |`, `—` for `saved 0` or `timestamp null`, `budgetCut` suffix) and `formatLastStatsDetail` (`Before→After`, `Summary … tok … chars`, `Summarized … (smart-keep …)`, `Details: reason=… willRetry …`, `est after vs authoritative` note when they differ).
+- **`CompactionEntry.details`** `PiVccCompactionDetails {compactor:"omp-vcc", version:2, savings {tokensBefore, summaryChars, summaryTokensEst, keptTokensEst, tokensAfterEst, tokensSavedEst, savedPercentEst}}` — persisted verbatim by host in JSONL, survives branch reuse; `version:1` readers ignore `savings`.
+- **`/tmp/omp-vcc-debug.json`** `savings` always present when `debug:true`, plus `authoritativeSavings` after `session_compact` enriches `lastStats` with host `tokensAfter`.
+
+```mermaid
+flowchart LR
+  PREP["preparation.tokensBefore\n+ keptChars → keptTokensEst\n+ summaryChars → summaryTokensEst"] --> EST["tokensAfterEst\n+ savedEst/percent"]
+  EST --> TOAST["formatCompactionStats\n90k→22k (76% saved)"]
+  EST --> TABLE["formatStatsTable\n| Before → After | Saved |"]
+  EST --> DETAILS["details.savings v2"]
+  HOST["host compactionEntry\ntokensAfter"] --> AUTH["authoritative saved/percent\nbefore early return"]
+  AUTH --> ENRICH["lastStats enriched\n+ debug authoritativeSavings"]
+  TOAST & TABLE & DETAILS & ENRICH --> OBS["observability 4 ways\ntoast/divider + tool/command\n+ details + debug"]
+
+  classDef obs fill:#e8f5e9,stroke:#2e7d32
+  class TOAST,TABLE,DETAILS,ENRICH obs
+```
+
+History nuances: `setLastStats(pi, v)` assigns `timestamp=Date.now()` once, pushes to `perPi.statsHistory` and `globalHistory` each capped 50 (oldest evicted), `getCompactionHistory(pi)` returns copy, `clearCompactionHistoryForTests()` clears `globalHistory`, `lastStats`, and all `perPi` histories via `perPiKeys`. Edge `tokensBefore undefined → 0`, `saved 0 → —`, `percent 0 → no prefix`.
+
 
 ```mermaid
 flowchart TB

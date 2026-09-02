@@ -82,10 +82,11 @@ flowchart LR
   H --> I["Format\nformat.ts\nbracketed + RECALL_NOTE"]
   I --> J["Merge\nsummarize.ts\nsticky dedup, volatile replace\nroll, capBrief 120 lines"]
   J --> K["Output\n{summary, details,\nfirstKeptEntryId, tokensBefore}"]
+  K --> L["Savings\nkeptChars→keptTokensEst\nsummaryChars→summaryTokensEst\ntokensAfterEst→savedEst/percent\n+ authoritative enrich"]
 
   classDef stage fill:#fff3e0,stroke:#ef6c00
   class A,B,C,D,E,F,G,H,I,J stage
-  class K fill:#e8f5e9,stroke:#2e7d32
+  class K,L fill:#e8f5e9,stroke:#2e7d32
 ```
 
 Mapped from VCC compiler stages (§2.3) and pi-vcc 20-file core:
@@ -101,23 +102,22 @@ Mapped from VCC compiler stages (§2.3) and pi-vcc 20-file core:
 | Build sections | `build-sections.ts` regex extractors `extractGoals`, `extractFiles`, `extractCommits`, `extractPreferences`, `collapseSkillText` `RANKED_BRIEF_BUDGET*` | 5 semantic sections | `core/build-sections.ts` + `extract/*` |
 | Brief transcript (V_ui) | `brief.ts` chronological one-liners `(#N)` refs, `rank.ts` TF-IDF weighting, `format.ts` bracketed sections `RECALL_NOTE`, `summarize.ts` bounded merge (sticky dedup, volatile replace, transcript roll, `RANKED_BRIEF_BUDGET_TOKENS=1100` ceil 2000, `briefCharsPerBlock 15`, `BRIEF_MAX_LINES 120` cap via `capBrief`) | `V_ui` identity vs UI distinction eq.1, `V_adapt` eq.2 | `core/brief.ts`, `rank.ts`, `format.ts`, `summarize.ts` (`compileRanked`) |
 | Recall ranking | `search-entries.ts` `searchEntriesDetailed` regex→OR (`rank.ts` rare-term weighted), `render-entries.ts`, `format-recall.ts`, `drill-down.ts` `#N:path` | `V_adapt` `match_lines(b,ρ)` preserving skeleton + `SEP` | `core/search-entries.ts`, `core/format-recall.ts`, `core/drill-down.ts` |
-
 **Module map** `extensions/vcc-core/`:
 
 ```
 vcc-core/
-  hook.ts                — registerBeforeCompactHook (context filter, before_agent_start, session_before_compact with buildOwnCut/smartKeep/budget/compileRanked, session_compact toast + invisible-continue)
+  hook.ts                — registerBeforeCompactHook (context filter, before_agent_start, session_before_compact with buildOwnCut/smartKeep/budget/compileRanked + savings, session_compact toast + invisible-continue + authoritative enrich, vcc_stats history/table)
   core/
     brief.ts, rank.ts, build-sections.ts, format.ts, summarize.ts, token-estimate.ts, normalize.ts, filter-noise.ts, content.ts, sanitize.ts, tool-args.ts, report.ts, line-age.ts, load-messages.ts, render-entries.ts, search-entries.ts, format-recall.ts, drill-down.ts, recall-scope.ts, settings.ts, skill-collapse.ts
   extract/
     commits.ts, files.ts, goals.ts, preferences.ts
-  types.ts, details.ts, sections.ts
+  types.ts, details.ts (version 2 + savings), sections.ts
   commands/vcc-recall.ts — shim for pi-vcc test compatibility
 ```
 
 ```mermaid
 flowchart TB
-  HOOK["hook.ts\norchestrator\nsession_before_compact"]
+  HOOK["hook.ts\norchestrator\nsession_before_compact\n+ savings + history"]
 
   subgraph Core["core/ — vendored pipeline"]
     TOKEN["token-estimate.ts\ncalibrate"]
@@ -137,7 +137,7 @@ flowchart TB
   TOKEN -. "cpt for budget\n& chars" .-> BRIEF & SEARCH
 
   MAIN["extensions/main.ts\nfactory (pi: ExtensionAPI)"] --> HOOK
-  MAIN --> CMDS["commands/*.md\nomp-vcc / vcc-recall"]
+  MAIN --> CMDS["commands/*.md\nomp-vcc / vcc-recall\n+ vcc-stats"]
   MAIN --> SKILL["skills/omp-vcc/SKILL.md"]
 
   classDef orchestrator fill:#f3e5f5,stroke:#7b1fa2
@@ -149,10 +149,11 @@ flowchart TB
 1. `scaffoldSettings()` → `~/.omp/omp-vcc/config.json` (XDG-aware, migrates `~/.pi/agent/pi-vcc-config.json`)
 2. `pi.on("context", filter omp/pi auto-continue marker)` strips `customType === "omp-vcc-auto-continue" || "pi-vcc-auto-continue"` (matches pi-vcc's `on('context')` filter)
 3. `pi.on("before_agent_start", clearPendingAutoContinue)`
-4. `pi.on("session_before_compact", handler)` → `parseCompactionInstructions` (accepts both `__pi_vcc__` and `__omp_vcc__` sentinels), `buildOwnCut`, `resolveSmartKeepUserTurns`, `applyTailBudget`, `calibrateCharsPerToken`, `compileRanked` with size-relative budget, returns `{compaction: {summary, details, tokensBefore, firstKeptEntryId}}` or `{cancel:true}` (overflow/willRetry fallback vs cancel). Reuses `convertToLlm` shim (host `session/messages` or identity).
-5. `pi.on("session_compact", ...)` schedules toast (`formatCompactionStats`) and `triggerInvisibleContinue` (`customType:"omp-vcc-auto-continue"` display:false triggerTurn:followUp) filtered in (2).
+4. `pi.on("session_before_compact", handler)` → `parseCompactionInstructions` (accepts both `__pi_vcc__` and `__omp_vcc__` sentinels), `buildOwnCut`, `resolveSmartKeepUserTurns`, `applyTailBudget`, `calibrateCharsPerToken`, `compileRanked` with size-relative budget, computes `summaryChars → summaryTokensEst`, `keptChars → keptTokensEst`, `tokensAfterEst/savedEst/percent`, writes `details.savings` (`version:2`) + `dbg.savings` + `setLastStats` (per-pi `WeakMap`+`perPiKeys` + global, 50-capped, `timestamp`), returns `{compaction: {summary, details, tokensBefore, firstKeptEntryId}}` or `{cancel:true}` (overflow/willRetry fallback vs cancel). Reuses `convertToLlm` shim (host `session/messages` or identity).
+5. `pi.on("session_compact", ...)` enriches `lastStats` with authoritative `compactionEntry.tokensAfter/tokensBefore → saved/percent` *before* `isPiVccLast/willRetry` early returns, then schedules toast (`formatCompactionStats` with `90k→22k (76% saved)` prefix, budgetCut aware, `999→500` vs `1.0k`) and `triggerInvisibleContinue` (`customType:"omp-vcc-auto-continue"` display:false triggerTurn:followUp) filtered in (2); `dbg.authoritativeSavings` when `debug:true`.
 6. `pi.registerTool("vcc_recall", ...)` via `pi.zod` (rho: regex→OR, lineage `active` vs `all`, pagination 5, `mode:'touched'`, `expand`, `parseDrillDown`).
-7. `pi.registerCommand("omp-vcc")` / `"pi-vcc"` and `"vcc-recall"` / `"pi-vcc-recall"` (command shims `commands/*.md`).
+7. `pi.registerTool("vcc_stats", {history?:boolean})` (approval read, `perPi`+global history table via `formatStatsTable`/`formatLastStatsDetail`) + `pi.registerCommand("vcc-stats"/"omp-vcc-stats")` and `"/omp-vcc --stats"` inline (no compact, `history`/`all` variants, case-insensitive).
+8. `pi.registerCommand("omp-vcc")` / `"pi-vcc"` and `"vcc-recall"` / `"pi-vcc-recall"` (command shims `commands/*.md`).
 
 ```mermaid
 sequenceDiagram

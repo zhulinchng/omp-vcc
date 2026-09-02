@@ -25,8 +25,8 @@ flowchart LR
 ## Test matrix
 
 ```sh
-bun test            # 295 tests across 32 files, 728 expect() calls, 0 fail
-bun run smoke       # ok: session_before_compact hooked, vcc_recall registered, etc.
+bun test            # 368 tests across 35 files, 945 expect() calls, 0 fail
+bun run smoke       # 9 checks: 3 hooks + 4 commands + 2 tools (vcc_recall, vcc_stats)
 ```
 
 Ported from `pi-vcc@0.7.0` 31 suites (28 required) via `bun:test` + `node:test` hybrids, imports remapped `src/core`→`extensions/vcc-core/core`, `src/hooks/before-compact`→`extensions/vcc-core/hook`, sentinel `__pi_vcc__` also accepts `__omp_vcc__`, debug path `/tmp/omp-vcc-debug.json` (and legacy `/tmp/pi-vcc-debug.json`):
@@ -45,11 +45,15 @@ flowchart TB
   subgraph Sessions["Sessions — real data"]
     F["real-sessions 2 tests\nstubbed when no ~/.pi/sessions\nsynthetic 100-turn fallback"]
   end
-  Unit & Integration & Sessions --> ALL["bun test: 310 pass (295+15)\n768 expects, 0 fail\n+ tests/review-gaps 15"]
-  ALL --> SMOKE["bun run smoke\n6 hooks/tools/commands ok\n+ buildOwnCut + calibrate"]
+  subgraph Savings["Savings observability 58 tests"]
+    G["compaction-stats 22 tests\ntoast prefix, table, detail, history\ncap 50, perPi, authoritative\ndebug file, details v2"]
+    H["compaction-stats-gaps 36 tests\npercent 0, budgetCut, boundaries\ncopy isolation, capping, timestamp\ntool/command --stats variants\nperPi clear, enrichment edge\nmain inline --stats"]
+  end
+  Unit & Integration & Sessions & Savings --> ALL["bun test: 368 pass (310+58)\n945 expects, 0 fail\n+ gaps 36 (945-832)"]
+  ALL --> SMOKE["bun run smoke\n9 checks ok\n3 hooks + 4 cmds + 2 tools\n+ buildOwnCut + calibrate"]
 
   classDef suite fill:#e3f2fd,stroke:#1565c0
-  class A,B,C,D,E,F suite
+  class A,B,C,D,E,F,G,H suite
   class ALL,SMOKE fill:#e8f5e9,stroke:#2e7d32
 ```
 
@@ -61,7 +65,8 @@ flowchart TB
 | `extract-files.test.ts` `extract-goals.test.ts` `extract-preferences.test.ts` `filter-noise.test.ts` `lineage.test.ts` `load-messages.test.ts` `recall-scope.test.ts` `search-entries.test.ts` `render-entries.test.ts` `format-recall.test.ts` `drill-down`+`touched` | Extractors regex, lineage `getActiveLineageEntryIds`, search `searchEntriesDetailed` regex→OR, pagination 5, role tags, `parseDrillDown` `#N:path` | ~70 pass |
 | `pi-vcc-command.test.ts` `vcc-recall-command.test.ts` `recall-tool-scope.test.ts` `smart-keep.test.ts` `invisible-continue.test.ts` `recall-expand` `recall-quality` `recall-touched` | Command keep parsing, tool `vcc_recall` active/all lineage, `mode:'touched'`, `scope:all` vs `lineage`, `expand` invalid indices, smart-keep boost 5k→25k, invisible-continue filtered | ~30 pass |
 | `real-sessions.test.ts` + `review-gaps.test.ts` | Copied large sessions (synthetic fallback) + `reset_boundary` supersession, ENOENT graceful, approval read, manifest overlay, fallback heuristic, per-pi WeakMap | 17 pass |
-
+| `compaction-stats.test.ts` | Toast savings prefix (budgetCut, zero, large, small, smart-keep), table/detail, history cap/copy, tool/command, details v2, authoritative refine, debug | 22 pass |
+| `compaction-stats-gaps.test.ts` | Edge gaps: percent 0, boundaries 999/1000, negative, empty table, budgetCut suffix, timestamp null, derived saved, smartKeep/budgetCut/willRetry, perPi isolation & clear, capping 50 global+perPi, timestamp, enrichment missing/after>before/willRetry, debug authoritativeSavings, tool schema fallback, command arg variants, main `--stats` inline, tokensBefore undefined | 36 pass |
 Fixtures: `tests/fixtures.ts` helpers `userMsg`, `assistantText`, `toolResult`; `tests/support/load-session.ts` + `real-sessions.ts` (stubbed for CI). Helper `makeMockApi`/`makeMockCtx`.
 
 Run single file:
@@ -113,8 +118,9 @@ In fresh `omp` session with extension enabled (`omp -e @zhulinchng/omp-vcc` or v
 /omp-vcc keep:2 Test prompt
 ```
 
-- TUI shows compaction summary with `[Session Goal]` / `[Files And Changes]` / `[Commits]` / `[Outstanding Context]` / `[User Preferences]` / `---` `Brief transcript` and toast `omp-vcc: kept 2/5 turns, ~2.1k tok (smart-keep)`.
-- With `debug:true`, `/tmp/omp-vcc-debug.json` exists with `usedOwnCut:true, messagesToSummarize, tokensBefore, tokenEstimate, sections`.
+- TUI shows compaction summary with `[Session Goal]` / `[Files And Changes]` / `[Commits]` / `[Outstanding Context]` / `[User Preferences]` / `---` `Brief transcript` and toast `omp-vcc: 90.0k→22.0k (76% saved, ~68.0k) · kept 2/5 turns, ~2.1k tok` (falls back to `omp-vcc: kept 2/5 turns…` when `tokensBefore` unavailable) + divider `── compacted · 90K→22K · ctrl+o ──`.
+- With `debug:true`, `/tmp/omp-vcc-debug.json` exists with `usedOwnCut:true, messagesToSummarize, tokensBefore, tokenEstimate, sections, savings {tokensBefore, summaryChars, summaryTokensEst, keptTokensEst, tokensAfterEst, tokensSavedEst, savedPercentEst}` and after host `session_compact` also `authoritativeSavings`.
+- `/vcc-stats` / `/omp-vcc --stats` / `vcc_stats({history:true})` show `Before→After / Saved (percent) / Kept / Summarized / When` table (50-capped, per-pi + global).
 
 Repeated compactions merge bounded (run `/omp-vcc` twice, second summary deduped, transcript rolled <120 lines via `capBrief`).
 
@@ -129,12 +135,11 @@ sequenceDiagram
   Hook->>Hook: buildOwnCut keep:2<br/>firstKeptEntryId, messages
   Hook->>Core: calibrate + normalize → sections → brief<br/>budget 1100→2000, 15*cpt
   Core-->>Hook: summary (5 sections + transcript)
-  Hook-->>TUI: {compaction: {summary, firstKeptEntryId}}
-  TUI->>TUI: render summary + toast<br/>omp-vcc: kept 2/5 turns, ~2.1k tok
-  TUI-->>U: summary visible<br/>kept tail remains editable
-  Note over Hook,TUI: second /omp-vcc merges bounded<br/>sticky dedup + capBrief 120
+  Hook-->>TUI: {compaction: {summary, firstKeptEntryId, details {savings, version:2}, tokensBefore}}
+  TUI->>TUI: render summary + toast<br/>omp-vcc: 90k→22k (76% saved) · kept 2/5 turns<br/>+ divider 90K→22K + debug savings
+  TUI-->>U: summary visible<br/>kept tail remains editable<br/>/vcc-stats shows table
+  Note over Hook,TUI: second /omp-vcc merges bounded<br/>sticky dedup + capBrief 120<br/>history capped 50
 ```
-
 ## Functional proof 2 — recall
 
 Tool call:
@@ -206,6 +211,45 @@ stateDiagram-v2
   LLM --> Generating
   Stop --> [*]
 ```
+## Functional proof 4 — token-savings observability
+
+After any `omp-vcc` compaction (auto or manual):
+
+```
+/omp-vcc keep:1
+→ toast: omp-vcc: 90.0k→22.0k (76% saved, ~68.0k) · kept 1/5 turns, ~2.1k tok
+→ divider: ── compacted · 90K→22K · ctrl+o ──  (host renders tokensBefore→tokensAfter)
+/vcc-stats
+→ **Last compaction** 2026-09-02 12:34:56
+  - Before → After: **90.0k → 22.0k** (76% saved, ~68.0k)
+  - Summary: ~1.1k tok (2400 chars), kept tail ~2.1k tok (5 msgs, 1/5 turns)
+  - Note: est after 22.0k vs authoritative 22.0k  (when est ≠ auth)
+/vcc-stats history   or   /omp-vcc --stats history   or   vcc_stats({history:true})
+→ | # | Before → After | Saved | Kept | Summarized | When |
+  | 1 | 90.0k→22.0k | 68.0k (76%) | 1/5 turns, ~2.1k tok | 10 | 2026-09-02 12:34:56 |
+```
+
+*Implementation notes* (paper Fig. 2, `hook.ts:797-931`, `details.ts:5-20`):
+
+- `session_before_compact` calibrates `charsPerToken` (2–6, fallback 4), sums `keptChars` → `keptTokensEst`, renders `summary` via `compileRanked` (1100→2000 tok), then `summaryChars → summaryTokensEst → tokensAfterEst = summaryTokensEst + keptTokensEst → tokensSavedEst/percent` and writes `details.savings` (`version:2`, `compactor:"omp-vcc"`) + `dbg.savings` + `setLastStats` (per-pi + global, 50-capped, `timestamp`).
+- `session_compact` enriches `lastStats` with authoritative `compactionEntry.tokensAfter/tokensBefore → saved/percent` *before* the `isPiVccLast/willRetry` early returns, so manual `omp-vcc` compactions also get precise numbers and `authoritativeSavings` in debug when `debug:true`. Fallback `kept 0/2 turns…` when `tokensBefore` missing.
+- History is per-pi (`WeakMap` + `perPiKeys` set for test clear) + global, copy-isolated, `clearCompactionHistoryForTests()` clears both. Edge: `after>before` → `saved 0 (0%)`, `percent 0` → no prefix, `saved 0` → `—` in table, `timestamp null` → `—`.
+
+```mermaid
+flowchart LR
+  BEFORE["tokensBefore 90k\n(preparation)"] --> SUMMARY["summary 1.1k tok\n+ kept 2.1k"]
+  SUMMARY --> EST["tokensAfterEst 22k\nsavedEst 68k (76%)"]
+  EST --> TOAST["toast 90k→22k (76% saved)"]
+  HOST["host compactionEntry\ntokensAfter 22k"] --> AUTH["authoritative 22k\nsaved 68k"]
+  AUTH --> ENRICH["enrich lastStats\nbefore early return"]
+  TOAST & AUTH --> TABLE["/vcc-stats table\n50-capped perPi+global"]
+  TABLE --> DEBUG["/tmp/omp-vcc-debug.json\nsavings + authoritativeSavings"]
+  DEBUG --> DETAILS["details.savings v2"]
+
+  classDef tok fill:#e8f5e9,stroke:#2e7d32
+  class TOAST,TABLE tok
+```
+
 
 ## Regression proof
 
@@ -216,10 +260,14 @@ stateDiagram-v2
 - `toolResult` boundary snap → `findBudgetCutIndex` skips `toolResult`
 - Explicit `keep:N` not boosted by smartKeep
 - `scope:"all"` vs `active` (lineage) — off-lineage filtered
+- Savings: `before=0` → no prefix, `percent 0` → no prefix, `saved 0` → `—`, `after>before` → `0`, budgetCut + savings prefix, boundaries 999/1000, negative → no prefix
+- Table: `timestamp null` → `—`, `budgetCut` suffix, `undefined` history → `No compactions yet.`, `perPi` vs `global` copy isolation, capping 50 (global + perPi), `authoritative > est` note
+- History: `clearCompactionHistoryForTests()` clears `global` + `perPi` via `perPiKeys` set, `timestamp` assigned once, `setLastStats(null)` no push, `willRetry` enrichment before early return
+- Commands: `vcc-stats` vs `omp-vcc-stats`, `--stats`/`stats`/`history`/`all` case variants, `vcc_stats({history:true})` schema fallback when `zod.boolean` missing
 
 ```mermaid
 flowchart TB
-  subgraph Edges["Edge cases (tests/review-gaps)"]
+  subgraph Edges["Edge cases (tests/review-gaps + compaction-stats*)"]
     E1["empty branch\n→ cancel no_live_messages"]
     E2["orphan '' firstKept\n→ recovery"]
     E3["keep:0 → compactAll ''"]
@@ -227,16 +275,19 @@ flowchart TB
     E5["oversized_tail ×2.5\nsnap off toolResult"]
     E6["explicit keep:N\n→ no smartKeep boost"]
     E7["ENOENT file\n→ [] not throw"]
-    E8["per-pi WeakMap\nisolated timers"]
+    E8["per-pi WeakMap+perPiKeys\nisolated + clear"]
+    E9["savings 0 / percent 0\n999/1000 boundary"]
+    E10["table — / timestamp —\nbudgetCut suffix"]
+    E11["capping 50\nperPi + global"]
+    E12["enrich missing/after>before\nwillRetry + debug"]
+    E13["--stats variants\ncase-insensitive"]
   end
-  E1 & E2 & E3 & E4 & E5 & E6 & E7 & E8 --> PASS["all 310 pass"]
+  E1 & E2 & E3 & E4 & E5 & E6 & E7 & E8 & E9 & E10 & E11 & E12 & E13 --> PASS["all 368 pass (332+36)"]
 
   classDef edge fill:#fff8e1,stroke:#f57f17
-  class E1,E2,E3,E4,E5,E6,E7,E8 edge
+  class E1,E2,E3,E4,E5,E6,E7,E8,E9,E10,E11,E12,E13 edge
   class PASS fill:#e8f5e9,stroke:#2e7d32
 ```
-
-## If core patch applied
 
 ```
 /settings → Context → General → Compaction method order
@@ -263,8 +314,8 @@ bunx tsc --noEmit && bun test && bun run smoke && omp plugin link /Users/zhu/cod
 
 ```mermaid
 flowchart LR
-  A["bunx tsc --noEmit\n0 errors"] --> B["bun test\n310 pass 768 expects"]
-  B --> C["bun run smoke\n6 checks ok"]
+  A["bunx tsc --noEmit\n0 errors"] --> B["bun test\n368 pass 945 expects\n35 files"]
+  B --> C["bun run smoke\n9 checks ok\n3 hooks + 4 cmds + 2 tools"]
   C --> D["omp plugin link .\nlist --json ok"]
   D --> E["omp plugin doctor\n5 ok"]
   E --> F["gate green\nshippable"]

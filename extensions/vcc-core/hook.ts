@@ -86,10 +86,13 @@ let globalHistory: CompactionStats[] = [];
 // same ESM module singleton (e.g. main + subagents). Module globals remain as
 // fallback for host-free tests that call getLastCompactionStats() without a pi.
 const perPi = new WeakMap<any, { lastStats: CompactionStats | null; lastCompactWasPiVcc: boolean; pendingFollowUpPrompt: string | null; pendingAutoContinueTimer: any; statsHistory: CompactionStats[] }>();
+// Track strong refs for test helper clearCompactionHistoryForTests: WeakMap keys
+// cannot be enumerated, so keep a Set for test-only cleanup.
+const perPiKeys = new Set<any>();
 const getPerPi = (pi: any) => {
   if (!pi || typeof pi !== "object") return null;
   let s = perPi.get(pi);
-  if (!s) { s = { lastStats: null, lastCompactWasPiVcc: false, pendingFollowUpPrompt: null, pendingAutoContinueTimer: null, statsHistory: [] }; perPi.set(pi, s); }
+  if (!s) { s = { lastStats: null, lastCompactWasPiVcc: false, pendingFollowUpPrompt: null, pendingAutoContinueTimer: null, statsHistory: [] }; perPi.set(pi, s); perPiKeys.add(pi); }
   if (!s.statsHistory) s.statsHistory = [];
   return s;
 };
@@ -216,6 +219,13 @@ export const getCompactionHistory = (pi?: any): CompactionStats[] => {
 export const clearCompactionHistoryForTests = () => {
   globalHistory = [];
   lastStats = null;
+  for (const pi of perPiKeys) {
+    const s = perPi.get(pi);
+    if (s) {
+      s.statsHistory = [];
+      s.lastStats = null;
+    }
+  }
 };
 
 export const formatStatsTable = (history: CompactionStats[]): string => {
