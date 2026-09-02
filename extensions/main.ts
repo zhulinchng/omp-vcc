@@ -174,7 +174,7 @@ export default function (pi: ExtensionAPI): void {
       if (lower === "--stats" || lower === "stats" || lower.startsWith("--stats ") || lower.startsWith("stats ")) {
         const wantHistory = lower.includes("history") || lower.includes("all");
         const history = getCompactionHistory(pi);
-        const last = getLastCompactionStats();
+        const last = getLastCompactionStats(pi);
         const piAny = pi as unknown as { sendMessage?: (msg: unknown, opts?: unknown) => void };
         if (!last && history.length === 0) {
           try { piAny.sendMessage?.({ customType: "vcc-stats", content: "No compactions yet. Run /omp-vcc to compact first.", display: true }, { triggerTurn: false }); } catch {}
@@ -199,7 +199,7 @@ export default function (pi: ExtensionAPI): void {
       } catch {}
       try {
         await c.compact(customInstructions);
-        const stats = getLastCompactionStats();
+        const stats = getLastCompactionStats(pi);
         if (stats) {
           scheduleCompactionStatsNotify(c as unknown as { ui: { notify: (msg: string, level?: string) => void } }, stats);
         } else {
@@ -236,7 +236,7 @@ export default function (pi: ExtensionAPI): void {
       const customInstructions = buildPiVccCustomInstructions(keep);
       try {
         await c.compact(customInstructions);
-        const stats = getLastCompactionStats();
+        const stats = getLastCompactionStats(pi);
         if (stats) scheduleCompactionStatsNotify(c as unknown as { ui: { notify: (msg: string, level?: string) => void } }, stats);
         else try { c.ui.notify("Compacted with pi-vcc (via omp-vcc)", "info"); } catch {}
         if (followUpPrompt) {

@@ -175,8 +175,13 @@ const scheduleAutoContinue = (pi: any) => {
   }, 0);
 };
 
-export const getLastCompactionStats = () => lastStats;
-
+export const getLastCompactionStats = (pi?: any) => {
+  if (pi) {
+    const s = getPerPi(pi);
+    return s?.lastStats ?? null;
+  }
+  return lastStats;
+};
 const formatTokens = (n: number): string => {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
@@ -191,21 +196,25 @@ export const formatCompactionStats = (stats: CompactionStats): string => {
   const percent = typeof percentRaw === "number" ? percentRaw : (before > 0 && saved > 0 ? Math.round((saved / before) * 100) : 0);
   const hasSavings = before > 0 && after > 0 && before > after && saved > 0 && percent > 0;
   const savingsPrefix = hasSavings ? `${formatTokens(before)}→${formatTokens(after)} (${percent}% saved, ~${formatTokens(saved)}) · ` : "";
+  const keptTokens = stats.keptTokensEst ?? 0;
+  const summarized = stats.summarized ?? 0;
+  const keptTurns = stats.keptUserTurns ?? 0;
+  const totalTurns = stats.totalUserTurns ?? 0;
   if (stats.budgetCut) {
     const reason = stats.budgetCut === "no_anchor" ? "no user anchor" : "oversized tail";
     if (savingsPrefix) {
-      return `omp-vcc: ${savingsPrefix}kept ~${formatTokens(stats.keptTokensEst)} tok tail (mid-turn cut, ${reason}), summarized ${stats.summarized}.`;
+      return `omp-vcc: ${savingsPrefix}kept ~${formatTokens(keptTokens)} tok tail (mid-turn cut, ${reason}), summarized ${summarized}.`;
     }
-    return `omp-vcc: kept ~${formatTokens(stats.keptTokensEst)} tok tail (mid-turn cut, ${reason}), summarized ${stats.summarized}.`;
+    return `omp-vcc: kept ~${formatTokens(keptTokens)} tok tail (mid-turn cut, ${reason}), summarized ${summarized}.`;
   }
-  const notes: string[] = [`summarized ${stats.summarized}`];
+  const notes: string[] = [`summarized ${summarized}`];
   if (stats.smartKeepAdjusted) {
     notes.push("smart-keep");
   }
   if (savingsPrefix) {
-    return `omp-vcc: ${savingsPrefix}kept ${stats.keptUserTurns}/${stats.totalUserTurns} turns, ~${formatTokens(stats.keptTokensEst)} tok (${notes.join(", ")}).`;
+    return `omp-vcc: ${savingsPrefix}kept ${keptTurns}/${totalTurns} turns, ~${formatTokens(keptTokens)} tok (${notes.join(", ")}).`;
   }
-  return `omp-vcc: kept ${stats.keptUserTurns}/${stats.totalUserTurns} turns, ~${formatTokens(stats.keptTokensEst)} tok (${notes.join(", ")}).`;
+  return `omp-vcc: kept ${keptTurns}/${totalTurns} turns, ~${formatTokens(keptTokens)} tok (${notes.join(", ")}).`;
 };
 
 export const getCompactionHistory = (pi?: any): CompactionStats[] => {
@@ -219,11 +228,19 @@ export const getCompactionHistory = (pi?: any): CompactionStats[] => {
 export const clearCompactionHistoryForTests = () => {
   globalHistory = [];
   lastStats = null;
+  lastCompactWasPiVcc = false;
+  pendingFollowUpPrompt = null;
+  clearTimeout(pendingAutoContinueTimer as any);
+  pendingAutoContinueTimer = null;
   for (const pi of perPiKeys) {
     const s = perPi.get(pi);
     if (s) {
       s.statsHistory = [];
       s.lastStats = null;
+      s.lastCompactWasPiVcc = false;
+      s.pendingFollowUpPrompt = null;
+      clearTimeout(s.pendingAutoContinueTimer as any);
+      s.pendingAutoContinueTimer = null;
     }
   }
 };
@@ -239,9 +256,13 @@ export const formatStatsTable = (history: CompactionStats[]): string => {
     const percent = s.savedPercent ?? s.savedPercentEst ?? (before > 0 && saved > 0 ? Math.round((saved / before) * 100) : 0);
     const beforeAfter = before > 0 && after > 0 ? `${formatTokens(before)}→${formatTokens(after)}` : `${formatTokens(before)}→${formatTokens(after)}`;
     const savedStr = saved > 0 ? `${formatTokens(saved)} (${percent}%)` : "—";
-    const keptStr = `${s.keptUserTurns}/${s.totalUserTurns} turns, ~${formatTokens(s.keptTokensEst)} tok${s.budgetCut ? ` (${s.budgetCut})` : ""}`;
+    const keptTurns = s.keptUserTurns ?? 0;
+    const totalTurns = s.totalUserTurns ?? 0;
+    const keptTok = s.keptTokensEst ?? 0;
+    const summarized = s.summarized ?? 0;
+    const keptStr = `${keptTurns}/${totalTurns} turns, ~${formatTokens(keptTok)} tok${s.budgetCut ? ` (${s.budgetCut})` : ""}`;
     const when = s.timestamp ? new Date(s.timestamp).toISOString().slice(0, 19).replace("T", " ") : "—";
-    return `| ${idx + 1} | ${beforeAfter} | ${savedStr} | ${keptStr} | ${s.summarized} | ${when} |`;
+    return `| ${idx + 1} | ${beforeAfter} | ${savedStr} | ${keptStr} | ${summarized} | ${when} |`;
   });
   return [header, sep, ...rows].join("\n");
 };
@@ -252,11 +273,18 @@ export const formatLastStatsDetail = (stats: CompactionStats | null): string => 
   const after = stats.tokensAfter ?? stats.tokensAfterEst ?? 0;
   const saved = stats.tokensSaved ?? stats.tokensSavedEst ?? (before > 0 && after > 0 ? Math.max(0, before - after) : 0);
   const percent = stats.savedPercent ?? stats.savedPercentEst ?? (before > 0 && saved > 0 ? Math.round((saved / before) * 100) : 0);
+  const kept = stats.kept ?? 0;
+  const keptTurns = stats.keptUserTurns ?? 0;
+  const totalTurns = stats.totalUserTurns ?? 0;
+  const keptTok = stats.keptTokensEst ?? 0;
+  const summaryTok = stats.summaryTokensEst ?? 0;
+  const summaryChars = stats.summaryChars ?? 0;
+  const summarized = stats.summarized ?? 0;
   const lines = [
     `**Last compaction** ${stats.timestamp ? new Date(stats.timestamp).toISOString() : ""}`,
     `- Before → After: **${formatTokens(before)} → ${formatTokens(after)}** (${percent}% saved, ~${formatTokens(saved)})`,
-    `- Summary: ~${formatTokens(stats.summaryTokensEst ?? 0)} tok (${stats.summaryChars ?? 0} chars), kept tail ~${formatTokens(stats.keptTokensEst)} tok (${stats.kept} msgs, ${stats.keptUserTurns}/${stats.totalUserTurns} turns)`,
-    `- Summarized: ${stats.summarized} messages${stats.smartKeepAdjusted ? ` (smart-keep ${stats.smartFromKeep}→${stats.keptUserTurns})` : ""}${stats.budgetCut ? ` · budgetCut:${stats.budgetCut}` : ""}`,
+    `- Summary: ~${formatTokens(summaryTok)} tok (${summaryChars} chars), kept tail ~${formatTokens(keptTok)} tok (${kept} msgs, ${keptTurns}/${totalTurns} turns)`,
+    `- Summarized: ${summarized} messages${stats.smartKeepAdjusted ? ` (smart-keep ${stats.smartFromKeep}→${keptTurns})` : ""}${stats.budgetCut ? ` · budgetCut:${stats.budgetCut}` : ""}`,
     `- Details: ${stats.reason ? `reason=${stats.reason}` : "reason=auto"}${stats.willRetry ? " willRetry=true" : ""}`,
   ];
   if (stats.tokensAfter != null && stats.tokensAfterEst != null && stats.tokensAfter !== stats.tokensAfterEst) {
@@ -1170,7 +1198,7 @@ export const registerPiVccCommand = (pi: any) => {
       ctx.compact({
         customInstructions: buildPiVccCustomInstructions(keepUserTurns),
         onComplete: () => {
-          const stats = getLastCompactionStats();
+          const stats = getLastCompactionStats(pi);
           if (stats) {
             scheduleCompactionStatsNotify(ctx, stats);
           } else {
@@ -1208,7 +1236,7 @@ export const registerVccStatsTool = (pi: any) => {
     parameters: schema,
     async execute(_toolCallId: string, params: any, _signal: unknown, _onUpdate: unknown, _ctx: any) {
       const history = getCompactionHistory(pi);
-      const last = getLastCompactionStats();
+      const last = getLastCompactionStats(pi);
       const wantHistory = params?.history === true;
       if (!last && history.length === 0) {
         return { content: [{ type: "text", text: "No compactions yet in this session." }], details: undefined };
@@ -1230,7 +1258,7 @@ export const registerVccStatsCommand = (pi: any) => {
     const raw = (args || "").trim().toLowerCase();
     const wantHistory = raw.includes("history") || raw.includes("--history") || raw.includes("all");
     const history = getCompactionHistory(pi);
-    const last = getLastCompactionStats();
+    const last = getLastCompactionStats(pi);
     const piAny = pi as unknown as { sendMessage?: (msg: unknown, opts?: unknown) => void };
     if (!last && history.length === 0) {
       try { piAny.sendMessage?.({ customType: "vcc-stats", content: "No compactions yet in this session.", display: true }, { triggerTurn: false }); } catch {}

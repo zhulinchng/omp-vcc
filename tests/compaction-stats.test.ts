@@ -338,17 +338,13 @@ describe("registerVccStatsTool + Command", () => {
     try { unlinkSync(cfgPath); } catch {}
 
     const tools: any[] = [];
-    const pi: any = {
-      zod: {
-        object: (o: any) => o,
-        boolean: () => ({ optional: () => ({ describe: () => ({}) }) }),
-      },
-      registerTool: (t: any) => tools.push(t),
-      registerCommand: () => {},
-      _before: (piHook as any)._before,
+    // Use same pi object as piHook so per-pi history is visible (getLastCompactionStats(pi) is per-pi now)
+    const pi: any = piHook;
+    pi.registerTool = (t: any) => tools.push(t);
+    pi.zod = {
+      object: (o: any) => o,
+      boolean: () => ({ optional: () => ({ describe: () => ({}) }) }),
     };
-    // Need pi to be same object as piHook to see history? getCompactionHistory(pi) uses perPi for pi object; our history is in globalHistory also fallback
-    // So we can just call with no pi history but global will have entry
     registerVccStatsTool(pi);
     const withHist = await tools[0].execute("id", { history: true }, null, null, {});
     expect(withHist.content[0].text).toContain("Before → After");
