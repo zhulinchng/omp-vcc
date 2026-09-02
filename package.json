@@ -107,6 +107,8 @@
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test",
     "smoke": "bun run scripts/smoke.ts",
+    "e2e": "bun run scripts/e2e.ts",
+    "e2e:direct": "bun test tests/e2e --timeout 120000",
     "postuninstall": "node scripts/uninstall-reset.js || true",
     "prepublishOnly": "npm run typecheck && npm test && npm run smoke"
   }

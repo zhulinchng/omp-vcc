@@ -1,0 +1,39 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    name: e2e (omp isolated · no API key)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: bun install --frozen-lockfile
+      - run: bunx tsc --noEmit
+      - run: bun test
+      - run: bun run smoke
+      - name: Install omp (best-effort, skip E2E if unavailable)
+        run: |
+          npm i -g @oh-my-pi/pi-coding-agent 2>&1 | tail -20 || echo "omp install failed — E2E will run host-free only"
+          which omp && omp --help | head -n 30 || echo "omp not on PATH"
+      - run: bun run e2e
+        env:
+          # No API key needed; LLM-dependent recall tool-call is skipped when no key
+          CI: "true"
+      - name: Upload e2e debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-debug
+          path: artifacts/e2e-debug/
+          if-no-files-found: ignore
