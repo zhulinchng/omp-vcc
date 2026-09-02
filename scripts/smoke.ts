@@ -56,6 +56,10 @@ try {
     tools.some((t) => t.name === "vcc_recall"),
   );
   check(
+    "vcc_stats registered",
+    tools.some((t) => t.name === "vcc_stats"),
+  );
+  check(
     "omp-vcc command registered",
     commands.some((c) => c.name === "omp-vcc"),
   );
@@ -67,7 +71,15 @@ try {
     "pi-vcc alias registered",
     commands.some((c) => c.name === "pi-vcc"),
   );
-} catch (e) {
+  check(
+    "vcc-stats command registered",
+    commands.some((c) => c.name === "vcc-stats"),
+  );
+  check(
+    "omp-vcc-stats alias registered",
+    commands.some((c) => c.name === "omp-vcc-stats"),
+  );
+  } catch (e) {
   check("extension loads", false, String(e));
 }
 
