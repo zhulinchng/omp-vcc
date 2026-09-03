@@ -19,10 +19,11 @@ New here → [`docs/setup.md`](docs/setup.md).
 - **Manual** `/omp-vcc [keep:N] [focus]` (`/pi-vcc` alias) — compact only, single-line toast `90k→22k` — e.g. `/omp-vcc keep:2 fix auth` (detailed savings via `/vcc-stats`).
 - **Recall** `vcc_recall({query, scope, page, mode, expand})` + `/vcc-recall` — regex → TF-IDF OR, 5/page, `mode:'touched'`, `#N:path` drill-down.
 - **Savings** toast `90k→22k (76% saved)` single line (inline `Last compaction` detail removed; use `/vcc-stats`), divider, `/vcc-stats` + `vcc_stats` tool (50-capped history, per-pi), `details.savings` persisted, `/tmp/omp-vcc-debug.json`.
+
 ## Commands
-+
-+| Command | Description |
-+|---|---|
+
+| Command | Description |
+| --- | --- |
 | `/omp-vcc [keep:N] [focus]` | Compact only. `keep:0` = all. Smart-keep boosts `keep:1` (5k→25k) unless explicit. Toast single line; detail via `/vcc-stats`. |
 | `/pi-vcc` | Legacy alias for `/omp-vcc` |
 | `/vcc-recall [query] [scope:all] [page:N] [mode:touched]` | Search compacted history |
@@ -48,7 +49,7 @@ File `~/.omp/omp-vcc/config.json` — XDG: `$OMP_VCC_CONFIG_PATH` > `$PI_VCC_CON
 ```
 
 | Flag | Default | Effect |
-|---|---|---|
+| --- | --- | --- |
 | `vccEnabled` | `true` | Master switch. `false` = no interception. |
 | `overrideDefaultCompaction` | `true` | `true` = VCC handles threshold/overflow. `false` = host `methodOrder` handles them; `/omp-vcc` still works. |
 | `smartKeepTail` | `true` | Grow `keep:1` when tail <5k (cap 25k). Explicit `keep:N` never boosted. |
@@ -73,7 +74,7 @@ See [`docs/harness.md`](docs/harness.md) for host impact and [`docs/architecture
 VCC summarizes **history**; `shake` elides `artifact://` blocks in **kept tail** (disjoint); `snapcompact` is an alternative history archiver (vision bitmaps, needs `model.input includes "image"`). One `CompactionEntry` per trigger — combos are additive or sequential, never double-summarization.
 
 | Trigger | `override` | Result |
-|---|---|---|
+| --- | --- | --- |
 | threshold, `override:true` (default) | VCC handles; host auto-shakes if still over band (`#rescueCompactionDeadEnd`) | VCC + shake if dead-end |
 | threshold, `override:false` | Host walks `methodOrder` (`remote→snapcompact→handoff→shake→soft`) | VCC → snapcompact/shake fallback |
 | `/omp-vcc keep:2` | Always VCC (sentinel `__omp_vcc__`) | VCC |
