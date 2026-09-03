@@ -54,7 +54,7 @@ const invoke = async (handler: (args: string, ctx: any) => Promise<void>, file: 
 describe("/pi-vcc-recall command pagination and hard-cap truncation signaling", () => {
   it("reports a capped page count and an explicit truncation message when raw hits exceed the cap", async () => {
     // "." makes this a regex-mode query, matching every one of the 60
-    // messages deterministically (no BM25/floor involved) — isolates the
+    // messages deterministically (no BM25/gate involved) — isolates the
     // hard cap's effect on the command-facing message.
     const { dir, file, ids } = makeSession(60, (i) => `zebra_query_tag entry number ${i}`);
     try {

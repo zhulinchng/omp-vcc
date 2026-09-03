@@ -89,12 +89,17 @@ describe("searchEntries", () => {
 
   // ── natural language queries (OR logic + ranking) ──
 
-  it("natural language query uses OR logic", () => {
-    // "root cause auth" -- matches entries containing ANY of these terms
+  it("multi-term query gates the weak single-term tail; OR matching still finds it unfiltered", () => {
+    // "root cause auth" — #3 matches all 3 terms, #1 only "auth". The gate
+    // keeps the strong match and drops the 1-of-3 tail hit (P<0.5).
     const r = searchEntries(entries, messages, "root cause auth");
-    expect(r.length).toBeGreaterThanOrEqual(2); // #3 has all 3, #1 has auth
-    // Best match (highest BM25) should come first
-    expect(r[0].index).toBe(3); // "Found the root cause in auth module" matches all 3
+    expect(r.map((h) => h.index)).toEqual([3]);
+    expect(r[0].probability).toBeGreaterThanOrEqual(0.5);
+    // The matching layer itself is still OR: with the gate disabled both match.
+    const unfiltered = searchEntriesDetailed(entries, messages, "root cause auth", { probabilityFloor: 0 });
+    expect(unfiltered.hits.map((h) => h.index)).toEqual([3, 1]);
+    // Best match (highest BM25) still comes first either way.
+    expect(unfiltered.hits[0].index).toBe(3);
   });
 
   it("natural language ranks by BM25 score", () => {
@@ -401,7 +406,7 @@ describe("searchEntries recall toolResult exclusion", () => {
   });
 });
 
-describe("searchEntriesDetailed relative noise floor", () => {
+describe("searchEntriesDetailed posterior noise gate", () => {
   // Query matches all 4 terms multiple times in entry 0, all 4 terms once
   // in entry 1, and only 1 of 4 terms once each in entries 2-4 — a clear
   // score cliff between {0,1} and {2,3,4} under multi-term BM25 OR scoring.
@@ -416,17 +421,22 @@ describe("searchEntriesDetailed relative noise floor", () => {
   const gradedMessages: Message[] = graded.map((t) => ({ role: "user", content: t } as any));
   const query = "alpha beta gamma delta";
 
-  it("drops a clearly low-score tail but preserves the surviving hits' order (default floor)", () => {
-    // Baseline (floor disabled): every entry matches at least one term.
-    const baseline = searchEntriesDetailed(gradedEntries, gradedMessages, query, { relativeFloor: 0, cap: 1e9 });
+  it("drops a clearly low-probability tail but preserves the surviving hits' order (default gate)", () => {
+    // Baseline (gate disabled): every entry matches at least one term, and
+    // the ranking is BM25 order, untouched by calibration.
+    const baseline = searchEntriesDetailed(gradedEntries, gradedMessages, query, { probabilityFloor: 0, cap: 1e9 });
     expect(baseline.hits.map((h) => h.index)).toEqual([0, 1, 2, 4, 3]);
 
-    // Default floor (no tuning override — the real production constant):
-    // the low-score tail (2, 3, 4) is dropped, top order (0, 1) preserved.
+    // Default gate (no tuning override — the real production constant):
+    // the low-probability tail (2, 3, 4) is dropped, top order (0, 1) preserved.
     const r = searchEntriesDetailed(gradedEntries, gradedMessages, query);
     expect(r.hits.map((h) => h.index)).toEqual([0, 1]);
     expect(r.totalBeforeCap).toBe(2);
-    expect(r.truncated).toBe(false); // floor-filtered, not cap-truncated
+    expect(r.truncated).toBe(false); // gate-filtered, not cap-truncated
+    // Every surviving hit sits at or above the absolute cutoff; every
+    // dropped tail hit sits below it.
+    for (const h of r.hits) expect(h.probability).toBeGreaterThanOrEqual(0.5);
+    for (const h of baseline.hits.slice(2)) expect(h.probability!).toBeLessThan(0.5);
   });
 
   it("never zeroes a non-empty result — a sole, low-score hit still survives", () => {
@@ -436,40 +446,41 @@ describe("searchEntriesDetailed relative noise floor", () => {
     const r = searchEntriesDetailed(e, m, "redis cache invalidation");
     expect(r.hits).toHaveLength(1);
     expect(r.hits[0].index).toBe(1);
+    expect(r.hits[0].probability).toBeDefined(); // gate attaches probabilities even to sole survivors
   });
 
-  it("never applies the relative floor to single-term queries — structural, not fixture-specific", () => {
-    // Effective term count (after stopword filtering) gates the floor: <2
-    // terms skips it entirely, regardless of how aggressive the floor is.
-    // Proven with an aggressive floor override (0.9) and a corpus shaped so
-    // the low-scoring hit WOULD be cut if the floor applied — it survives
-    // only because the single-term gate bypasses filtering altogether.
+  it("never applies the posterior gate to single-term queries — structural, not fixture-specific", () => {
+    // Effective term count (after stopword filtering) gates the gate: <2
+    // terms skips it entirely, regardless of how aggressive the threshold is.
+    // Proven with an aggressive threshold override (0.9) and a corpus shaped so
+    // the low-scoring hit WOULD be cut if the gate applied — it survives
+    // only because the single-term bypass skips filtering altogether.
     const singleTermTexts = [
       "auth ".repeat(20) + "flow rewritten", // 20x occurrences — high score
       "one mention of auth here in an otherwise unrelated changelog entry", // 1x — low score
     ];
     const e: RenderedEntry[] = singleTermTexts.map((t, i) => ({ index: i, role: "user", summary: t }));
     const m: Message[] = singleTermTexts.map((t) => ({ role: "user", content: t } as any));
-    const r = searchEntriesDetailed(e, m, "auth", { relativeFloor: 0.9, cap: 1e9 });
-    expect(r.hits.map((h) => h.index)).toEqual([0, 1]); // both survive: gate bypassed floor entirely
+    const r = searchEntriesDetailed(e, m, "auth", { probabilityFloor: 0.9, cap: 1e9 });
+    expect(r.hits.map((h) => h.index)).toEqual([0, 1]); // both survive: single-term bypasses the gate entirely
 
-    // Control: the SAME floor override on an equivalent MULTI-term corpus
-    // does filter the low-score hit — proving the override mechanism itself
-    // works, and that single-term survival above is the gate, not a fluke.
+    // Control: the SAME threshold override on an equivalent MULTI-term corpus
+    // does filter the low-probability hit — proving the override mechanism itself
+    // works, and that single-term survival above is the bypass, not a fluke.
     const multiTermTexts = [
       "alpha beta gamma delta ".repeat(3) + "design review",
       "alpha mentioned once in an unrelated paragraph",
     ];
     const e2: RenderedEntry[] = multiTermTexts.map((t, i) => ({ index: i, role: "user", summary: t }));
     const m2: Message[] = multiTermTexts.map((t) => ({ role: "user", content: t } as any));
-    const r2 = searchEntriesDetailed(e2, m2, "alpha beta gamma delta", { relativeFloor: 0.9, cap: 1e9 });
+    const r2 = searchEntriesDetailed(e2, m2, "alpha beta gamma delta", { probabilityFloor: 0.9, cap: 1e9 });
     expect(r2.hits.map((h) => h.index)).toEqual([0]); // low-score hit filtered
   });
 
   it("gates on DISTINCT normalized terms — duplicate/case-duplicate words stay single-term", () => {
     // "auth auth" / "Auth AUTH" is semantically ONE term repeated/recased,
-    // not a multi-term query. Same aggressive floor (0.9) and corpus shape
-    // as above: the low-score hit must still survive every variant.
+    // not a multi-term query. Same aggressive threshold (0.9) and corpus shape
+    // as above: the low-probability hit must still survive every variant.
     const texts = [
       "auth ".repeat(20) + "flow rewritten",
       "one mention of auth here in an otherwise unrelated changelog entry",
@@ -478,9 +489,40 @@ describe("searchEntriesDetailed relative noise floor", () => {
     const m: Message[] = texts.map((t) => ({ role: "user", content: t } as any));
 
     for (const q of ["auth auth", "Auth AUTH", "auth Auth auth"]) {
-      const r = searchEntriesDetailed(e, m, q, { relativeFloor: 0.9, cap: 1e9 });
+      const r = searchEntriesDetailed(e, m, q, { probabilityFloor: 0.9, cap: 1e9 });
       expect(r.hits.map((h) => h.index).sort()).toEqual([0, 1]);
     }
+  });
+
+  it("an extreme threshold still keeps the top hit — the gate can never empty a result", () => {
+    // Entry 0's posterior (≈0.97) sits below 0.99 too, so without the
+    // keep-first rule this would return nothing. It returns [0].
+    const r = searchEntriesDetailed(gradedEntries, gradedMessages, query, { probabilityFloor: 0.99, cap: 1e9 });
+    expect(r.hits.map((h) => h.index)).toEqual([0]);
+  });
+
+  it("is deterministic — same query twice yields identical hits and probabilities", () => {
+    const a = searchEntriesDetailed(gradedEntries, gradedMessages, query);
+    const b = searchEntriesDetailed(gradedEntries, gradedMessages, query);
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+
+  it("collapses a broad weak tail on a large corpus but leaves single-term queries identical", () => {
+    const big: string[] = [];
+    for (let i = 0; i < 5; i++) big.push(`alpha beta gamma delta `.repeat(3) + `strong design review ${i}`);
+    for (let i = 5; i < 60; i++) big.push(`alpha mentioned once in padding ${i} ` + "lorem ipsum dolor sit amet ".repeat(8));
+    const e: RenderedEntry[] = big.map((t, i) => ({ index: i, role: "user", summary: t }));
+    const m: Message[] = big.map((t) => ({ role: "user", content: t } as any));
+    // Multi-term: 60 OR-matches collapse to exactly the 5 strong entries.
+    const gated = searchEntriesDetailed(e, m, "alpha beta gamma delta", { cap: 1e9 });
+    expect(gated.hits.map((h) => h.index)).toEqual([0, 1, 2, 3, 4]);
+    for (const h of gated.hits) expect(h.probability).toBeGreaterThanOrEqual(0.5);
+    const disabled = searchEntriesDetailed(e, m, "alpha beta gamma delta", { probabilityFloor: 0, cap: 1e9 });
+    expect(disabled.hits).toHaveLength(60);
+    // Single-term: the gate is bypassed, override or not — identical lists.
+    const s1 = searchEntriesDetailed(e, m, "alpha", { cap: 1e9 });
+    const s2 = searchEntriesDetailed(e, m, "alpha", { probabilityFloor: 0, cap: 1e9 });
+    expect(s1.hits.map((h) => h.index)).toEqual(s2.hits.map((h) => h.index));
   });
 });
 
@@ -492,9 +534,9 @@ describe("searchEntriesDetailed hard result cap", () => {
   const bm25Messages: Message[] = bm25Entries.map((e) => ({ role: "user", content: e.summary } as any));
 
   it("bounds the BM25/natural-language path to SEARCH_RESULT_CAP (50)", () => {
-    // Disable the floor so the cap's effect is isolated — all 60 entries
-    // are equally strong single-term matches, so none would be floor-filtered.
-    const r = searchEntriesDetailed(bm25Entries, bm25Messages, "zebra_query_tag", { relativeFloor: 0 });
+    // Disable the gate so the cap's effect is isolated — all 60 entries
+    // are equally strong single-term matches, so none would be gate-filtered.
+    const r = searchEntriesDetailed(bm25Entries, bm25Messages, "zebra_query_tag", { probabilityFloor: 0 });
     expect(r.totalBeforeCap).toBe(60);
     expect(r.hits).toHaveLength(50);
     expect(r.truncated).toBe(true);
@@ -505,7 +547,7 @@ describe("searchEntriesDetailed hard result cap", () => {
       index: i, role: "user", summary: `zebra_query_tag entry number ${i}`,
     }));
     const regexMessages: Message[] = regexEntries.map((e) => ({ role: "user", content: e.summary } as any));
-    // "." makes this a regex-mode query (looksLikeRegex), no BM25/floor involved.
+    // "." makes this a regex-mode query (looksLikeRegex), no BM25/gate involved.
     const r = searchEntriesDetailed(regexEntries, regexMessages, "zebra_query_tag.*entry");
     expect(r.totalBeforeCap).toBe(60);
     expect(r.hits).toHaveLength(50);

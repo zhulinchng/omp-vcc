@@ -2,12 +2,15 @@
 import type { Message } from "@oh-my-pi/pi-ai";
 import type { RenderedEntry } from "./render-entries";
 import { textOf, thinkingOf, isContentBearing, extractToolCallText, extractToolCallArgsText, clip } from "./content";
+import { scoreToProbability, estimateLikelihoodParams } from "./bayesian-probability.ts";
 
 export interface SearchHit extends RenderedEntry {
   /** Context snippet around the first matched term (only when query provided) */
   snippet?: string;
   /** Number of query terms matched (for ranking) */
   matchCount?: number;
+  /** Calibrated P(relevance) from the Bayesian transform (BM25 path only) */
+  probability?: number;
 }
 
 /**
@@ -18,7 +21,7 @@ export interface SearchHit extends RenderedEntry {
 export interface SearchResult {
   hits: SearchHit[];
   /** Genuine matches found before the hard cap was applied (after any
-   *  relative-floor noise filtering). May exceed `hits.length`. */
+   *  posterior-gate noise filtering). May exceed `hits.length`. */
   totalBeforeCap: number;
   /** True when the hard cap discarded matches (`totalBeforeCap > hits.length`). */
   truncated: boolean;
@@ -194,24 +197,27 @@ const buildBM25Context = (docs: string[], terms: string[], checkBudget: () => vo
   return { n, avgDl: totalLen / Math.max(n, 1), df };
 };
 
-/** BM25 score for a single doc against query terms. */
-const bm25Score = (doc: string, terms: string[], ctx: BM25Context): number => {
+/** BM25 score for a single doc against query terms, plus the calibration
+ *  inputs the Bayesian posterior needs: total term frequency across terms
+ *  and the doc-length ratio. Same pass — no re-scanning. */
+const bm25Score = (doc: string, terms: string[], ctx: BM25Context): { score: number; tf: number; docLenRatio: number } => {
   const dl = doc.split(/\s+/).length;
   let score = 0;
+  let totalTf = 0;
 
   for (const t of terms) {
-    const tf = termFreq(doc, safeRegex(t));
-    if (tf === 0) continue;
+    const termTf = termFreq(doc, safeRegex(t));
+    if (termTf === 0) continue;
+    totalTf += termTf;
 
     const docFreq = ctx.df.get(t) ?? 0;
     // IDF: log((N - df + 0.5) / (df + 0.5) + 1)
     const idf = Math.log((ctx.n - docFreq + 0.5) / (docFreq + 0.5) + 1);
-    // TF saturation with length normalization
-    const tfNorm = (tf * (BM25_K + 1)) / (tf + BM25_K * (1 - BM25_B + BM25_B * dl / ctx.avgDl));
+    const tfNorm = (termTf * (BM25_K + 1)) / (termTf + BM25_K * (1 - BM25_B + BM25_B * dl / ctx.avgDl));
     score += idf * tfNorm;
   }
 
-  return score;
+  return { score, tf: totalTf, docLenRatio: ctx.avgDl > 0 ? dl / ctx.avgDl : 1 };
 };
 
 /** Line-based snippet: ±contextLines around first regex match. */
@@ -359,56 +365,42 @@ export function getTouchedFiles(
 }
 
 /**
- * Relative BM25 noise floor for MULTI-TERM natural-language queries only:
- * after sorting by score, drop hits scoring below this fraction of the top
- * score. Relative (not absolute) because BM25 magnitudes vary with corpus
- * size and document length, so a fixed score threshold would behave
- * inconsistently across short vs. long sessions.
+ * Absolute Bayesian posterior floor for MULTI-TERM natural-language queries
+ * only: after sorting by BM25 score, drop hits whose calibrated P(relevance)
+ * is below this threshold. Absolute (not relative) because the posterior
+ * already normalizes away corpus size and document length — that is the
+ * point of the score→probability transform (`bayesian-probability.ts`).
+ * Raw BM25 magnitudes vary across sessions, so no fixed score threshold
+ * behaves consistently; posteriors are comparable, which is also what the
+ * cross-session merge needs.
  *
  * Applied only when the query has >=2 DISTINCT effective terms after
  * stopword filtering and case/duplicate normalization (see the
- * `effectiveTermCount >= 2` gate below `searchEntriesDetailed` uses before
- * calling `applyRelativeFloor`). Distinct, not raw count: "auth auth" or
- * "Auth AUTH" is semantically a single-term query and must bypass the floor
+ * `effectiveTermCount >= 2` gate `searchEntriesDetailed` uses before calling
+ * `applyProbabilityFloor`). Distinct, not raw count: "auth auth" or
+ * "Auth AUTH" is semantically a single-term query and must bypass the gate
  * like any other single term — repeating or casing a word doesn't turn it
- * into the multi-term OR-tail noise this floor targets. The normalization is
+ * into the multi-term OR-tail noise this gate targets. The normalization is
  * gate-only; it doesn't change `terms` or the BM25 scoring itself, which
  * already matches case-insensitively. For a genuine single term, every hit's
  * occurrence already satisfies the whole query — its BM25 score differences
  * reflect term frequency and document length, not multi-term OR-tail noise,
  * so filtering by it there risks real matches for no corresponding noise
- * reduction. Evidence below confirmed this rather than assuming it.
+ * reduction. (Prior runs through scripts/benchmark-recall-quality.ts
+ * confirmed the single-term bypass is a true no-op and that gating the
+ * multi-term tail never changed top-1; those numbers pinned the old
+ * relative 0.2 floor this absolute gate replaces, so they are superseded,
+ * not restated.)
  *
- * Evidence (scripts/benchmark-recall-quality.ts, run through this exact
- * production function via its `tuning` override — not a duplicate scoring
- * implementation). Two independent runs against real session corpora (23
- * sessions/161 queries and 31 sessions/222 queries; exact counts vary with
- * whatever real sessions are available locally, so both are reported rather
- * than treating one as a fixed target):
- *   - floor=0.20 on multi-term queries: median result count 49→23 (run 1,
- *     n=69) and 60.5→23.5 (run 2, n=98); p90 142.8→81 and 126.2→75.3.
- *     Zero-hit count stayed 0 in both runs, top-1 never changed (0/69,
- *     0/98). Top-5 membership shifted in 5/69 (7%) and 5/98 (5%).
- *   - floor=0.10 was too weak to "meaningfully" remove the tail (multi-term
- *     median only 49→39 / 60.5→42); floor=0.25 removed more but roughly
- *     doubled the multi-term top-5 disruption (8/69, run 1) for little extra
- *     median gain over 0.20. 0.20 is the least aggressive setting that
- *     meaningfully thinned the tail.
- *   - Single-term queries with the floor gated off: every floor candidate
- *     (0, 0.10, 0.20, 0.25) produced byte-identical results — 0/92 and
- *     0/124 top-5 changes in both runs, confirming the gate is a true no-op
- *     rather than an untested assumption. Before this gate existed, applying
- *     0.20 unconditionally still changed single-term top-5 in a small but
- *     non-zero fraction of queries (1/140 in this repo's own rerun, 1/124 in
- *     an independent reviewer rerun) for negligible median movement — real
- *     false-negative risk for no real noise benefit, which is why the gate
- *     exists.
- *
- * The top-scoring hit always survives by construction, independent of the
- * evidence above: its own score always satisfies `score >= topScore * floor`
- * for any floor <= 1, so a non-empty scored[] can never be filtered to zero.
+ * The top-scoring hit always survives by construction:
+ * `applyProbabilityFloor` keeps the first entry unconditionally, so a
+ * non-empty scored[] can never be filtered to zero even if a tuning
+ * override raises the threshold above the top hit's posterior. (Note
+ * posterior(L, p) = p at L = 0.5, so a top likelihood >= 0.5 alone does
+ * NOT imply posterior >= 0.5 — the unconditional keep-first is the real
+ * guarantee, not the calibration.)
  */
-const BM25_RELATIVE_FLOOR = 0.2;
+const BAYESIAN_PROBABILITY_FLOOR = 0.5;
 
 /**
  * Hard cap on total SEARCH results, applied to both the natural-language
@@ -430,30 +422,29 @@ const BM25_RELATIVE_FLOOR = 0.2;
  * result count 32→18 and 29.5→20; p90 119→50 and 115.9→50.
  */
 const SEARCH_RESULT_CAP = 50;
-
 /**
- * Tuning overrides for `searchEntriesDetailed`. Exists only so the offline
- * bench (scripts/benchmark-recall-quality.ts) and targeted tests can
- * exercise the real scoring/capping pipeline against candidate constants —
- * production call sites (`searchEntries`, the recall tool) never pass this
- * and always get `BM25_RELATIVE_FLOOR`/`SEARCH_RESULT_CAP`.
+ * Tuning overrides for `searchEntriesDetailed`. Exists only so targeted
+ * tests can exercise the real scoring/capping pipeline against candidate
+ * constants — production call sites (`searchEntries`, the recall tool)
+ * never pass this and always get `BAYESIAN_PROBABILITY_FLOOR`/`SEARCH_RESULT_CAP`.
  */
 export interface SearchTuning {
-  relativeFloor?: number;
+  probabilityFloor?: number;
   cap?: number;
 }
 
-/** Drop scored hits below `floor` of the top score. The top hit's own score
- *  always passes (score >= score * floor for floor <= 1), so this can never
- *  turn a non-empty `scored` into an empty result. */
-const applyRelativeFloor = (
-  scored: Array<{ hit: SearchHit; score: number }>,
+/** Drop scored hits whose calibrated P(relevance) is below `floor`. The top
+ *  hit (index 0, highest BM25 score) always passes unconditionally, so this
+ *  can never turn a non-empty `scored` into an empty result. Sort stays by
+ *  raw BM25 score, never by posterior: the composite prior varies per doc,
+ *  so posterior order can differ from BM25 order, and rank assertions pin
+ *  BM25 order. */
+const applyProbabilityFloor = (
+  scored: Array<{ hit: SearchHit; score: number; probability: number }>,
   floor: number,
-): Array<{ hit: SearchHit; score: number }> => {
+): Array<{ hit: SearchHit; score: number; probability: number }> => {
   if (scored.length === 0) return scored;
-  const topScore = scored[0].score;
-  if (topScore <= 0) return scored;
-  return scored.filter((s) => s.score >= topScore * floor);
+  return scored.filter((s, i) => i === 0 || s.probability >= floor);
 };
 
 /**
@@ -488,7 +479,7 @@ export const searchEntriesDetailed = (
 ): SearchResult => {
   if (!query?.trim()) return { hits: entries, totalBeforeCap: entries.length, truncated: false };
 
-  const relativeFloor = tuning?.relativeFloor ?? BM25_RELATIVE_FLOOR;
+  const probabilityFloor = tuning?.probabilityFloor ?? BAYESIAN_PROBABILITY_FLOOR;
   const cap = tuning?.cap ?? SEARCH_RESULT_CAP;
   const rawQuery = query.trim();
   const checkBudget = startBudget();
@@ -502,8 +493,8 @@ export const searchEntriesDetailed = (
   // versus 1.1% for term search. Mode detection must never silently lose
   // results, so an empty regex result falls through to term search below.
   //
-  // No relative-floor filtering here: regex matches are boolean (matched or
-  // not), there's no score to be relative to. Only the hard cap applies.
+  // No posterior-gate filtering here: regex matches are boolean (matched or
+  // not), there's no probability to threshold. Only the hard cap applies.
   if (looksLikeRegex(rawQuery)) {
     const regex = safeRegex(rawQuery);
     const hits: SearchHit[] = [];
@@ -539,35 +530,48 @@ export const searchEntriesDetailed = (
 
   const ctx = buildBM25Context(docs, terms, checkBudget);
 
-  const scored: Array<{ hit: SearchHit; score: number }> = [];
+  const scored: Array<{ hit: SearchHit; score: number; tf: number; docLenRatio: number }> = [];
   for (let i = 0; i < entries.length; i++) {
     checkBudget();
     const e = entries[i];
     const hay = docs[i];
     const mc = countMatches(hay, terms);
     if (mc === 0) continue;
-    const score = bm25Score(hay, terms, ctx);
+    const { score, tf, docLenRatio } = bm25Score(hay, terms, ctx);
     const text = messages[i] ? fullText(messages[i]) : e.summary;
     const snip = lineSnippet(text, snipRe);
     scored.push({
       hit: { ...e, snippet: snip, matchCount: mc },
       score,
+      tf,
+      docLenRatio,
     });
   }
 
-  // Sort by BM25 score desc, then drop the noisy long tail relative to the
-  // top score (multi-term queries only — see BM25_RELATIVE_FLOOR), then
+  // Calibrate: sigmoid midpoint/shift from this query's own score spread,
+  // then one posterior per doc. The per-doc single transform is an
+  // approximation of per-term posterior fusion — sufficient for a noise
+  // gate, never used for ranking (the sort key below stays raw BM25).
+  const params = estimateLikelihoodParams(scored.map((s) => s.score)) ?? { alpha: 1, beta: 0 };
+  const calibrated = scored.map((s) => ({
+    ...s,
+    probability: scoreToProbability(s.score, s.tf, s.docLenRatio, params.alpha, params.beta),
+  }));
+  for (const s of calibrated) s.hit.probability = s.probability;
+
+  // Sort by BM25 score desc, then drop the noisy low-probability tail
+  // (multi-term queries only — see BAYESIAN_PROBABILITY_FLOOR), then
   // apply the hard cap.
-  scored.sort((a, b) => b.score - a.score);
+  calibrated.sort((a, b) => b.score - a.score);
   // Gate on DISTINCT normalized terms, not raw term count: "auth auth" or
   // "Auth AUTH" is semantically a single-term query and must bypass the
-  // floor like any other single term — repeating/casing a word doesn't turn
-  // it into the multi-term OR-tail noise this floor targets. This is a
+  // gate like any other single term — repeating or casing a word doesn't
+  // turn it into the multi-term OR-tail noise this gate targets. This is a
   // gate-only normalization; it does not change `terms` itself or the BM25
   // scoring above, which already matches case-insensitively.
   const effectiveTermCount = new Set(terms.map((t) => t.toLowerCase())).size;
-  const floored = effectiveTermCount >= 2 ? applyRelativeFloor(scored, relativeFloor) : scored;
-  return capHits(floored.map((s) => s.hit), cap);
+  const gated = effectiveTermCount >= 2 ? applyProbabilityFloor(calibrated, probabilityFloor) : calibrated;
+  return capHits(gated.map((s) => s.hit), cap);
 };
 
 export const searchEntries = (

@@ -135,7 +135,8 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 | `lineage.test.ts` | `lineage.ts` `getActiveLineageEntryIds`, `branch_summary` lineage, `reset_boundary` supersession |
 | `load-messages.test.ts` | `load-messages.ts` `loadAllMessages` JSONL read, `ENOENT → []` not throw, `getActiveLineageEntryIds` integration |
 | `recall-scope.test.ts` | `recall-scope.ts` `normalizeRecallScope`/`normalizeRecallMode`/`parseRecallScope` `scope:all` |
-| `search-entries.test.ts` (523 lines) | `search-entries.ts` `searchEntriesDetailed` regex→TF-IDF fallback, `looksLikeRegex`, `safeRegex`, `hasNestedQuantifier`, BM25 `buildBM25Context`, `relativeFloor 0.2`, hard cap `SEARCH_RESULT_CAP 50`, `getTouchedFiles` via `getFileIndicators` + `isContentBearing` |
+| `search-entries.test.ts` (565 lines) | `search-entries.ts` `searchEntriesDetailed` regex→TF-IDF fallback, `looksLikeRegex`, `safeRegex`, `hasNestedQuantifier`, BM25 `buildBM25Context`, Bayesian posterior gate `probabilityFloor 0.5`, hard cap `SEARCH_RESULT_CAP 50`, `getTouchedFiles` via `getFileIndicators` + `isContentBearing` |
+| `bayesian-probability.test.ts` (114 lines) | `bayesian-probability.ts` port fidelity: `sigmoid`/`clampProbability`/`tfPrior`/`normPrior`/`compositePrior`/`posterior` hand-computed equation values, `estimateLikelihoodParams` median/1-std, score→probability monotonicity |
 | `render-entries.test.ts` | `render-entries.ts` rendered entry formatting, role tags |
 | `format-recall.test.ts` | `format-recall.ts` `formatRecallOutput` `Found N matches`, `#N` full-text hint footer on capped/clipped results, `formatTouchedOutput` `TOUCHED_PAGE_SIZE 5` `Page X/Y` |
 | `recall-touched-drilldown.test.ts` | `drill-down.ts` `parseDrillDown` `#N:path`/`#N:path:full`/`#N:path:offset:limit`, `expandEntryFile`; bare `#N` refs + `expandEntry` covered in `entry-ref.test.ts` |
@@ -157,7 +158,7 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 | `smart-keep.test.ts` | `resolveSmartKeepUserTurns` explicit never boosted, disabled returns 1, `tailTokensForKeep` compact-all stops growth, `MIN 5k → MAX 25k` |
 | `invisible-continue.test.ts` | `AUTO_CONTINUE_CUSTOM_TYPE` `omp-vcc-auto-continue` + legacy `pi-vcc-auto-continue`, `on(context)` strips by `customType` only, `on(before_agent_start)` clears timer, `triggerInvisibleContinue` `display:false triggerTurn:true deliverAs:'followUp'` |
 | `recall-expand.test.ts` | `invalidExpandIndices`, `expand` valid vs `999` invalid `Cannot expand indices outside` |
-| `recall-quality.test.ts` | `searchEntriesDetailed` ranking quality, relative floor |
+| `recall-quality.test.ts` | `searchEntriesDetailed` ranking quality, posterior gate |
 | `recall-touched-drilldown.test.ts` | `mode:touched` aggregation, `parseDrillDown` variants |
 
 ## Session suites
