@@ -22,16 +22,20 @@ New here → [`docs/setup.md`](docs/setup.md).
 
 ## Commands
 
-| Command | Description |
-| --- | --- |
-| `/omp-vcc [keep:N] [focus]` | Compact only. `keep:0` = all. Smart-keep boosts `keep:1` (5k→25k) unless explicit. Toast single line; detail via `/vcc-stats`. |
-| `/pi-vcc` | Legacy alias for `/omp-vcc` |
-| `/vcc-recall [query] [scope:all] [page:N] [mode:touched]` | Search compacted history |
-| `/pi-vcc-recall` | Legacy alias for `/vcc-recall` |
-| `/vcc-stats [history\|all]` | Last savings + history table (single, no alias) |
-| `/vcc-config` | Effective config with per-key source (`file` / `host overlay` / `default`) plus resolved file path. Args ignored. |
+| Command | What it does | Defaults (bare invocation) |
+| --- | --- | --- |
+| `/omp-vcc [keep:N] [focus]` | Compact only. Toast single line; detail via `/vcc-stats`. | `keep:1` — smart-keep grows it while the tail stays ≤5k (cap 25k). `keep:0` summarizes everything. No focus = no follow-up prompt. Explicit `keep:N` is never boosted. |
+| `/pi-vcc` | Legacy alias for `/omp-vcc` | Same as above. |
+| `/vcc-recall [query] [scope:all] [page:N]` | Search compacted history, 5 results per page. | No query = last 25 entries of the active branch. Scope defaults to the active lineage; `scope:all` searches the whole session. `page:1`. |
+| `/pi-vcc-recall` | Legacy alias for `/vcc-recall` | Same as above. |
+| `/vcc-stats [history\|all]` | Last-compaction savings + history table (single, no alias). | Bare = last-compaction detail (history table appended once >1 compaction exists). `history`/`all` = full table first, then the last detail. |
+| `/vcc-config` | Effective config with per-key source (`file` / `host overlay` / `default`) plus resolved file path. | Args ignored — always the merged result. |
 
-Tools: `vcc_recall`, `vcc_stats` (approval `read`). Extension-only — no `commands/*.md` file slash commands (avoids duplicate `/omp-vcc`).
++
+
++Search mode (`hybrid` regex→TF-IDF search default, `touched` = touched-files list) is a `vcc_recall` tool parameter only — the slash command always searches hybrid.
++
++Tools: `vcc_recall`, `vcc_stats` (approval `read`). Extension-only — no `commands/*.md` file slash commands (avoids duplicate `/omp-vcc`).
 
 ## Configuration
 
