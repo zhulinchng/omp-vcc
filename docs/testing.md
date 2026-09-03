@@ -9,7 +9,7 @@ bunx tsc --noEmit          # typecheck — 0 errors, vendored core // @ts-nochec
 bun test                   # 564 tests, 52 files, 1621 expects, 0 fail  (~7s)
 bun test tests/e2e --timeout 120000   # 124 E2E only
 bun test tests/before-compact.test.ts # single suite
-bun run smoke              # 12 checks: 3 hooks + 5 commands (omp-vcc/pi-vcc/vcc-recall/pi-vcc-recall/vcc-stats, no alias) + 2 tools + dedup
+bun run smoke              # 13 checks: 3 hooks + 6 commands (omp-vcc/pi-vcc/vcc-recall/pi-vcc-recall/vcc-stats/vcc-config, no alias) + 2 tools + dedup
 bun run e2e                # isolated OMP_DIR, omp plugin link, probe, then 124 E2E + artifacts/e2e-debug/
 bun run e2e:direct         # alias for bun test tests/e2e
 ```
@@ -84,7 +84,7 @@ flowchart TB
 | `bun test tests/e2e --timeout 120000` | 124 E2E only | local E2E loop |
 | `bun test tests/before-compact.test.ts` | single suite | targeted |
 | `bun test --watch` | watch mode | dev |
-| `bun run smoke` | 12 checks: `session_before_compact`/`context`/`session_compact` hooks + `vcc_recall`/`vcc_stats` tools + `omp-vcc`/`pi-vcc`/`vcc-recall`/`pi-vcc-recall`/`vcc-stats` (single, no `omp-vcc-stats`) + dedup guards | CI third, `prepublishOnly` |
+| `bun run smoke` | 13 checks: `session_before_compact`/`context`/`session_compact` hooks + `vcc_recall`/`vcc_stats` tools + `omp-vcc`/`pi-vcc`/`vcc-recall`/`pi-vcc-recall`/`vcc-stats`/`vcc-config` (single, no `omp-vcc-stats`) + dedup guards | CI third, `prepublishOnly` |
 | `bun run e2e` | probe `omp --help`, `omp plugin link` in `mkdtempSync` `OMP_DIR`, then `bun test tests/e2e`, collect `artifacts/e2e-debug/` | separate CI job `e2e.yml`, not blocking publish |
 | `omp plugin doctor` | 6 ok 0 warnings | manual, also run inside `e2e.ts` |
 
@@ -154,6 +154,7 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 | `before-compact-hook.test.ts` (41) | `registerBeforeCompactHook` `session_before_compact`→`session_compact` — `overrideDefaultCompaction` gate, `vccEnabled` gate, `parseCompactionInstructions` accepts both `__omp_vcc__`/`__pi_vcc__`, `smartKeep` boost 5k→25k, `applyTailBudget` `no_anchor`/`oversized_tail`×2.5 snap off `toolResult`, `calibrateCharsPerToken`, `compileRanked` 1100→2000/15*cpt/120, `formatCompactionStats` `omp-vcc:` prefix, `session_compact` toast + `triggerInvisibleContinue`, debug dual write `/tmp/omp-vcc-debug.json` + `/tmp/pi-vcc-debug.json`, `perPi` history cap 50, `clearCompactionHistoryForTests` |
 | `pi-vcc-command.test.ts` | `extensions/main.ts:registerPiVccCommand` vs `registerBeforeCompactHook` keep parsing, `buildPiVccCustomInstructions` |
 | `vcc-recall-command.test.ts` | `/vcc-recall` slash command `parseRecallScope`/`parseRecallCommandArgs` `query scope:all page:N`, `pi.sendMessage({customType:"vcc-recall"})`, alias `/pi-vcc-recall` |
+| `vcc-config-command.test.ts` (16) | `/vcc-config` slash command: registration (no alias) + factory wiring, handler renders loader view verbatim, partial/full/invalid-JSON files, `settings.get`/`config.get`/plain-map overlays, args ignored, missing `sendMessage`/`ui` tolerance, throwing notify tolerance, live `getSettingsPath`, fallback labeling, synthetic all-four status branches + key order |
 | `recall-tool-scope.test.ts` | `vcc_recall` tool `scope:all` vs `lineage` lineage filtering via `getActiveLineageEntryIds`, `approval read` |
 | `smart-keep.test.ts` | `resolveSmartKeepUserTurns` explicit never boosted, disabled returns 1, `tailTokensForKeep` compact-all stops growth, `MIN 5k → MAX 25k` |
 | `invisible-continue.test.ts` | `AUTO_CONTINUE_CUSTOM_TYPE` `omp-vcc-auto-continue` + legacy `pi-vcc-auto-continue`, `on(context)` strips by `customType` only, `on(before_agent_start)` clears timer, `triggerInvisibleContinue` `display:false triggerTurn:true deliverAs:'followUp'` |

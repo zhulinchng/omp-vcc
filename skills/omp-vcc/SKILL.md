@@ -49,6 +49,7 @@ Use `vcc_recall` to search for prior work … Do not redo work already completed
 | Task | How | Notes |
 |---|---|---|
 | **Check savings** | `/vcc-stats` · `vcc_stats({history:true})` | Last + history table (50-capped, no `omp-vcc-stats` alias). `/omp-vcc` toast is single line only; detailed savings via `/vcc-stats`. Use to confirm headroom before long edits. |
+| **View config** | `/vcc-config` | Effective config with per-key source (`file` / `host overlay` / `default`) plus resolved file path. Args ignored. Use to confirm a `/settings` toggle took effect. |
 | **Recall search** | `/vcc-recall <query> [scope:all] [page:2]` · alias `/pi-vcc-recall` · tool `vcc_recall({query, scope, mode, page, expand})` | 5 hits/page, up to 50 total. See cookbook below. |
 | **Stats tool** | `vcc_stats({history?: boolean})` | Same as `/vcc-stats`. `history:true` = full 50-row table. |
 

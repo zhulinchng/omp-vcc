@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { writeFileSync } from "fs";
 import { compileRanked } from "./core/summarize";
 import { buildPiVccCustomInstructions, parseKeepAndPrompt, PI_VCC_COMPACT_INSTRUCTION } from "./core/compact-args";
-import { loadSettings, type PiVccSettings } from "./core/settings";
+import { loadSettings, loadSettingsWithSources, DEFAULT_SETTINGS, type PiVccSettings, type VccConfigView } from "./core/settings";
 import { calibrateCharsPerToken, estimateMessageContentChars, estimateMessageContentTokens, estimateTokensFromChars, collectUsageStats } from "./core/token-estimate";
 import type { PiVccCompactionDetails } from "./details";
 import type { CompactionReason } from "./types";
@@ -1332,4 +1332,31 @@ export const registerVccStatsCommand = (pi: any) => {
     try { ctx?.ui?.notify?.(`vcc_stats: ${history.length} compaction(s)`, "info"); } catch {}
   };
   pi.registerCommand("vcc-stats", { description: "Show omp-vcc compaction savings (last + history)", handler });
+};
+// ── /vcc-config command — show effective configuration with per-key source ──
+export const formatVccConfigCard = (view: VccConfigView): string => {
+  const header = `**omp-vcc config** (\`${view.path}\`)`;
+  const status = !view.filePresent
+    ? "No config file found — showing defaults."
+    : !view.fileValid
+      ? "Config file unparseable — showing defaults."
+      : view.readPath === view.path
+        ? `Source: file ${view.readPath}`
+        : `Source: fallback file ${view.readPath}`;
+  const lines = (Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]).map(
+    (k) => `- ${k}: ${view.values[k] ? "on" : "off"} (${view.sources[k] === "overlay" ? "host overlay" : view.sources[k]})`,
+  );
+  return [header, status, ...lines].join("\n");
+};
+
+export const registerVccConfigCommand = (pi: any) => {
+  const handler = async (_args: string, ctx: any) => {
+    // args deliberately ignored — always show the effective config
+    const view = loadSettingsWithSources(ctx);
+    const output = formatVccConfigCard(view);
+    const piAny = pi as unknown as { sendMessage?: (msg: unknown, opts?: unknown) => void };
+    try { piAny.sendMessage?.({ customType: "vcc-config", content: output, display: true }, { triggerTurn: false }); } catch {}
+    try { ctx?.ui?.notify?.(`vcc_config: ${Object.keys(view.values).length} keys from ${view.readPath ?? "defaults"}`, "info"); } catch {}
+  };
+  pi.registerCommand("vcc-config", { description: "Show omp-vcc effective configuration with per-key source", handler });
 };

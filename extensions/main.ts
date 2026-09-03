@@ -19,6 +19,7 @@ import {
   scheduleCompactionStatsNotify,
   registerVccStatsTool as registerVccStatsToolHook,
   registerVccStatsCommand as registerVccStatsCommandHook,
+  registerVccConfigCommand as registerVccConfigCommandHook,
 } from "./vcc-core/hook";
 import { searchEntriesDetailed, getTouchedFiles } from "./vcc-core/core/search-entries";
 import { formatRecallOutput, formatTouchedOutput } from "./vcc-core/core/format-recall";
@@ -342,9 +343,10 @@ export default function (pi: ExtensionAPI): void {
   });
   // ── /vcc-stats commands — show savings table (PR3) ──
   registerVccStatsCommandHook(pi);
+  registerVccConfigCommandHook(pi);
 
 }
 // ── Re-exports for pi-vcc test compatibility (not dead: tests import via hook directly,
 // but external consumers and the `vcc-recall` shim may import via main) ──
-export { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, OMP_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, getCompactionHistory, formatCompactionStats, formatStatsTable, formatLastStatsDetail, scheduleCompactionStatsNotify, AUTO_CONTINUE_CUSTOM_TYPE, LEGACY_AUTO_CONTINUE_CUSTOM_TYPE, invalidExpandIndices, registerRecallTool, registerVccRecallCommand, registerPiVccCommand, registerVccStatsTool, registerVccStatsCommand, clearCompactionHistoryForTests } from "./vcc-core/hook";
+export { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, OMP_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, getCompactionHistory, formatCompactionStats, formatStatsTable, formatLastStatsDetail, scheduleCompactionStatsNotify, AUTO_CONTINUE_CUSTOM_TYPE, LEGACY_AUTO_CONTINUE_CUSTOM_TYPE, invalidExpandIndices, registerRecallTool, registerVccRecallCommand, registerPiVccCommand, registerVccStatsTool, registerVccStatsCommand, registerVccConfigCommand, clearCompactionHistoryForTests } from "./vcc-core/hook";
 export { buildPiVccCustomInstructions, parseKeepAndPrompt } from "./vcc-core/core/compact-args";

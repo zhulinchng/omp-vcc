@@ -76,6 +76,10 @@ try {
     commands.some((c) => c.name === "vcc-stats"),
   );
   check(
+    "vcc-config command registered",
+    commands.some((c) => c.name === "vcc-config"),
+  );
+  check(
     "no omp-vcc-stats duplicate",
     !commands.some((c) => c.name === "omp-vcc-stats"),
   );

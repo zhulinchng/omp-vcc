@@ -257,6 +257,7 @@ omp config list | grep compaction.methodOrder
 # manual /omp-vcc always works, and /vcc-recall works regardless of override
 /omp-vcc keep:2 fix auth      # V_ui
 /vcc-recall hook scope:all    # V_adapt
+/vcc-config  # show effective config with per-key source (file/host overlay/default)
 
 # eager post-VCC shake (forces second shake even when headroom made) — opt-in
 omp config set plugins."@zhulinchng/omp-vcc".chainShakeHint true

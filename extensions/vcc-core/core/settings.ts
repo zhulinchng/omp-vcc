@@ -166,3 +166,80 @@ export function scaffoldSettings(): void {
     // best-effort; never crash extension load
   }
 }
+/** Live-resolved config path. Unlike the `SETTINGS_PATH` const (frozen at import
+ * time), this reflects the current `OMP_VCC_CONFIG_PATH` / `PI_VCC_CONFIG_PATH` env. */
+export function getSettingsPath(): string {
+  return settingsPath();
+}
+
+export type VccSettingSource = "file" | "overlay" | "default";
+
+export interface VccConfigView {
+  /** Live primary path — where a config file WOULD live. */
+  path: string;
+  /** Actual file parsed (primary, XDG/legacy fallback, or null when none). */
+  readPath: string | null;
+  /** True when a candidate file exists (even if unparseable). */
+  filePresent: boolean;
+  /** True when a candidate file parsed as a JSON object. */
+  fileValid: boolean;
+  /** Effective values — same merge as `loadSettings` (defaults ← file ← ctx overlay). */
+  values: PiVccSettings;
+  /** Per-key provenance. Presence check is `key in parsed`, so a file key that
+   * happens to equal the default still counts as `file`. */
+  sources: Record<keyof PiVccSettings, VccSettingSource>;
+}
+
+/**
+ * `loadSettings` plus provenance for `/vcc-config`. Read-only: never creates or
+ * repairs files (`scaffoldSettings` owns that). Merge order mirrors `loadSettings`
+ * exactly — defaults, then the first readable candidate (primary, else the same
+ * `fallbackReadPath()` order), then the identical ctx overlay chain.
+ */
+export function loadSettingsWithSources(ctx?: unknown): VccConfigView {
+  const path = settingsPath();
+  const primaryParsed = readJson(path);
+  let parsed: Record<string, unknown> | null = primaryParsed;
+  let readPath: string | null = primaryParsed ? path : null;
+  if (!parsed) {
+    const fb = fallbackReadPath();
+    if (fb && fb !== path) {
+      const fbParsed = readJson(fb);
+      if (fbParsed) {
+        parsed = fbParsed;
+        readPath = fb;
+      }
+    }
+  }
+  const candidateExists = fallbackReadPath() !== null;
+  const valid = !!parsed && typeof parsed === "object";
+  const values: PiVccSettings =
+    valid && parsed
+      ? { ...DEFAULT_SETTINGS, ...(parsed as Partial<PiVccSettings>) }
+      : { ...DEFAULT_SETTINGS };
+  const sources = {} as Record<keyof PiVccSettings, VccSettingSource>;
+  for (const k of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
+    sources[k] = valid && parsed && k in parsed ? "file" : "default";
+  }
+  if (ctx) {
+    const tryGet = (key: string): unknown => {
+      try {
+        const c = ctx as any;
+        if (!c) return undefined;
+        if (c.settings?.get) return c.settings.get(key);
+        if (c.config?.get) return c.config.get(key);
+        if (c.settings && typeof c.settings === "object" && key in c.settings) return c.settings[key];
+        if (c.config && typeof c.config === "object" && key in c.config) return c.config[key];
+      } catch {}
+      return undefined;
+    };
+    for (const k of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
+      const v = tryGet(`plugins.@zhulinchng/omp-vcc.${k}`) ?? tryGet(`plugins.omp-vcc.${k}`) ?? tryGet(`omp-vcc.${k}`) ?? tryGet(k);
+      if (v !== undefined) {
+        (values as any)[k] = v;
+        sources[k] = "overlay";
+      }
+    }
+  }
+  return { path, readPath, filePresent: candidateExists, fileValid: valid, values, sources };
+}

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Provides: auto `threshold`/`overflow` via `session_before_compact` (when `overrideDefaultCompaction:true`, default), manual `/omp-vcc [keep:N] [focus]` (compacts and shows savings), tools `vcc_recall` + `vcc_stats`, commands `/vcc-recall` + `/vcc-stats`. Native `/settings` dropdown needs optional one-file core patch (`docs/configuration.md#native-strategy`).
+Provides: auto `threshold`/`overflow` via `session_before_compact` (when `overrideDefaultCompaction:true`, default), manual `/omp-vcc [keep:N] [focus]` (compacts and shows savings), tools `vcc_recall` + `vcc_stats`, commands `/vcc-recall` + `/vcc-stats` + `/vcc-config` (effective config with per-key source). Native `/settings` dropdown needs optional one-file core patch (`docs/configuration.md#native-strategy`).
 
 ## Architecture & Data Flow
 
@@ -32,7 +32,7 @@ Lifecycle (`extensions/main.ts` factory `(pi: ExtensionAPI) => void`, hooks in `
 3. `pi.on("before_agent_start")` — clear pending auto-continue timer
 4. `pi.on("session_before_compact")` — explicit-mode bypass (`snapcompact|shake|soft|remote|handoff` void even if `override:true` unless `__omp_vcc__` sentinel) → `buildOwnCut` → `calibrate` → `compileRanked` → `{compaction:{summary, details}}` or `{cancel}`
 5. `pi.on("session_compact")` — toast + invisible-continue (`setTimeout 0`) + eager `chainShakeHint` (`ctx.compact({mode:"shake"})` guarded by `WeakSet`, only when `fromExtension && !willRetry && !isPiVccLast`)
-6. Registrations: `vcc_recall` (`pi.zod`), `/omp-vcc`+`/pi-vcc` (compact + inline stats), `/vcc-recall`+`/pi-vcc-recall` (main.ts); `vcc_stats` + `/vcc-stats`+`/omp-vcc-stats` (hook.ts)
+6. Registrations: `vcc_recall` (`pi.zod`), `/omp-vcc`+`/pi-vcc` (compact + inline stats), `/vcc-recall`+`/pi-vcc-recall` (main.ts); `vcc_stats` + `/vcc-stats` (single, no alias) + `/vcc-config` (single, no alias) (hook.ts)
 
 See `docs/harness.md §5` (bypass), `§8` (methodOrder coexistence), `docs/setup.md` (combining VCC+shake/snapcompact).
 
@@ -58,15 +58,16 @@ docs/                   — architecture, configuration, harness, omp-compaction
 
 ```bash
 bunx tsc --noEmit                    # zero-build, vendored // @ts-nocheck, skipLibCheck
-bun test                             # 515 tests, 48 files, 1443 expects
+bun test                             # 619 tests, 55 files, 1876 expects
 bun test tests/brief.test.ts         # single suite
-bun run smoke                        # 9 checks: 3 hooks + 4 cmds + 2 tools + pipeline
+bun run smoke                        # 13 checks: 3 hooks + 6 cmds + 2 tools + dedup (+ pipeline)
 
 omp plugin link /Users/zhu/code/projects/omp-vcc
 omp plugin doctor                    # 0 warnings 0 errors
 omp -e @zhulinchng/omp-vcc
 /omp-vcc keep:2 Test prompt          # expect [Session Goal] + toast omp-vcc: kept 2/5
 /vcc-stats
+/vcc-config       # effective config card with per-key source
 cat /tmp/omp-vcc-debug.json          # when debug:true
 ```
 
@@ -92,7 +93,7 @@ No `lint`/`format`. `prepublishOnly` runs `tsc && test && smoke`. Keep vendored 
 | `tsconfig.json` | `ES2022`/`ESNext`/`bundler`, `skipLibCheck:true`, `allowImportingTsExtensions:true` |
 | `extensions/main.ts` | Factory |
 | `extensions/vcc-core/hook.ts` | All hook/compaction/stats logic |
-| `extensions/vcc-core/core/settings.ts` | `PiVccSettings` + `DEFAULT_SETTINGS` (6 keys) + `loadSettings`/`scaffoldSettings` |
+| `extensions/vcc-core/core/settings.ts` | `PiVccSettings` + `DEFAULT_SETTINGS` (6 keys) + `loadSettings`/`scaffoldSettings` + `loadSettingsWithSources`/`getSettingsPath` (per-key source for `/vcc-config`) |
 | `extensions/vcc-core/details.ts` | `PiVccCompactionDetails` + `savings` |
 | `docs/architecture.md` | Pipeline map |
 | `docs/harness.md` | Host impact, lifecycle, verification map |
@@ -111,4 +112,4 @@ No `lint`/`format`. `prepublishOnly` runs `tsc && test && smoke`. Keep vendored 
 - **Framework**: `bun:test` (+ `node:test` compat). Suites in `tests/*.test.ts`, ported from `pi-vcc@0.7.0`.
 - **Fixtures**: `tests/fixtures.ts` (`userMsg`, `assistantText`, `toolResult`), `helpers.ts` (`makeMockApi`/`makeMockCtx`); `support/` loads real sessions with synthetic 100-turn fallback.
 - **CI gate**: `bunx tsc --noEmit && bun test && bun run smoke && omp plugin doctor`
-- **Coverage**: deterministic, no snapshots. New logic must add boundary cases: empty branch, orphan `""`, `keep:0`, `reset_boundary`, `toolResult` snap, explicit `keep:N` not boosted, `scope:all` vs lineage, regex→keyword fallback, ENOENT, `willRetry`/`overflow`, per-pi isolation, stats gaps, combined VCC+shake/snapcompact (explicit bypass, sequential, `chainShakeHint` guard).
+- **Coverage**: deterministic, no snapshots. New logic must add boundary cases: empty branch, orphan `""`, `keep:0`, `reset_boundary`, `toolResult` snap, explicit `keep:N` not boosted, `scope:all` vs lineage, regex→keyword fallback, ENOENT, `willRetry`/`overflow`, per-pi isolation, stats gaps, combined VCC+shake/snapcompact (explicit bypass, sequential, `chainShakeHint` guard), `/vcc-config` card (missing/invalid/fallback/overlay sources, args ignored, never throws).

@@ -26,6 +26,7 @@ New here → [`docs/setup.md`](docs/setup.md).
 | `/vcc-recall [query] [scope:all] [page:N] [mode:touched]` | Search compacted history |
 | `/pi-vcc-recall` | Legacy alias for `/vcc-recall` |
 | `/vcc-stats [history\|all]` | Last savings + history table (single, no alias) |
+| `/vcc-config` | Effective config with per-key source (`file` / `host overlay` / `default`) plus resolved file path. Args ignored. |
 
 Tools: `vcc_recall`, `vcc_stats` (approval `read`). Extension-only — no `commands/*.md` file slash commands (avoids duplicate `/omp-vcc`).
 
@@ -53,7 +54,7 @@ File `~/.omp/omp-vcc/config.json` — XDG: `$OMP_VCC_CONFIG_PATH` > `$PI_VCC_CON
 | `debug` | `false` | Write `/tmp/omp-vcc-debug.json` per compaction. |
 | `chainShakeHint` | `false` | Eager post-VCC `shake` chain. Host rescue already auto-shakes on dead-end; this forces it. |
 
-Toggle live: `omp config set plugins."@zhulinchng/omp-vcc".debug true` or `/settings` → `@zhulinchng/omp-vcc`. File is source of truth; `ctx.settings` overlays at runtime.
+Toggle live: `omp config set plugins."@zhulinchng/omp-vcc".debug true` or `/settings` → `@zhulinchng/omp-vcc`. File is source of truth; `ctx.settings` overlays at runtime. `/vcc-config` shows the merged result — use it to confirm a toggle took effect.
 
 ## How it works
 
@@ -82,9 +83,9 @@ Additive VCC+shake is automatic. Eager chain: `chainShakeHint:true`. Explicit mo
 
 ```sh
 bunx tsc --noEmit
-bun test                  # 515 tests, 48 files, 1443 expects, 0 fail
+bun test                  # 619 tests, 55 files, 1876 expects, 0 fail
 bun test tests/e2e --timeout 120000  # 111 E2E
-bun run smoke             # 9 checks: 3 hooks + 4 cmds + 2 tools + pipeline
+bun run smoke             # 13 checks: 3 hooks + 6 cmds + 2 tools + dedup (+ pipeline)
 omp plugin link . && omp plugin doctor
 ```
 
@@ -97,6 +98,7 @@ bunx tsc --noEmit && bun test && bun run smoke
 omp -e @zhulinchng/omp-vcc
 /omp-vcc keep:1   # expect [Session Goal] + toast omp-vcc: kept 1/2 turns
 /vcc-stats        # table + history
+/vcc-config      # effective config card with per-key source
 cat /tmp/omp-vcc-debug.json  # when debug:true
 ```
 

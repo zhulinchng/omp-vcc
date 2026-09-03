@@ -94,6 +94,33 @@ Defaults (same as `DEFAULT_SETTINGS` in `extensions/vcc-core/core/settings.ts`):
 | `chainShakeHint` | `false` (default): host rescue already runs `shake elide` after VCC when VCC didn't create headroom (`session-maintenance.ts:2604`); `true`: after every successful VCC `threshold`/`overflow` (not `willRetry`, not `/pi-vcc`), eagerly call `ctx.compact({mode:"shake"})` guarded by `pendingChainShake` WeakSet to avoid recursion — costs a second `CompactionEntry` even when headroom was already made. Opt-in only for workloads where you want VCC history + guaranteed tail elision in one auto trigger. |
 Edit file directly or via `omp config`; `scaffoldSettings()` auto-creates missing keys without clobbering.
 
+## `/vcc-config`
+
+Shows the effective configuration without leaving the TUI — same merge as
+`loadSettings` (defaults ← config file ← `/settings` host overlay), rendered by
+`formatVccConfigCard` (`hook.ts`) from `loadSettingsWithSources(ctx)`:
+
+```text
+**omp-vcc config** (`~/.omp/omp-vcc/config.json`)
+Source: file ~/.omp/omp-vcc/config.json
+- vccEnabled: on (file)
+- debug: on (host overlay)
+- chainShakeHint: off (default)
+```
+
+- Header is the live primary path (`getSettingsPath()` — reflects current
+  `OMP_VCC_CONFIG_PATH`, unlike the import-time `SETTINGS_PATH` const).
+- Status line is exactly one of: `Source: file <path>` (primary read),
+  `Source: fallback file <path>` (XDG/legacy fallback read),
+  `No config file found — showing defaults.`, `Config file unparseable — showing defaults.`
+- Source tags: `(file)` key present in the parsed file (even when it equals the
+  default), `(host overlay)` a `/settings` toggle is active, `(default)` fallback.
+  Use this to confirm a `/settings` toggle took effect without restart.
+- Arguments are ignored — `/vcc-config anything` shows the same card.
+- Read-only: never creates or repairs files (`scaffoldSettings` owns that).
+  Delivery is `pi.sendMessage({customType:"vcc-config", display:true})` + a
+  `vcc_config: N keys from <path|defaults>` toast; the handler never throws.
+
 ### Token-savings observability (always on)
 
 Even with `debug:false`, every compaction computes and surfaces savings:
@@ -150,6 +177,8 @@ flowchart TB
 cat ~/.omp/omp-vcc/config.json
 # or legacy
 cat ~/.pi/agent/pi-vcc-config.json
+# effective config with per-key source (slash command, args ignored)
+/vcc-config
 
 # manifest settings appear under plugin
 omp plugin list --json | jq '.[] | select(.name|contains("omp-vcc")) | .settings'
