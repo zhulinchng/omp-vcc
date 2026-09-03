@@ -20,7 +20,9 @@ New here → [`docs/setup.md`](docs/setup.md).
 - **Recall** `vcc_recall({query, scope, page, mode, expand})` + `/vcc-recall` — regex → TF-IDF OR, 5/page, `mode:'touched'`, `#N:path` drill-down.
 - **Savings** toast `90k→22k (76% saved)` single line (inline `Last compaction` detail removed; use `/vcc-stats`), divider, `/vcc-stats` + `vcc_stats` tool (50-capped history, per-pi), `details.savings` persisted, `/tmp/omp-vcc-debug.json`.
 ## Commands
-
++
++| Command | Description |
++|---|---|
 | `/omp-vcc [keep:N] [focus]` | Compact only. `keep:0` = all. Smart-keep boosts `keep:1` (5k→25k) unless explicit. Toast single line; detail via `/vcc-stats`. |
 | `/pi-vcc` | Legacy alias for `/omp-vcc` |
 | `/vcc-recall [query] [scope:all] [page:N] [mode:touched]` | Search compacted history |
