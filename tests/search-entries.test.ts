@@ -495,10 +495,31 @@ describe("searchEntriesDetailed posterior noise gate", () => {
   });
 
   it("an extreme threshold still keeps the top hit — the gate can never empty a result", () => {
-    // Entry 0's posterior (≈0.97) sits below 0.99 too, so without the
-    // keep-first rule this would return nothing. It returns [0].
-    const r = searchEntriesDetailed(gradedEntries, gradedMessages, query, { probabilityFloor: 0.99, cap: 1e9 });
+    // Partial-coverage tail drops out at any threshold; the top hit survives
+    // via keep-first even though its own posterior (≈0.87 — in any 2-doc
+    // corpus the top likelihood is exactly sigmoid(1)) sits below the override.
+    const texts = [
+      "alpha beta gamma delta ".repeat(3) + "design review",
+      "alpha mentioned once in an unrelated paragraph",
+    ];
+    const e: RenderedEntry[] = texts.map((t, i) => ({ index: i, role: "user", summary: t }));
+    const m: Message[] = texts.map((t) => ({ role: "user", content: t } as any));
+    const r = searchEntriesDetailed(e, m, "alpha beta gamma delta", { probabilityFloor: 0.99, cap: 1e9 });
     expect(r.hits.map((h) => h.index)).toEqual([0]);
+  });
+
+  it("keeps a uniformly good set via coverage parity even when every posterior is below the cutoff", () => {
+    // Six docs each matching all 4 terms once: near-identical scores put the
+    // median at the score itself, so every likelihood is 0.5 and every
+    // posterior equals its prior (< 0.5) — yet full query coverage means none
+    // is OR-tail. The old relative floor kept all six too; without parity the
+    // absolute gate would collapse this to the top hit alone.
+    const texts = Array.from({ length: 6 }, (_, i) => `alpha beta gamma delta review number ${i} decision`);
+    const e: RenderedEntry[] = texts.map((t, i) => ({ index: i, role: "user", summary: t }));
+    const m: Message[] = texts.map((t) => ({ role: "user", content: t } as any));
+    const r = searchEntriesDetailed(e, m, "alpha beta gamma delta", { cap: 1e9 });
+    expect(r.hits.map((h) => h.index)).toEqual([0, 1, 2, 3, 4, 5]);
+    for (const h of r.hits.slice(1)) expect(h.probability!).toBeLessThan(0.5);
   });
 
   it("is deterministic — same query twice yields identical hits and probabilities", () => {

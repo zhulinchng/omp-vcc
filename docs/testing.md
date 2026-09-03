@@ -135,7 +135,7 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 | `lineage.test.ts` | `lineage.ts` `getActiveLineageEntryIds`, `branch_summary` lineage, `reset_boundary` supersession |
 | `load-messages.test.ts` | `load-messages.ts` `loadAllMessages` JSONL read, `ENOENT → []` not throw, `getActiveLineageEntryIds` integration |
 | `recall-scope.test.ts` | `recall-scope.ts` `normalizeRecallScope`/`normalizeRecallMode`/`parseRecallScope` `scope:all` |
-| `search-entries.test.ts` (565 lines) | `search-entries.ts` `searchEntriesDetailed` regex→TF-IDF fallback, `looksLikeRegex`, `safeRegex`, `hasNestedQuantifier`, BM25 `buildBM25Context`, Bayesian posterior gate `probabilityFloor 0.5`, hard cap `SEARCH_RESULT_CAP 50`, `getTouchedFiles` via `getFileIndicators` + `isContentBearing` |
+| `search-entries.test.ts` (586 lines) | `search-entries.ts` `searchEntriesDetailed` regex→TF-IDF fallback, `looksLikeRegex`, `safeRegex`, `hasNestedQuantifier`, BM25 `buildBM25Context`, Bayesian posterior gate `probabilityFloor 0.5` + coverage parity, hard cap `SEARCH_RESULT_CAP 50`, `getTouchedFiles` via `getFileIndicators` + `isContentBearing` |
 | `bayesian-probability.test.ts` (114 lines) | `bayesian-probability.ts` port fidelity: `sigmoid`/`clampProbability`/`tfPrior`/`normPrior`/`compositePrior`/`posterior` hand-computed equation values, `estimateLikelihoodParams` median/1-std, score→probability monotonicity |
 | `render-entries.test.ts` | `render-entries.ts` rendered entry formatting, role tags |
 | `format-recall.test.ts` | `format-recall.ts` `formatRecallOutput` `Found N matches`, `#N` full-text hint footer on capped/clipped results, `formatTouchedOutput` `TOUCHED_PAGE_SIZE 5` `Page X/Y` |
@@ -159,6 +159,7 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 | `invisible-continue.test.ts` | `AUTO_CONTINUE_CUSTOM_TYPE` `omp-vcc-auto-continue` + legacy `pi-vcc-auto-continue`, `on(context)` strips by `customType` only, `on(before_agent_start)` clears timer, `triggerInvisibleContinue` `display:false triggerTurn:true deliverAs:'followUp'` |
 | `recall-expand.test.ts` | `invalidExpandIndices`, `expand` valid vs `999` invalid `Cannot expand indices outside` |
 | `recall-quality.test.ts` | `searchEntriesDetailed` ranking quality, posterior gate |
+| `recall-bayesian-gate.test.ts` (271 lines, 11) | Bayesian gate × system: tool header counts, expand/`#N` reachability of gated-out hits, gated pagination + out-of-range guidance, lineage vs `scope:all` calibration sets, `mode:touched` bypass, zero-hit phrasing, single-term parity, 300-entry budget, thinking-only survival, `/pi-vcc-recall` command output |
 | `recall-touched-drilldown.test.ts` | `mode:touched` aggregation, `parseDrillDown` variants |
 
 ## Session suites

@@ -198,17 +198,20 @@ const buildBM25Context = (docs: string[], terms: string[], checkBudget: () => vo
 };
 
 /** BM25 score for a single doc against query terms, plus the calibration
- *  inputs the Bayesian posterior needs: total term frequency across terms
- *  and the doc-length ratio. Same pass — no re-scanning. */
-const bm25Score = (doc: string, terms: string[], ctx: BM25Context): { score: number; tf: number; docLenRatio: number } => {
+ *  inputs the Bayesian posterior needs: total term frequency across terms,
+ *  distinct normalized matched terms (coverage parity), and the doc-length
+ *  ratio. Same pass — no re-scanning. */
+const bm25Score = (doc: string, terms: string[], ctx: BM25Context): { score: number; tf: number; distinctTerms: number; docLenRatio: number } => {
   const dl = doc.split(/\s+/).length;
   let score = 0;
   let totalTf = 0;
+  const seenTerms = new Set<string>();
 
   for (const t of terms) {
     const termTf = termFreq(doc, safeRegex(t));
     if (termTf === 0) continue;
     totalTf += termTf;
+    seenTerms.add(t.toLowerCase());
 
     const docFreq = ctx.df.get(t) ?? 0;
     // IDF: log((N - df + 0.5) / (df + 0.5) + 1)
@@ -217,7 +220,7 @@ const bm25Score = (doc: string, terms: string[], ctx: BM25Context): { score: num
     score += idf * tfNorm;
   }
 
-  return { score, tf: totalTf, docLenRatio: ctx.avgDl > 0 ? dl / ctx.avgDl : 1 };
+  return { score, tf: totalTf, distinctTerms: seenTerms.size, docLenRatio: ctx.avgDl > 0 ? dl / ctx.avgDl : 1 };
 };
 
 /** Line-based snippet: ±contextLines around first regex match. */
@@ -399,6 +402,13 @@ export function getTouchedFiles(
  * posterior(L, p) = p at L = 0.5, so a top likelihood >= 0.5 alone does
  * NOT imply posterior >= 0.5 — the unconditional keep-first is the real
  * guarantee, not the calibration.)
+ *
+ * Coverage parity is the second survival rule (see `applyProbabilityFloor`):
+ * a doc matching as many distinct query terms as the best hit survives even
+ * when its posterior sits below the cutoff. Without this, a uniformly good
+ * result set — every doc matches every term, all posteriors lukewarm under
+ * median-anchored calibration — would collapse to the top hit alone, worse
+ * than the relative floor this gate replaces.
  */
 const BAYESIAN_PROBABILITY_FLOOR = 0.5;
 
@@ -433,18 +443,23 @@ export interface SearchTuning {
   cap?: number;
 }
 
-/** Drop scored hits whose calibrated P(relevance) is below `floor`. The top
- *  hit (index 0, highest BM25 score) always passes unconditionally, so this
- *  can never turn a non-empty `scored` into an empty result. Sort stays by
- *  raw BM25 score, never by posterior: the composite prior varies per doc,
- *  so posterior order can differ from BM25 order, and rank assertions pin
- *  BM25 order. */
+/** Drop scored hits that are BOTH below the absolute posterior `floor` AND
+ *  cover fewer distinct query terms than the best hit (`coverage < maxCoverage`).
+ *  Either disjunct keeps a hit: high posterior (absolute relevance) or full
+ *  query coverage — a doc matching every term is never OR-tail, even in a
+ *  lukewarm homogeneous corpus where median-anchored calibration puts every
+ *  posterior below the cutoff. The top hit (index 0, highest BM25 score)
+ *  always passes unconditionally, so this can never turn a non-empty
+ *  `scored` into an empty result. Sort stays by raw BM25 score, never by
+ *  posterior: the composite prior varies per doc, so posterior order can
+ *  differ from BM25 order, and rank assertions pin BM25 order. */
 const applyProbabilityFloor = (
-  scored: Array<{ hit: SearchHit; score: number; probability: number }>,
+  scored: Array<{ hit: SearchHit; score: number; probability: number; distinctTerms: number }>,
   floor: number,
-): Array<{ hit: SearchHit; score: number; probability: number }> => {
+  maxCoverage: number,
+): Array<{ hit: SearchHit; score: number; probability: number; distinctTerms: number }> => {
   if (scored.length === 0) return scored;
-  return scored.filter((s, i) => i === 0 || s.probability >= floor);
+  return scored.filter((s, i) => i === 0 || s.probability >= floor || s.distinctTerms >= maxCoverage);
 };
 
 /**
@@ -530,20 +545,21 @@ export const searchEntriesDetailed = (
 
   const ctx = buildBM25Context(docs, terms, checkBudget);
 
-  const scored: Array<{ hit: SearchHit; score: number; tf: number; docLenRatio: number }> = [];
+  const scored: Array<{ hit: SearchHit; score: number; tf: number; distinctTerms: number; docLenRatio: number }> = [];
   for (let i = 0; i < entries.length; i++) {
     checkBudget();
     const e = entries[i];
     const hay = docs[i];
     const mc = countMatches(hay, terms);
     if (mc === 0) continue;
-    const { score, tf, docLenRatio } = bm25Score(hay, terms, ctx);
+    const { score, tf, distinctTerms, docLenRatio } = bm25Score(hay, terms, ctx);
     const text = messages[i] ? fullText(messages[i]) : e.summary;
     const snip = lineSnippet(text, snipRe);
     scored.push({
       hit: { ...e, snippet: snip, matchCount: mc },
       score,
       tf,
+      distinctTerms,
       docLenRatio,
     });
   }
@@ -558,6 +574,11 @@ export const searchEntriesDetailed = (
     probability: scoreToProbability(s.score, s.tf, s.docLenRatio, params.alpha, params.beta),
   }));
   for (const s of calibrated) s.hit.probability = s.probability;
+  // Coverage parity bar: the most distinct query terms any hit matches. Docs
+  // covering the query as fully as the best doc are never tail, even when
+  // their posterior sits below the absolute cutoff (homogeneous corpora).
+  let maxCoverage = 0;
+  for (const s of calibrated) if (s.distinctTerms > maxCoverage) maxCoverage = s.distinctTerms;
 
   // Sort by BM25 score desc, then drop the noisy low-probability tail
   // (multi-term queries only — see BAYESIAN_PROBABILITY_FLOOR), then
@@ -570,7 +591,7 @@ export const searchEntriesDetailed = (
   // gate-only normalization; it does not change `terms` itself or the BM25
   // scoring above, which already matches case-insensitively.
   const effectiveTermCount = new Set(terms.map((t) => t.toLowerCase())).size;
-  const gated = effectiveTermCount >= 2 ? applyProbabilityFloor(calibrated, probabilityFloor) : calibrated;
+  const gated = effectiveTermCount >= 2 ? applyProbabilityFloor(calibrated, probabilityFloor, maxCoverage) : calibrated;
   return capHits(gated.map((s) => s.hit), cap);
 };
 

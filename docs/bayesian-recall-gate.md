@@ -8,7 +8,7 @@ queries, the regex path, and the hard cap are untouched.
 
 | Area | Before | After |
 |---|---|---|
-| Tail filter | `score >= 0.2 × top score` (`BM25_RELATIVE_FLOOR`, `applyRelativeFloor`) | `P(relevance) >= 0.5` (`BAYESIAN_PROBABILITY_FLOOR`, `applyProbabilityFloor`) |
+| Tail filter | `score >= 0.2 × top score` (`BM25_RELATIVE_FLOOR`, `applyRelativeFloor`) | `P(relevance) >= 0.5` **or** full query coverage (`BAYESIAN_PROBABILITY_FLOOR`, `applyProbabilityFloor`) |
 | Tuning key | `SearchTuning.relativeFloor` | `SearchTuning.probabilityFloor` |
 | New module | — | `core/bayesian-probability.ts`: vendored score→probability port (~90 lines, zero deps) |
 | Hit shape | `snippet`, `matchCount` | adds optional `probability` (BM25 path only) |
@@ -52,7 +52,8 @@ Per natural-language query, after the existing BM25-lite scoring pass:
    One aggregate transform per doc — an approximation of per-term fusion, noted
    in code; sufficient for a noise gate, never used for ranking.
 3. **Gate** multi-term queries only (≥2 distinct terms after stopword/case
-   normalization): keep `P >= 0.5`, plus the top hit unconditionally.
+   normalization): keep `P >= 0.5`, keep docs covering as many distinct query
+   terms as the best hit (coverage parity), plus the top hit unconditionally.
 
 ```mermaid
 flowchart TD
@@ -64,7 +65,7 @@ flowchart TD
   L --> POST["posterior P<br/>L·p / L·p + 1-L·1-p"]
   P --> POST
   POST --> G{"multi-term query?"}
-  G -- "yes" --> K["keep P >= 0.5<br/>+ always top hit"]
+  G -- "yes" --> K["keep P >= 0.5<br/>or full query coverage<br/>+ always top hit"]
   G -- "no" --> B["bypass: keep all"]
 ```
 
@@ -92,8 +93,9 @@ flowchart TD
    (See `vcc-paper-alignment.md` Phase 6.)
 3. **Ranking preserved.** Sort key is still raw BM25; single-term results are
    byte-identical with and without the gate (asserted in tests).
-4. **Bounded blast radius.** The gate only trims the multi-term OR-tail
-   (1-of-N-term weak matches); keep-first makes empty results impossible.
+4. **Bounded blast radius.** The gate only trims partial-coverage,
+   low-probability OR-tail; coverage parity plus keep-first make empty or
+   massacred results impossible.
 5. **Probabilities available** on every BM25 hit for future consumers
    (formatters, merge, debugging) at no extra scan cost — `tf` and length
    ratio come out of the existing scoring pass.
@@ -106,14 +108,19 @@ Scratch probe over synthetic corpora (run, observed, then removed):
 |---|---|---|
 | Graded 5-doc cliff (2 strong, 3 one-term tail) | `[0,1,2,4,3]` — BM25 order | `[0,1]` — kept at `P` 0.97/0.80, tail at 0.28–0.30 |
 | 60-entry (5 strong + 55 weak) | 60 hits | exactly `[0..4]`, min kept `P` 0.9956 |
+| 6-entry uniform (all match all terms, all `P` < 0.5) | 6 hits | all 6 kept via coverage parity |
 | `"root cause auth"` (3-term; #1 matches 1 term) | `[3,1]` — OR layer intact | `[3]` — weak hit at `P` 0.19 |
 | Single-term `"alpha"` on 60-entry | 60 hits | identical 60 hits |
 
 Committed suite: `bayesian-probability.test.ts` (port fidelity against
 hand-computed Eq. 20/22/25/26/27 values, estimator edges, score→probability
-monotonicity) + gate tests (cliff, 0.99-threshold keep-first, determinism,
-broad-corpus collapse, bypasses). Full gate at ship time: `tsc` 0 errors,
-578 pass / 0 fail, `bun run smoke` all pass.
+monotonicity) + gate tests (cliff, 0.99-threshold keep-first, coverage parity,
+determinism, 60-entry collapse, bypasses) + `recall-bayesian-gate.test.ts`
+(11 integration tests through the tool/command: header counts, expand/`#N`
+reachability of gated-out hits, pagination, lineage vs `scope:all`, touched
+mode, zero-hit phrasing, single-term parity, 300-entry budget, thinking-only
+survival, command output). Full gate after coverage parity: `tsc` 0 errors,
+590 pass / 0 fail (54 files), `bun run smoke` all pass.
 
 ## Call path
 
