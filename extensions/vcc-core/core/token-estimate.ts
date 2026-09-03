@@ -99,3 +99,80 @@ export const estimateMessageContentTokens = (
   content: unknown,
   charsPerToken = DEFAULT_CHARS_PER_TOKEN,
 ): number => estimateTokensFromChars(estimateMessageContentChars(content), charsPerToken);
+
+export interface UsageStats {
+  messageCount: number;
+  byRole: Record<string, number>;
+  toolCallCount: number;
+  models: string[];
+  /** Wall-clock span (ms) from message timestamps, null when unavailable. */
+  spanMs: number | null;
+  inputChars: number;
+  outputChars: number;
+  inputTokensEst: number;
+  outputTokensEst: number;
+  /** Summed provider usage counters when messages carry them. */
+  usageTotals: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  calibration: TokenEstimateCalibration;
+}
+
+/**
+ * Reference `_collect_stats` equivalent for the debug snapshot: per-compaction
+ * usage/timing/model block. Assistant content counts as output; user text,
+ * tool results, and bash executions count as input. Calibrates chars/token
+ * against summed provider usage when present, heuristic fallback otherwise.
+ */
+export const collectUsageStats = (messages: any[]): UsageStats => {
+  const byRole: Record<string, number> = {};
+  const models = new Set<string>();
+  let toolCallCount = 0;
+  let inputChars = 0;
+  let outputChars = 0;
+  let minTs = Infinity;
+  let maxTs = -Infinity;
+  const usageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  let sawUsage = false;
+  for (const m of messages ?? []) {
+    const role = typeof m?.role === "string" ? m.role : "unknown";
+    byRole[role] = (byRole[role] ?? 0) + 1;
+    if (typeof m?.model === "string" && m.model) models.add(m.model);
+    if (typeof m?.timestamp === "number" && Number.isFinite(m.timestamp)) {
+      if (m.timestamp < minTs) minTs = m.timestamp;
+      if (m.timestamp > maxTs) maxTs = m.timestamp;
+    }
+    const u = m?.usage;
+    if (u && typeof u === "object") {
+      sawUsage = true;
+      for (const k of ["input", "output", "cacheRead", "cacheWrite"] as const) {
+        if (typeof u[k] === "number" && Number.isFinite(u[k])) usageTotals[k] += u[k];
+      }
+    }
+    if (role === "assistant") {
+      outputChars += estimateMessageContentChars(m?.content);
+      if (Array.isArray(m?.content)) {
+        for (const part of m.content) if (part?.type === "toolCall") toolCallCount++;
+      }
+    } else if (role === "bashExecution") {
+      inputChars += (typeof m?.command === "string" ? m.command.length : 0) + 1
+        + (typeof m?.output === "string" ? m.output.length : 0);
+    } else {
+      inputChars += estimateMessageContentChars(m?.content);
+    }
+  }
+  const totalChars = inputChars + outputChars;
+  const sourceTokens = sawUsage ? usageTotals.input + usageTotals.output : undefined;
+  const calibration = calibrateCharsPerToken(totalChars, sourceTokens);
+  return {
+    messageCount: messages?.length ?? 0,
+    byRole,
+    toolCallCount,
+    models: [...models],
+    spanMs: minTs <= maxTs ? maxTs - minTs : null,
+    inputChars,
+    outputChars,
+    inputTokensEst: estimateTokensFromChars(inputChars, calibration.charsPerToken),
+    outputTokensEst: estimateTokensFromChars(outputChars, calibration.charsPerToken),
+    usageTotals,
+    calibration,
+  };
+};

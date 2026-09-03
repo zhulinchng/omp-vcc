@@ -45,6 +45,9 @@ const normalizeOne = (msg: Message, msgIndex: number): NormalizedBlock[] => {
     for (const part of msg.content) {
       if (part.type === "text") {
         blocks.push({ kind: "assistant", text: sanitize(part.text), sourceIndex: msgIndex });
+      } else if (part.type === "thinking") {
+        const thinkingText = sanitize(part.text ?? part.thinking ?? "");
+        if (thinkingText) blocks.push({ kind: "thinking", text: thinkingText, sourceIndex: msgIndex });
       } else if (part.type === "toolCall") {
         blocks.push({
           kind: "tool_call",

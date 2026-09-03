@@ -378,3 +378,54 @@ describe("compileBrief", () => {
     expect(r).toContain("c8");
   });
 });
+
+describe("brief tool result pointers (VCC reference call+result ranges)", () => {
+  it("emits call and result refs for a call→result pair", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "tool_call", name: "Read", args: { path: "a.ts" }, sourceIndex: 4 },
+      { kind: "tool_result", name: "Read", text: "contents", sourceIndex: 5 },
+    ];
+    const r = compileBrief(blocks);
+    expect(r).toContain('* Read "a.ts" (#4, result #5)');
+  });
+
+  it("keeps the single-ref form when no result follows", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "tool_call", name: "Read", args: { path: "a.ts" }, sourceIndex: 4 },
+    ];
+    const r = compileBrief(blocks);
+    expect(r).toContain('* Read "a.ts" (#4)');
+    expect(r).not.toContain("result");
+  });
+
+  it("stops the result scan at the next tool_call boundary", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "tool_call", name: "Read", args: { path: "a.ts" }, sourceIndex: 4 },
+      { kind: "tool_call", name: "Read", args: { path: "b.ts" }, sourceIndex: 5 },
+      { kind: "tool_result", name: "Read", text: "b contents", sourceIndex: 6 },
+    ];
+    const r = compileBrief(blocks);
+    expect(r).toContain('* Read "a.ts" (#4)');
+    expect(r).toContain('* Read "b.ts" (#5, result #6)');
+  });
+
+  it("merges repeated two-ref lines preserving all refs", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "tool_call", name: "Read", args: { path: "a.ts" }, sourceIndex: 4 },
+      { kind: "tool_result", name: "Read", text: "one", sourceIndex: 5 },
+      { kind: "tool_call", name: "Read", args: { path: "a.ts" }, sourceIndex: 6 },
+      { kind: "tool_result", name: "Read", text: "two", sourceIndex: 7 },
+    ];
+    const r = compileBrief(blocks);
+    expect(r).toContain('* Read "a.ts" (#4, result #5, #6, result #7) x2');
+  });
+
+  it("still merges single-ref repeats in the old format", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "tool_call", name: "Read", args: { path: "a.ts" }, sourceIndex: 4 },
+      { kind: "tool_call", name: "Read", args: { path: "a.ts" }, sourceIndex: 6 },
+    ];
+    const r = compileBrief(blocks);
+    expect(r).toContain('* Read "a.ts" (#4, #6) x2');
+  });
+});

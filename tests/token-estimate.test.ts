@@ -2,6 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   calibrateCharsPerToken,
+  collectUsageStats,
   estimateMessageContentChars,
   estimateMessageContentTokens,
   estimateTokensFromChars,
@@ -70,5 +71,54 @@ describe("token estimate", () => {
 
   test("estimates message content tokens through the shared char estimator", () => {
     expect(estimateMessageContentTokens("abcde")).toBe(2);
+  });
+});
+
+describe("collectUsageStats", () => {
+  test("counts roles, tool calls, models, span, and chars", () => {
+    const msgs = [
+      { role: "user", content: "hello", timestamp: 1000 },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "reply here" },
+          { type: "toolCall", name: "Read", arguments: { path: "a" } },
+        ],
+        model: "m1",
+        usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+        timestamp: 3000,
+      },
+      { role: "toolResult", toolName: "Read", content: "body", timestamp: 2000 },
+      { role: "assistant", content: "done", model: "m1", timestamp: 4000 },
+    ];
+    const s = collectUsageStats(msgs as any);
+    expect(s.messageCount).toBe(4);
+    expect(s.byRole).toEqual({ user: 1, assistant: 2, toolResult: 1 });
+    expect(s.toolCallCount).toBe(1);
+    expect(s.models).toEqual(["m1"]);
+    expect(s.spanMs).toBe(3000);
+    expect(s.inputChars).toBe("hello".length + "body".length);
+    expect(s.outputChars).toBe(
+      "reply here".length + "Read".length + JSON.stringify({ path: "a" }).length + "done".length,
+    );
+    expect(s.usageTotals).toMatchObject({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0 });
+    expect(s.calibration.mode).toBe("calibrated");
+    expect(s.inputTokensEst).toBeGreaterThan(0);
+    expect(s.outputTokensEst).toBeGreaterThan(0);
+  });
+
+  test("falls back to heuristic calibration without provider usage", () => {
+    const s = collectUsageStats([{ role: "user", content: "hi" }] as any);
+    expect(s.calibration).toMatchObject({ mode: "heuristic", charsPerToken: 4 });
+    expect(s.spanMs).toBeNull();
+    expect(s.models).toEqual([]);
+    expect(s.inputTokensEst).toBe(1);
+  });
+
+  test("handles empty input", () => {
+    const s = collectUsageStats([]);
+    expect(s.messageCount).toBe(0);
+    expect(s.byRole).toEqual({});
+    expect(s.spanMs).toBeNull();
   });
 });

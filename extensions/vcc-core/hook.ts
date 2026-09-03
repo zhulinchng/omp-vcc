@@ -5,7 +5,7 @@ import { writeFileSync } from "fs";
 import { compileRanked } from "./core/summarize";
 import { buildPiVccCustomInstructions, parseKeepAndPrompt, PI_VCC_COMPACT_INSTRUCTION } from "./core/compact-args";
 import { loadSettings, type PiVccSettings } from "./core/settings";
-import { calibrateCharsPerToken, estimateMessageContentChars, estimateMessageContentTokens, estimateTokensFromChars } from "./core/token-estimate";
+import { calibrateCharsPerToken, estimateMessageContentChars, estimateMessageContentTokens, estimateTokensFromChars, collectUsageStats } from "./core/token-estimate";
 import type { PiVccCompactionDetails } from "./details";
 import type { CompactionReason } from "./types";
 import { loadAllMessages as _loadAllMessages } from "./core/load-messages";
@@ -13,7 +13,7 @@ import { searchEntriesDetailed as _searchEntriesDetailed, getTouchedFiles as _ge
 import { formatRecallOutput as _formatRecallOutput, formatTouchedOutput as _formatTouchedOutput } from "./core/format-recall";
 import { getActiveLineageEntryIds as _getActiveLineageEntryIds } from "./core/lineage";
 import { normalizeRecallScope as _normalizeRecallScope, normalizeRecallMode as _normalizeRecallMode, parseRecallScope as _parseRecallScope } from "./core/recall-scope";
-import { parseDrillDown as _parseDrillDown, expandEntryFile as _expandEntryFile } from "./core/drill-down";
+import { parseDrillDown as _parseDrillDown, expandEntryFile as _expandEntryFile, parseEntryRef as _parseEntryRef, expandEntry as _expandEntry } from "./core/drill-down";
 
 // convertToLlm shim: try host export, fallback to identity (preserves AgentMessage for omp compileRanked)
 let convertToLlm: (messages: any[]) => any[] = (m) => m;
@@ -972,6 +972,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       messagesPreviewHead: agentMessages.slice(0, 3).map((m: any) => ({ role: m.role, preview: previewContent(m.content) })),
       messagesPreviewTail: agentMessages.slice(-3).map((m: any) => ({ role: m.role, preview: previewContent(m.content) })),
       convertedMessages: messages.length,
+      usage: collectUsageStats(agentMessages),
       firstKeptEntryId,
       cutWindow,
       tokensBefore,
@@ -1130,6 +1131,17 @@ export const registerRecallTool = (pi: any) => {
       const scope = _normalizeRecallScope(params.scope === "active" ? "lineage" : params.scope);
       const lineageEntryIds = scope === "lineage" ? _getActiveLineageEntryIds(ctx.sessionManager) : undefined;
       const q = params.query?.trim();
+      if (q && _parseEntryRef(q)) {
+        const ref = _parseEntryRef(q)!;
+        if (lineageEntryIds) {
+          const { rendered } = _loadAllMessages(sessionFile, false, lineageEntryIds);
+          if (!rendered.some((m) => m.index === ref.index)) {
+            return { content: [{ type: "text", text: `Cannot expand indices outside active lineage: ${ref.index}. Use scope:'all' to reach other branches.` }] };
+          }
+        }
+        const text = _expandEntry(sessionFile, ref.index, ref.full, ref.offset, ref.limit);
+        return { content: [{ type: "text", text }] };
+      }
       if (q && _parseDrillDown(q)) {
         const parsed = _parseDrillDown(q)!;
         if (lineageEntryIds) {
@@ -1174,7 +1186,7 @@ export const registerRecallTool = (pi: any) => {
         const pageResults = hits.slice(start, start + PAGE_SIZE);
         const header = totalPages > 1 ? `Page ${page}/${totalPages} (${hits.length} total matches${scopeSuffix}${truncationNote})` : `${hits.length} matches${scopeSuffix}${truncationNote}`;
         const footer = page < totalPages ? `\n--- Use page:${page + 1}${scope === "all" ? " with scope:'all'" : ""} for more results ---` : "";
-        const output = _formatRecallOutput(pageResults, q, header) + footer;
+        const output = _formatRecallOutput(pageResults, q, header, { truncated, totalBeforeCap }) + footer;
         return { content: [{ type: "text", text: output }] };
       }
       const output = (scope === "all" ? "Scope: all\n\n" : "") + _formatRecallOutput(msgs.slice(-DEFAULT_RECENT), q);
@@ -1225,7 +1237,7 @@ export const registerVccRecallCommand = (pi: any) => {
       const pageResults = hits.slice(start, start + PAGE_SIZE);
       const header = totalPages > 1 ? `Page ${page}/${totalPages} (${hits.length} total matches${scopeSuffix}${truncationNote})` : `${hits.length} matches${scopeSuffix}${truncationNote}`;
       const footer = page < totalPages ? `\n--- /pi-vcc-recall ${query}${scopeArg} page:${page + 1} ---` : "";
-      const output = _formatRecallOutput(pageResults, query, header) + footer;
+      const output = _formatRecallOutput(pageResults, query, header, { truncated, totalBeforeCap }) + footer;
       try { pi.sendMessage?.({ customType: "vcc-recall", content: output, display: true }, { triggerTurn: false }); } catch {}
     },
   });

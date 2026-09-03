@@ -471,4 +471,47 @@ describe("hook integration savings + details", () => {
     try { rmSync(dir, { recursive: true, force: true }); } catch {}
     clearCompactionHistoryForTests();
   });
+
+  test("debug file includes usage stats block when debug:true", async () => {
+    const { mkdtempSync } = await import("fs");
+    const dir = mkdtempSync(join(tmpdir(), "vcc-debug-usage-"));
+    const cfg = join(dir, "config.json");
+    writeFileSync(cfg, JSON.stringify({ overrideDefaultCompaction: true, debug: true }));
+    const orig = process.env.OMP_VCC_CONFIG_PATH;
+    process.env.OMP_VCC_CONFIG_PATH = cfg;
+    if (existsSync(DEBUG_PATH)) unlinkSync(DEBUG_PATH);
+    const pi: any = { on: (ev: string, fn: any) => { (pi as any)[ev] = fn; }, sendMessage: () => {} };
+    registerBeforeCompactHook(pi);
+    const entries = [
+      { id: "m1", type: "message", message: { role: "user", content: "user goal here", timestamp: 1000 } },
+      { id: "m2", type: "message", message: { role: "assistant", content: [{ type: "text", text: "working on it" }], model: "test-model", usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0 }, timestamp: 2000 } },
+      { id: "m3", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "read", arguments: { path: "src/app.ts" } }], model: "test-model", usage: { input: 50, output: 10, cacheRead: 0, cacheWrite: 0 }, timestamp: 3000, stopReason: "toolUse" } },
+      { id: "m4", type: "message", message: { role: "toolResult", toolCallId: "tc1", toolName: "read", content: "file body", isError: false, timestamp: 3500 } },
+      { id: "m5", type: "message", message: { role: "user", content: "final turn keep", timestamp: 4000 } },
+      { id: "m6", type: "message", message: { role: "assistant", content: "final reply", model: "test-model", timestamp: 5000 } },
+    ];
+    const ev = {
+      branchEntries: entries,
+      preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 50000 },
+      customInstructions: PI_VCC_COMPACT_INSTRUCTION,
+      signal: new AbortController().signal,
+    };
+    await pi["session_before_compact"](ev, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
+    expect(existsSync(DEBUG_PATH)).toBe(true);
+    const data = JSON.parse(readFileSync(DEBUG_PATH, "utf8"));
+    expect(data.usage).toBeDefined();
+    expect(data.usage.messageCount).toBeGreaterThan(0);
+    expect(data.usage.byRole.user).toBeGreaterThanOrEqual(1);
+    expect(data.usage.models).toContain("test-model");
+    expect(data.usage.toolCallCount).toBe(1);
+    expect(data.usage.spanMs).toBeGreaterThan(0);
+    expect(data.usage.inputChars).toBeGreaterThan(0);
+    expect(data.usage.outputChars).toBeGreaterThan(0);
+    expect(data.usage.calibration.mode).toBe("calibrated");
+    process.env.OMP_VCC_CONFIG_PATH = orig;
+    try { unlinkSync(cfg); unlinkSync(DEBUG_PATH); } catch {}
+    const { rmSync } = await import("fs");
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+    clearCompactionHistoryForTests();
+  });
 });

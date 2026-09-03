@@ -24,7 +24,7 @@ import { searchEntriesDetailed, getTouchedFiles } from "./vcc-core/core/search-e
 import { formatRecallOutput, formatTouchedOutput } from "./vcc-core/core/format-recall";
 import { getActiveLineageEntryIds } from "./vcc-core/core/lineage";
 import { normalizeRecallScope, normalizeRecallMode, parseRecallScope } from "./vcc-core/core/recall-scope";
-import { parseDrillDown, expandEntryFile } from "./vcc-core/core/drill-down";
+import { parseDrillDown, expandEntryFile, parseEntryRef, expandEntry } from "./vcc-core/core/drill-down";
 import { buildPiVccCustomInstructions, parseKeepAndPrompt } from "./vcc-core/core/compact-args";
 
 // Build omp sentinel instructions; keep pi sentinel for backward compat in hook
@@ -93,6 +93,25 @@ export default function (pi: ExtensionAPI): void {
 
       const q = p.query?.trim();
 
+      if (q && parseEntryRef(q)) {
+        const ref = parseEntryRef(q);
+        if (!ref) {
+          return { content: [{ type: "text", text: "Invalid entry ref query." }], details: undefined };
+        }
+        if (lineageEntryIds) {
+          const { rendered } = loadAllMessages(sessionFile, false, lineageEntryIds);
+          const exists = rendered.some((m) => m.index === ref.index);
+          if (!exists) {
+            return {
+              content: [{ type: "text", text: `Cannot expand indices outside active lineage: ${ref.index}. Use scope:'all' to reach other branches.` }],
+              details: undefined,
+            };
+          }
+        }
+        const text = expandEntry(sessionFile, ref.index, ref.full, ref.offset, ref.limit);
+        return { content: [{ type: "text", text }], details: undefined };
+      }
+
       if (q && parseDrillDown(q)) {
         const parsed = parseDrillDown(q);
         if (!parsed) {
@@ -153,7 +172,7 @@ export default function (pi: ExtensionAPI): void {
         const pageResults = hits.slice(start, start + PAGE_SIZE);
         const header = totalPages > 1 ? `Page ${page}/${totalPages} (${hits.length} total matches${scopeSuffix}${truncationNote})` : `${hits.length} matches${scopeSuffix}${truncationNote}`;
         const footer = page < totalPages ? `\n--- Use page:${page + 1}${scope === "all" ? " with scope:'all'" : ""} for more results ---` : "";
-        const output = formatRecallOutput(pageResults, q, header) + footer;
+        const output = formatRecallOutput(pageResults, q, header, { truncated, totalBeforeCap }) + footer;
         return { content: [{ type: "text", text: output }], details: undefined };
       }
       const output = (scope === "all" ? "Scope: all\n\n" : "") + formatRecallOutput(msgs.slice(-DEFAULT_RECENT), q);
@@ -277,7 +296,7 @@ export default function (pi: ExtensionAPI): void {
       const pageResults = hits.slice(start, start + PAGE_SIZE);
       const header = totalPages > 1 ? `Page ${page}/${totalPages} (${hits.length} total matches${scopeSuffix}${truncationNote})` : `${hits.length} matches${scopeSuffix}${truncationNote}`;
       const footer = page < totalPages ? `\n--- /vcc-recall ${query}${scopeArg} page:${page + 1} ---` : "";
-      const output = formatRecallOutput(pageResults, query, header) + footer;
+      const output = formatRecallOutput(pageResults, query, header, { truncated, totalBeforeCap }) + footer;
       try { piAny.sendMessage?.({ customType: "vcc-recall", content: output, display: true }, { triggerTurn: false }); } catch {}
       try { c.ui.notify(`vcc_recall: ${hits.length} hits`, "info"); } catch {}
     },
@@ -316,7 +335,7 @@ export default function (pi: ExtensionAPI): void {
       const pageResults = hits.slice(start, start + PAGE_SIZE);
       const header = totalPages > 1 ? `Page ${page}/${totalPages} (${hits.length} total matches${scopeSuffix}${truncationNote})` : `${hits.length} matches${scopeSuffix}${truncationNote}`;
       const footer = page < totalPages ? `\n--- /pi-vcc-recall ${query}${scopeArg} page:${page + 1} ---` : "";
-      const output = formatRecallOutput(pageResults, query, header) + footer;
+      const output = formatRecallOutput(pageResults, query, header, { truncated, totalBeforeCap }) + footer;
 
       try { piAny.sendMessage?.({ customType: "vcc-recall", content: output, display: true }, { triggerTurn: false }); } catch {}
     },

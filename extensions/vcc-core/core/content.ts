@@ -50,6 +50,17 @@ export const textParts = (content: Message["content"]): string[] => {
 export const textOf = (content: Message["content"]): string =>
   textParts(content).join("\n");
 
+export const thinkingParts = (content: Message["content"]): string[] => {
+  if (!content || typeof content === "string") return [];
+  return content
+    .filter((part) => part.type === "thinking")
+    .map((part) => (part.thinking ?? part.text ?? "") as string)
+    .filter((t) => typeof t === "string" && t.length > 0);
+};
+
+export const thinkingOf = (content: Message["content"]): string =>
+  thinkingParts(content).join("\n");
+
 /**
  * Check if tool call arguments contain content-bearing data.
  *

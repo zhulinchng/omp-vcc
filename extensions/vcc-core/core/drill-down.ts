@@ -297,3 +297,88 @@ Use #${entryIndex}:<more-specific-path> to drill into a specific file.`;
 
   return formatToolCallContent(matched[0], entryIndex, { full, offset, limit });
 }
+
+// ── Bare entry refs: #N, #N:full, #N:offset, #N:offset:limit ────────────────
+
+/**
+ * Pattern: #N, #N:full, #N:offset, or #N:offset:limit — full entry text.
+ * Checked BEFORE parseDrillDown in dispatch: a purely numeric path segment
+ * (`#42:30`) reads as entry 42 at line offset 30, consistent with the
+ * trailing-number-means-offset convention of #N:path:offset.
+ */
+const ENTRYREF_PATTERN = /^#(\d+)(?::(full|\d+(?::\d+)?))?$/;
+
+/**
+ * Parse a bare entry ref like #42, #42:full, #42:30, or #42:30:20.
+ * Returns null unless the whole query is the ref pattern (same ^$ anchoring
+ * contract as parseDrillDown).
+ */
+export function parseEntryRef(query: string): {
+  index: number;
+  full: boolean;
+  offset?: number;
+  limit?: number;
+} | null {
+  const match = query.match(ENTRYREF_PATTERN);
+  if (!match) return null;
+  const index = parseInt(match[1], 10);
+  const suffix = match[2];
+  if (suffix === "full") return { index, full: true, offset: undefined, limit: undefined };
+  if (suffix !== undefined) {
+    const parts = suffix.split(":");
+    const offset = parseInt(parts[0], 10);
+    const limit = parts[1] !== undefined ? parseInt(parts[1], 10) : undefined;
+    if (!Number.isNaN(offset)) return { index, full: false, offset, limit };
+  }
+  return { index, full: false, offset: undefined, limit: undefined };
+}
+
+const ENTRY_PREVIEW_LIMIT = 30;
+
+/**
+ * Expand a bare entry ref (#N) to the entry's full rendered text — the
+ * inline-architecture counterpart of resolving a brief pointer into the
+ * lossless full view. The :full body is the renderMessage(msg, N, true)
+ * summary verbatim; the default preview and offset/limit windows mirror
+ * formatToolCallContent's contract (30-line preview, "Lines X-Y (of Z)").
+ */
+export function expandEntry(
+  sessionFile: string,
+  entryIndex: number,
+  full = false,
+  offset?: number,
+  limit?: number,
+): string {
+  const { rendered } = loadAllMessages(sessionFile, true);
+  if (entryIndex < 0 || entryIndex >= rendered.length) {
+    return `Entry #${entryIndex} not found in session history.`;
+  }
+  const e = rendered[entryIndex];
+  const header = `#${entryIndex} [${e.role}]`;
+  const body = e.summary;
+  if (full) return `${header}\n\n${body}`;
+  const allLines = body.split("\n");
+  const totalLines = allLines.length;
+  if (offset !== undefined) {
+    const startLine = Math.max(0, offset);
+    const maxLines = limit ?? ENTRY_PREVIEW_LIMIT;
+    const endLine = Math.min(startLine + maxLines, totalLines);
+    const visible = allLines.slice(startLine, endLine);
+    const displayStart = startLine + 1; // 1-indexed for user display
+    if (visible.length === 0) {
+      return `Offset ${startLine} is beyond entry length ${totalLines}. Use #${entryIndex} for the first ${ENTRY_PREVIEW_LIMIT} lines.`;
+    }
+    let result = `${header}\nLines ${displayStart}-${endLine} (of ${totalLines}):\n\n${visible.join("\n")}`;
+    if (endLine < totalLines) {
+      result += `\n\n--- Use #${entryIndex}:${endLine} or #${entryIndex}:${endLine}:${maxLines} for next ${maxLines} lines, #${entryIndex}:full for complete ---`;
+    } else if (offset > 0) {
+      result += `\n\n(End of entry)`;
+    }
+    return result;
+  }
+  if (totalLines > ENTRY_PREVIEW_LIMIT) {
+    const preview = allLines.slice(0, ENTRY_PREVIEW_LIMIT).join("\n");
+    return `${header}\n\n${preview}\n\n...(${totalLines - ENTRY_PREVIEW_LIMIT} more lines — use #${entryIndex}:full for complete content, or #${entryIndex}:${ENTRY_PREVIEW_LIMIT} for next ${ENTRY_PREVIEW_LIMIT} lines)`;
+  }
+  return `${header}\n\n${body}`;
+}

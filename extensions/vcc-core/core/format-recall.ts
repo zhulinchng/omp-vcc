@@ -78,6 +78,7 @@ export const formatRecallOutput = (
   entries: SearchHit[],
   query?: string,
   headerOverride?: string,
+  opts?: { truncated?: boolean; totalBeforeCap?: number },
 ): string => {
   if (entries.length === 0) {
     return query
@@ -97,5 +98,12 @@ export const formatRecallOutput = (
     return `#${e.index} [${e.role}]${fileSuffix} ${body}`;
   });
 
-  return `${header}\n\n${lines.join("\n\n")}`;
+  const body = `${header}\n\n${lines.join("\n\n")}`;
+  // Every hit ref resolves: #N expands the full entry (see expandEntry in
+  // drill-down.ts). Surface the hint when results are capped or clipped.
+  const clipped = entries.some((e) => e.snippet?.includes("...("));
+  if (opts?.truncated || clipped) {
+    return `${body}\n\n--- Use #N for full entry text ---`;
+  }
+  return body;
 };

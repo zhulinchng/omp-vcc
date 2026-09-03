@@ -237,6 +237,20 @@ const toolOneLiner = (name: string, args: Record<string, unknown>): string => {
   return `* ${name}`;
 };
 
+/**
+ * Source index of the result for the tool_call at `from`: the first following
+ * tool_result block with the same tool name, stopping at the next
+ * tool_call/user boundary. Null when the call has no visible result.
+ */
+const findToolResultIndex = (blocks: NormalizedBlock[], from: number, name: string): number | null => {
+  for (let i = from + 1; i < blocks.length; i++) {
+    const n = blocks[i];
+    if (n.kind === "tool_result" && n.name === name) return n.sourceIndex ?? null;
+    if (n.kind === "tool_call" || n.kind === "user") break;
+  }
+  return null;
+};
+
 export interface BriefLine {
   /** Section header like "[user]" or "[assistant]" */
   header: string;
@@ -310,32 +324,47 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
       case "tool_call": {
         // Skip malformed tool calls from streaming providers (empty name / fragmented args).
         if (!b.name || b.name.trim() === "") break;
-        const ref = b.sourceIndex != null ? ` (#${b.sourceIndex})` : "";
+        const resultIdx = findToolResultIndex(blocks, blockIndex, b.name);
+        const ref = b.sourceIndex != null
+          ? (resultIdx != null ? ` (#${b.sourceIndex}, result #${resultIdx})` : ` (#${b.sourceIndex})`)
+          : (resultIdx != null ? ` (result #${resultIdx})` : "");
         const summary = toolOneLiner(b.name, b.args) + ref;
         push("[assistant]", summary);
         break;
       }
+      case "thinking":
+        // Searchable via recall, elided from the brief (reference lower_brief parity).
+        break;
       case "tool_result":
         // Tool result bodies are intentionally omitted from compact briefs.
         break;
     }
   }
 
-  // Collapse consecutive identical tool lines (same text, different #ref)
+  // Collapse consecutive identical tool lines (same text, different refs).
+  // Ref tokens are `#N` (call) or `result #N`; a merge accumulates tokens in
+  // order and sums repeat counts, e.g. `* Read "a" (#1, result #2)` followed
+  // by `* Read "a" (#3, result #4)` becomes
+  // `* Read "a" (#1, result #2, #3, result #4) x2`.
+  const isRefToken = (t: string): boolean => /^#\d+$/.test(t) || /^result #\d+$/.test(t);
+  const splitToolLine = (line: string): { base: string; refs: string[]; count: number } | null => {
+    const m = line.match(/^(.*?) \(([^()]*)\)(?: x(\d+))?$/);
+    if (!m) return null;
+    const refs = m[2].split(",").map((s) => s.trim()).filter(Boolean);
+    if (refs.length === 0 || !refs.every(isRefToken)) return null;
+    return { base: m[1], refs, count: m[3] ? parseInt(m[3]) : 1 };
+  };
   for (const sec of sections) {
     if (sec.header !== "[assistant]") continue;
     const out: string[] = [];
     for (const line of sec.lines) {
       if (!line.startsWith("* ")) { out.push(line); continue; }
-      const ref = line.match(/\(#(\d+)\)$/)?.[1] ?? "";
-      const base = ref ? line.slice(0, -(ref.length + 3)).trimEnd() : line;
-      const last = out.length > 0 ? out[out.length - 1] : "";
-      const m = last.match(/^(.*) \((#[\d, #]+)\) x(\d+)$/);
-      if (m && m[1] === base) {
-        out[out.length - 1] = `${base} (${m[2]}, #${ref}) x${parseInt(m[3]) + 1}`;
-      } else if (last.match(/\(#\d+\)$/) && last.replace(/\s*\(#\d+\)$/, "") === base) {
-        const prevRef = last.match(/\(#(\d+)\)$/)?.[1];
-        out[out.length - 1] = `${base} (#${prevRef}, #${ref}) x2`;
+      const cur = splitToolLine(line);
+      const last = out.length > 0 ? splitToolLine(out[out.length - 1]) : null;
+      if (cur && last && cur.base === last.base) {
+        const refs = [...last.refs];
+        for (const r of cur.refs) if (!refs.includes(r)) refs.push(r);
+        out[out.length - 1] = `${cur.base} (${refs.join(", ")}) x${last.count + cur.count}`;
       } else {
         out.push(line);
       }

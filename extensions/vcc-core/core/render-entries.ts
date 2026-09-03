@@ -1,6 +1,6 @@
 // @ts-nocheck
 import type { Message } from "@oh-my-pi/pi-ai";
-import { clip, textOf } from "./content";
+import { clip, textOf, thinkingOf } from "./content";
 import { summarizeToolArgs } from "./tool-args";
 import { extractPath } from "./tool-args";
 
@@ -45,9 +45,13 @@ export const renderMessage = (msg: Message, index: number, full = false): Render
     const text = full ? `$ ${cmd}\n${out}` : clip(`$ ${cmd}\n${out}`, 300);
     return { index, role: "bash", summary: text };
   }
+  const thinking = thinkingOf(msg.content);
   const text = full ? textOf(msg.content) : clip(textOf(msg.content), 300);
   const tools = toolCalls(msg.content);
   const files = extractFilesFromContent(msg.content);
+  if (!text && !tools && thinking) {
+    return { index, role: "thinking", summary: full ? thinking : clip(thinking, 300) };
+  }
   const summary = tools ? `${tools}\n${text}` : text;
   return { index, role: "assistant", summary, ...(files.length > 0 && { files }) };
 };

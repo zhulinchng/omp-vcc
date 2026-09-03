@@ -6,7 +6,7 @@ Comprehensive reference for the `omp-vcc` test corpus: unit, integration, sessio
 
 ```sh
 bunx tsc --noEmit          # typecheck — 0 errors, vendored core // @ts-nocheck, skipLibCheck
-bun test                   # 538 tests, 50 files, 1546 expects, 0 fail  (~7s)
+bun test                   # 564 tests, 52 files, 1621 expects, 0 fail  (~7s)
 bun test tests/e2e --timeout 120000   # 124 E2E only
 bun test tests/before-compact.test.ts # single suite
 bun run smoke              # 12 checks: 3 hooks + 5 commands (omp-vcc/pi-vcc/vcc-recall/pi-vcc-recall/vcc-stats, no alias) + 2 tools + dedup
@@ -18,7 +18,7 @@ No API key required. E2E `vcc_recall` live LLM turn is `skipIf` when `ANTHROPIC_
 
 ```mermaid
 flowchart LR
-  TSC["bunx tsc --noEmit"] --> TEST["bun test\n538 pass"]
+  TSC["bunx tsc --noEmit"] --> TEST["bun test\n564 pass"]
   TEST --> SMOKE["bun run smoke\n3 hooks + 4 cmds + 2 tools"]
   SMOKE --> E2E["bun run e2e\n124 E2E isolated OMP_DIR"]
   E2E --> PUB{"prepublishOnly?"}
@@ -80,7 +80,7 @@ flowchart TB
 | Command | Scope | Gate |
 |---|---|---|
 | `bunx tsc --noEmit` | typecheck all `extensions/`, `scripts/`, `tests/` | CI first, `prepublishOnly` |
-| `bun test` | 414 tests, 38 files, 1078 expects | CI second |
+| `bun test` | 440 tests, 40 files, 1153 expects | CI second |
 | `bun test tests/e2e --timeout 120000` | 124 E2E only | local E2E loop |
 | `bun test tests/before-compact.test.ts` | single suite | targeted |
 | `bun test --watch` | watch mode | dev |
@@ -119,15 +119,15 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 
 | File | Coverage |
 |---|---|
-| `brief.test.ts` (13.8KB) | `brief.ts` one-line summaries, `* Read "src/pets.py"` pointers, elided internals, `compileBrief` |
+| `brief.test.ts` (13.8KB) | `brief.ts` one-line summaries, `* Read "a.ts" (#4, result #5)` call+result pointers + repeat collapse, elided thinking, `compileBrief` |
 | `build-sections.test.ts` | `build-sections.ts` 5 sections: `[Session Goal]` `[Files And Changes]` `[Commits]` `[Outstanding Context]` `[User Preferences]` + `---` `Brief transcript` |
 | `compile.test.ts` | `compile.ts` IR → output, `compileRanked` ranking glue |
 | `content.test.ts` | `content.ts` `clip`, `clipSentence`, `textParts`, `textOf`, `isContentBearing` (`path` + `content`/`edits`/`oldText`), `extractToolCallText`, `snippet` |
 | `format.test.ts` | `format.ts` `capBrief` `BRIEF_MAX_LINES 120`, `formatSection` |
-| `normalize.test.ts` | `normalize.ts` lex→parse IR, queue-operation discard, `digits→` strip |
+| `normalize.test.ts` | `normalize.ts` lex→parse IR, thinking blocks preserved with `sourceIndex`, queue-operation discard, `digits→` strip |
 | `rank.test.ts` | `rank.ts` TF-IDF, `selectRankedBriefBlocks` budget `maxBriefChars` / `maxBriefCharsCeiling` / `briefCharsPerBlock`, size-relative clamp `1100→2000` tok |
 | `sanitize.test.ts` | `sanitize.ts` ANSI `\u001b[31m` strip, `queue-operation` discard |
-| `token-estimate.test.ts` | `token-estimate.ts` `calibrateCharsPerToken` clamp 2–6 fallback 4, `estimateMessageContentChars/Tokens`, `IMAGE_CONTENT_CHARS 4800` |
+| `token-estimate.test.ts` | `token-estimate.ts` `calibrateCharsPerToken` clamp 2–6 fallback 4, `estimateMessageContentChars/Tokens`, `IMAGE_CONTENT_CHARS 4800`, `collectUsageStats` models/span/tool-calls/usage-totals + charsPerToken calibration |
 | `extract-files.test.ts` | `extract/files.ts` regex for file ops, `…/last3` shortening |
 | `extract-goals.test.ts` | `extract/goals.ts` goal mining |
 | `extract-preferences.test.ts` | `extract/preferences.ts` preference mining |
@@ -137,8 +137,10 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 | `recall-scope.test.ts` | `recall-scope.ts` `normalizeRecallScope`/`normalizeRecallMode`/`parseRecallScope` `scope:all` |
 | `search-entries.test.ts` (523 lines) | `search-entries.ts` `searchEntriesDetailed` regex→TF-IDF fallback, `looksLikeRegex`, `safeRegex`, `hasNestedQuantifier`, BM25 `buildBM25Context`, `relativeFloor 0.2`, hard cap `SEARCH_RESULT_CAP 50`, `getTouchedFiles` via `getFileIndicators` + `isContentBearing` |
 | `render-entries.test.ts` | `render-entries.ts` rendered entry formatting, role tags |
-| `format-recall.test.ts` | `format-recall.ts` `formatRecallOutput` `Found N matches`, `formatTouchedOutput` `TOUCHED_PAGE_SIZE 5` `Page X/Y` |
-| `recall-touched-drilldown.test.ts` | `drill-down.ts` `parseDrillDown` `#N:path`/`#N:path:full`/`#N:path:offset:limit`, `expandEntryFile` |
+| `format-recall.test.ts` | `format-recall.ts` `formatRecallOutput` `Found N matches`, `#N` full-text hint footer on capped/clipped results, `formatTouchedOutput` `TOUCHED_PAGE_SIZE 5` `Page X/Y` |
+| `recall-touched-drilldown.test.ts` | `drill-down.ts` `parseDrillDown` `#N:path`/`#N:path:full`/`#N:path:offset:limit`, `expandEntryFile`; bare `#N` refs + `expandEntry` covered in `entry-ref.test.ts` |
+| `thinking.test.ts` (7) | thinking end-to-end: normalize keeps `thinking` blocks, brief elides, `renderMessage` `[thinking]` role, recall finds thinking-only terms |
+| `entry-ref.test.ts` (10) | `drill-down.ts` `parseEntryRef`/`expandEntry` bare `#N`/`#N:full`/`#N:offset[:limit]`, `Lines X-Y (of Z)` windows, recall-tool `#N` dispatch, `formatRecallOutput` hint footer |
 | `sanitize.test.ts` | already listed |
 | `content.test.ts` | already listed |
 | `report.test.ts` | `report.ts` coverage for report generation |
@@ -172,7 +174,7 @@ Unified via `hook.ts:38-105` `CompactionStats` + `details.ts:PiVccCompactionDeta
 
 | File | Coverage |
 |---|---|
-| `compaction-stats.test.ts` (22) | Toast `omp-vcc: 90.0k→22.0k (76% saved, ~68.0k) · kept 1/5 turns, ~2.1k tok` prefix, `formatLastStatsDetail` `Before → After: **90.0k → 22.0k** (76% saved)`, `formatStatsTable` `| # | Before → After | Saved | Kept | Summarized | When |`, history copy-isolation, `details.savings` v2, `authoritative refine`, `debug` file |
+| `compaction-stats.test.ts` (23) | Toast `omp-vcc: 90.0k→22.0k (76% saved, ~68.0k) · kept 1/5 turns, ~2.1k tok` prefix, `formatLastStatsDetail` `Before → After: **90.0k → 22.0k** (76% saved)`, `formatStatsTable` `| # | Before → After | Saved | Kept | Summarized | When |`, history copy-isolation, `details.savings` v2, `authoritative refine`, `debug` file + `usage` models/span/tool-calls/input-output/calibration block |
 | `compaction-stats-gaps.test.ts` (36) | Edge gaps: `percent 0`/`before 0`/`saved 0→—`/`after>before→0` no prefix, `999→500` vs `1.0k`, negative, empty table, `budgetCut` suffix, `timestamp null→—`, `derived saved`, `smartKeep`/`budgetCut`/`willRetry`, perPi isolation & clear, 50-cap global+perPi, enrichment missing/after>before/willRetry, `debug authoritativeSavings`, tool schema fallback when `zod.boolean` missing, `vcc-stats` `history`/`all` variants, `tokensBefore undefined` |
 | `compaction-bugs-fix.test.ts` (10) | Bugs: fallback `kept 0/2` when `tokensBefore` missing, perPi isolation for `vcc_stats`, sections filter `KNOWN_SECTIONS`, `perPiKeys` leak via `WeakMap` enumeration |
 
