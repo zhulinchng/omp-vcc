@@ -507,7 +507,13 @@ describe("hook integration savings + details", () => {
     expect(data.usage.spanMs).toBeGreaterThan(0);
     expect(data.usage.inputChars).toBeGreaterThan(0);
     expect(data.usage.outputChars).toBeGreaterThan(0);
-    expect(data.usage.calibration.mode).toBe("calibrated");
+    // Synthetic usage (180 tokens over ~100 slice chars, raw < 2.5) trips the
+    // slice/tokens mismatch guard: per-message provider counters describe the
+    // whole context at each request, not the slice, so the Latin prior (4)
+    // replaces the spurious 0.5 calibration. Consistent data still calibrates
+    // (see token-estimate.test.ts).
+    expect(data.usage.calibration.mode).toBe("heuristic");
+    expect(data.usage.calibration.charsPerToken).toBe(4);
     process.env.OMP_VCC_CONFIG_PATH = orig;
     try { unlinkSync(cfg); unlinkSync(DEBUG_PATH); } catch {}
     const { rmSync } = await import("fs");

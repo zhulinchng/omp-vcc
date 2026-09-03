@@ -90,8 +90,8 @@ Additive VCC+shake is automatic. Eager chain: `chainShakeHint:true`. Explicit mo
 
 ```sh
 bunx tsc --noEmit
-bun test                  # 619 tests, 55 files, 1876 expects, 0 fail
-bun test tests/e2e --timeout 120000  # 111 E2E
+bun test                  # 661 tests, 56 files, 2095 expects, 0 fail
+bun test tests/e2e --timeout 120000  # 124 E2E
 bun run smoke             # 13 checks: 3 hooks + 6 cmds + 2 tools + dedup (+ pipeline)
 omp plugin link . && omp plugin doctor
 ```

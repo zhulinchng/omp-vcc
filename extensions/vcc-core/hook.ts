@@ -432,7 +432,7 @@ export type OwnCutResult =
     }
   | { ok: false; reason: OwnCutCancelReason };
 
-const collectLiveMessages = (branchEntries: any[]): EntryWithMessage[] => {
+export const collectLiveMessages = (branchEntries: any[]): EntryWithMessage[] => {
   // Find the last compaction entry and its firstKeptEntryId
   let lastCompactionIdx = -1;
   let lastKeptId: string | undefined;
@@ -499,7 +499,7 @@ const collectLiveMessages = (branchEntries: any[]): EntryWithMessage[] => {
   return liveMessages;
 };
 
-export function buildOwnCut(branchEntries: any[], keepUserTurns = 1): OwnCutResult {
+export function buildOwnCut(branchEntries: any[], keepUserTurns = 1, explicitKeep = false): OwnCutResult {
   const normalizedKeepUserTurns = normalizeKeepUserTurns(keepUserTurns);
   const liveMessages = collectLiveMessages(branchEntries);
 
@@ -528,13 +528,29 @@ export function buildOwnCut(branchEntries: any[], keepUserTurns = 1): OwnCutResu
   const cutIdx = targetUserIdx >= 0 ? userIndices[targetUserIdx] : -1;
 
   if (cutIdx <= 0) {
-    // Keep request cannot form a safe boundary (single user prompt, no user prompt,
-    // or keep larger than available user turns), so compact EVERYTHING and keep no tail.
+    // Explicit keep covering every user turn: keep the whole tail instead of
+    // compacting it away. Only the prefix before the first user turn (when
+    // any) is summarized. Default-path cuts and no-user-message sessions keep
+    // the old compact-all fallback so auto-compaction still makes progress
+    // (single-prompt + autonomous tail) and explicit compacts in autonomous
+    // sessions still do something.
+    if (explicitKeep && userIndices.length > 0) {
+      const firstUserIdx = userIndices[0];
+      return {
+        ok: true,
+        messages: liveMessages.slice(0, firstUserIdx).map((e) => e.message),
+        firstKeptEntryId: liveMessages[firstUserIdx].entry.id,
+        compactAll: false,
+        keptUserTurns: userIndices.length,
+        totalUserTurns: userIndices.length,
+        requestedKeepUserTurns: normalizedKeepUserTurns,
+        keepFallbackToCompactAll: false,
+      };
+    }
     // firstKeptEntryId="" is a sentinel: pi-core's buildSessionContext won't match it
     // (so 0 kept from pre-compaction), and next buildOwnCut triggers orphan recovery.
     return compactAll(true);
   }
-
   return {
     ok: true,
     messages: liveMessages.slice(0, cutIdx).map((e) => e.message),
@@ -652,12 +668,18 @@ export interface ResolveSmartKeepResult {
  */
 const tailTokensForKeep = (branchEntries: any[], keepUserTurns: number, charsPerToken?: number): number | null => {
   const cut = buildOwnCut(branchEntries, keepUserTurns);
-  if (!cut.ok || cut.compactAll) return null;
-  const idx = branchEntries.findIndex((e: any) => e.id === cut.firstKeptEntryId);
-  if (idx < 0) return null;
-  const kept = branchEntries.slice(idx).filter((e: any) => e.type === "message");
-  const chars = kept.reduce(
-    (sum: number, e: any) => sum + estimateMessageContentChars(e.message?.content),
+  // Null when keep would trigger compact-all, cancel, or summarize nothing
+  // (keep-all cut with an empty prefix): the resolver stops growing instead
+  // of selecting a value that discards the tail or compacts nothing new.
+  if (!cut.ok || cut.compactAll || cut.messages.length === 0) return null;
+  // Measure over the live window (message + custom_message/branch_summary via
+  // toLiveMessage), not branchEntries filtered to type === "message": custom
+  // tails otherwise undercount and smart-keep over-grows (under-compaction).
+  const live = collectLiveMessages(branchEntries);
+  const keptIdx = live.findIndex((e) => e.entry.id === cut.firstKeptEntryId);
+  if (keptIdx < 0) return null;
+  const chars = live.slice(keptIdx).reduce(
+    (sum: number, e) => sum + estimateMessageContentChars(e.message?.content),
     0,
   );
   return estimateTokensFromChars(chars, charsPerToken);
@@ -755,9 +777,20 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const calibrationSummaryChars = typeof preparation.previousSummary === "string"
       ? preparation.previousSummary.length
       : 0;
+    // Content sample for the slice/tokens mismatch guards: slice text when the
+    // calibration cut has any, else the previous summary. Bounded (first 50
+    // string contents, 8k chars) — classification only needs a fraction.
+    const calibrationSample = calibrationCut.ok
+      ? calibrationCut.messages
+          .slice(0, 50)
+          .map((message: any) => (typeof message.content === "string" ? message.content : ""))
+          .join("\n")
+          .slice(0, 8000)
+      : "";
     const tokenEstimate = calibrateCharsPerToken(
       calibrationMessageChars + calibrationSummaryChars,
       preparation.tokensBefore,
+      calibrationSample || (typeof preparation.previousSummary === "string" ? preparation.previousSummary.slice(0, 8000) : undefined),
     );
 
     // Smart keep-tail: boost default keep when the tail is small.
@@ -769,7 +802,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       smartKeepTail: settings.smartKeepTail,
       charsPerToken: tokenEstimate.charsPerToken,
     });
-    let ownCut = buildOwnCut(branchEntries as any[], smartKeep.keepUserTurns);
+    let ownCut = buildOwnCut(branchEntries as any[], smartKeep.keepUserTurns, keepUserTurnsExplicit);
     // Default path only: rescue autonomous / oversized-tail sessions with a
     // token-budget cut. Explicit keep:N is respected absolutely (no-op here).
     if (ownCut.ok && !keepUserTurnsExplicit) {
@@ -920,6 +953,17 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         briefCharsPerBlock: Math.round(RANKED_BRIEF_TOKENS_PER_BLOCK * tokenEstimate.charsPerToken),
       },
     });
+
+    // Keep-all cut with an empty prefix and no previous summary yields nothing
+    // new to summarize. Never hand the host an empty summary — cancel and keep
+    // the session intact. (A non-empty prefix that compiles to "" falls through
+    // with the pre-existing behavior; custom-only prefixes carry no sections.)
+    if (!summary && agentMessages.length === 0) {
+      try {
+        ctx?.ui?.notify?.("omp-vcc: Nothing new to compact (keep covers all turns)", "info");
+      } catch {}
+      return { cancel: true };
+    }
 
     const tokensBefore = typeof preparation.tokensBefore === "number" ? preparation.tokensBefore : 0;
     const summaryChars = summary.length;

@@ -6,7 +6,7 @@ Comprehensive reference for the `omp-vcc` test corpus: unit, integration, sessio
 
 ```sh
 bunx tsc --noEmit          # typecheck — 0 errors, vendored core // @ts-nocheck, skipLibCheck
-bun test                   # 564 tests, 52 files, 1621 expects, 0 fail  (~7s)
+bun test                   # 661 tests, 56 files, 2095 expects, 0 fail  (~7s)
 bun test tests/e2e --timeout 120000   # 124 E2E only
 bun test tests/before-compact.test.ts # single suite
 bun run smoke              # 13 checks: 3 hooks + 6 commands (omp-vcc/pi-vcc/vcc-recall/pi-vcc-recall/vcc-stats/vcc-config, no alias) + 2 tools + dedup
@@ -80,7 +80,7 @@ flowchart TB
 | Command | Scope | Gate |
 |---|---|---|
 | `bunx tsc --noEmit` | typecheck all `extensions/`, `scripts/`, `tests/` | CI first, `prepublishOnly` |
-| `bun test` | 440 tests, 40 files, 1153 expects | CI second |
+| `bun test` | 661 tests, 56 files, 2095 expects | CI second |
 | `bun test tests/e2e --timeout 120000` | 124 E2E only | local E2E loop |
 | `bun test tests/before-compact.test.ts` | single suite | targeted |
 | `bun test --watch` | watch mode | dev |
@@ -121,14 +121,15 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 |---|---|
 | `brief.test.ts` (13.8KB) | `brief.ts` one-line summaries, `* Read "a.ts" (#4, result #5)` call+result pointers + repeat collapse, elided thinking, `compileBrief` |
 | `build-sections.test.ts` | `build-sections.ts` 5 sections: `[Session Goal]` `[Files And Changes]` `[Commits]` `[Outstanding Context]` `[User Preferences]` + `---` `Brief transcript` |
-| `compile.test.ts` | `compile.ts` IR → output, `compileRanked` ranking glue |
+| `compile.test.ts` | `compile.ts` IR → output, `compileRanked` ranking glue, recall-note-once + body wrap + hard-break markers |
+| `compaction-gaps.test.ts` | over/under-compaction gaps: note dedup, tag anchoring, explicit keep-all, custom tails, file survival + grouped overflow, calibration guards, headerless brief merge, hard-break paths |
 | `content.test.ts` | `content.ts` `clip`, `clipSentence`, `textParts`, `textOf`, `isContentBearing` (`path` + `content`/`edits`/`oldText`), `extractToolCallText`, `snippet` |
-| `format.test.ts` | `format.ts` `capBrief` `BRIEF_MAX_LINES 120`, `formatSection` |
-| `normalize.test.ts` | `normalize.ts` lex→parse IR, thinking blocks preserved with `sourceIndex`, queue-operation discard, `digits→` strip |
-| `rank.test.ts` | `rank.ts` TF-IDF, `selectRankedBriefBlocks` budget `maxBriefChars` / `maxBriefCharsCeiling` / `briefCharsPerBlock`, size-relative clamp `1100→2000` tok |
+| `format.test.ts` | `format.ts` `capBrief` `BRIEF_MAX_LINES 120`, `formatSection`, hard-break `\` markers rejoined spaceless |
+| `normalize.test.ts` | `normalize.ts` lex→parse IR, thinking blocks preserved with `sourceIndex`, `custom` kind for injected context, queue-operation discard, `digits→` strip |
+| `rank.test.ts` | `rank.ts` TF-IDF, `selectRankedBriefBlocks` budget `maxBriefChars` / `maxBriefCharsCeiling` / `briefCharsPerBlock`, size-relative clamp `1100→2000` tok, `custom-context` scoring |
 | `sanitize.test.ts` | `sanitize.ts` ANSI `\u001b[31m` strip, `queue-operation` discard |
-| `token-estimate.test.ts` | `token-estimate.ts` `calibrateCharsPerToken` clamp 2–6 fallback 4, `estimateMessageContentChars/Tokens`, `IMAGE_CONTENT_CHARS 4800`, `collectUsageStats` models/span/tool-calls/usage-totals + charsPerToken calibration |
-| `extract-files.test.ts` | `extract/files.ts` regex for file ops, `…/last3` shortening |
+| `token-estimate.test.ts` | `token-estimate.ts` `calibrateCharsPerToken` clamp 2–6 fallback 4 + content-class guards (Latin/CJK priors, usage-stats sampling), `estimateMessageContentChars/Tokens`, `IMAGE_CONTENT_CHARS 4800`, `collectUsageStats` models/span/tool-calls/usage-totals + charsPerToken calibration |
+| `extract-files.test.ts` | `extract/files.ts` tool-name matching, fileOps seeding, full verbatim paths, `longestCommonDirPrefix`, `renderFileCategoryLines` flat/grouped/bare-count caps |
 | `extract-goals.test.ts` | `extract/goals.ts` goal mining |
 | `extract-preferences.test.ts` | `extract/preferences.ts` preference mining |
 | `filter-noise.test.ts` | `filter-noise.ts` `XML_WRAPPER_RE` `<system-reminder>`/`<ide_opened_file>` etc |
@@ -155,8 +156,7 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 | `pi-vcc-command.test.ts` | `extensions/main.ts:registerPiVccCommand` vs `registerBeforeCompactHook` keep parsing, `buildPiVccCustomInstructions` |
 | `vcc-recall-command.test.ts` | `/vcc-recall` slash command `parseRecallScope`/`parseRecallCommandArgs` `query scope:all page:N`, `pi.sendMessage({customType:"vcc-recall"})`, alias `/pi-vcc-recall` |
 | `vcc-config-command.test.ts` (16) | `/vcc-config` slash command: registration (no alias) + factory wiring, handler renders loader view verbatim, partial/full/invalid-JSON files, `settings.get`/`config.get`/plain-map overlays, args ignored, missing `sendMessage`/`ui` tolerance, throwing notify tolerance, live `getSettingsPath`, fallback labeling, synthetic all-four status branches + key order |
-| `recall-tool-scope.test.ts` | `vcc_recall` tool `scope:all` vs `lineage` lineage filtering via `getActiveLineageEntryIds`, `approval read` |
-| `smart-keep.test.ts` | `resolveSmartKeepUserTurns` explicit never boosted, disabled returns 1, `tailTokensForKeep` compact-all stops growth, `MIN 5k → MAX 25k` |
+| `smart-keep.test.ts` | `resolveSmartKeepUserTurns` explicit never boosted, disabled returns 1, `tailTokensForKeep` live-window (incl. `custom_message`) stops growth at compact-all/empty-prefix, `MIN 5k → MAX 25k` |
 | `invisible-continue.test.ts` | `AUTO_CONTINUE_CUSTOM_TYPE` `omp-vcc-auto-continue` + legacy `pi-vcc-auto-continue`, `on(context)` strips by `customType` only, `on(before_agent_start)` clears timer, `triggerInvisibleContinue` `display:false triggerTurn:true deliverAs:'followUp'` |
 | `recall-expand.test.ts` | `invalidExpandIndices`, `expand` valid vs `999` invalid `Cannot expand indices outside` |
 | `recall-quality.test.ts` | `searchEntriesDetailed` ranking quality, posterior gate |

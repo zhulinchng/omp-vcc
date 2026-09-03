@@ -26,6 +26,16 @@ describe("section-aware brief ranking prototype", () => {
     expect(edit.reasons).toContain("edit-tool");
     expect(test.reasons).toContain("test-command");
   });
+  it("scores injected custom context above plain assistant text", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "custom", text: "memory: auth uses rotating refresh tokens" },
+      { kind: "assistant", text: "working on it" },
+    ];
+    const ranked = rankBriefBlocks(blocks);
+    const custom = ranked.find((r) => r.block.kind === "custom")!;
+    expect(custom.reasons).toContain("custom-context");
+    expect(custom.score).toBeGreaterThanOrEqual(12);
+  });
 
   it("penalizes scaffolding-only bash so it ranks below substantive commands", () => {
     const blocks: NormalizedBlock[] = [

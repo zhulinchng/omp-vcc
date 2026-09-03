@@ -321,6 +321,17 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
         }
         break;
       }
+      case "custom": {
+        // Injected context (memory, skills): kept verbatim under its own tag
+        // so the next session can attribute it correctly.
+        const text = truncateTokens(collapseSkillText(b.text), TRUNCATE_USER);
+        if (text) {
+          const ref = b.sourceIndex != null ? ` (#${b.sourceIndex})` : "";
+          pushText("[custom]", text, ref);
+        }
+        lastHeader = "[custom]";
+        break;
+      }
       case "tool_call": {
         // Skip malformed tool calls from streaming providers (empty name / fragmented args).
         if (!b.name || b.name.trim() === "") break;

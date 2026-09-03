@@ -531,19 +531,20 @@ describe("registerBeforeCompactHook: compact-all path", () => {
     expect(userMessages).toEqual([]);
   });
 
-  test("huge keep instruction compacts all safely", () => {
+  test("huge keep instruction with nothing new to summarize cancels safely", () => {
     setConfig({ debug: false, overrideDefaultCompaction: false });
-    const { pi, invokeBefore } = createMockPi();
+    const { pi, invokeBefore, notifyCalls } = createMockPi();
     registerBeforeCompactHook(pi);
     const entries = [msg("u1", "user", "one"), msg("a1", "assistant", "reply one"), msg("u2", "user", "two"), msg("a2", "assistant", "reply two")];
 
     const result = invokeBefore(makeEvent(entries, `${PI_VCC_COMPACT_INSTRUCTION} keep:999999999999999999999`));
 
-    expect(result.compaction.firstKeptEntryId).toBe("");
-    expect(getLastCompactionStats()).toMatchObject({
-      keptUserTurns: 0,
-      totalUserTurns: 2,
-    });
+    // Explicit keep covers all turns and there is no previous summary, so there
+    // is nothing new to summarize: cancel and keep the session intact instead
+    // of compacting the requested tail away.
+    expect(result.compaction).toBeUndefined();
+    expect(result.cancel).toBe(true);
+    expect(notifyCalls.some((n) => n.msg.includes("Nothing new to compact"))).toBe(true);
   });
 });
 

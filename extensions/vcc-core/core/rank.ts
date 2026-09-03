@@ -113,6 +113,7 @@ const scoreBlock = (
 
   if (block.kind === "user") add(ranked, 18, "user-turn");
   if (block.kind === "assistant") add(ranked, 10, "assistant-context");
+  if (block.kind === "custom") add(ranked, 12, "custom-context");
   if (block.kind === "tool_result") add(ranked, 1, "tool-result-low-value");
 
   if (block.kind === "tool_call") {

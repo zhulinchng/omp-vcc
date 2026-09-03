@@ -18,14 +18,21 @@ const wrapLine = (line: string, maxChars: number): string[] => {
   const wrapped: string[] = [];
   let remaining = line;
   let prefix = "";
-
   while (prefix.length + remaining.length > maxChars) {
     const available = Math.max(20, maxChars - prefix.length);
     let splitAt = remaining.lastIndexOf(" ", available);
-    if (splitAt < Math.floor(available * 0.5)) splitAt = available;
-
-    wrapped.push(prefix + remaining.slice(0, splitAt).trimEnd());
-    remaining = remaining.slice(splitAt).trimStart();
+    const hard = splitAt < Math.floor(available * 0.5);
+    if (hard) {
+      // No usable space: mid-token break. One char shorter plus a trailing
+      // backslash marks it so parsers rejoin WITHOUT a space (see
+      // mergeFileLines); the line stays within maxChars.
+      const cut = Math.max(1, available - 1);
+      wrapped.push(prefix + remaining.slice(0, cut) + "\\");
+      remaining = remaining.slice(cut);
+    } else {
+      wrapped.push(prefix + remaining.slice(0, splitAt).trimEnd());
+      remaining = remaining.slice(splitAt).trimStart();
+    }
     prefix = continuationIndent;
   }
 

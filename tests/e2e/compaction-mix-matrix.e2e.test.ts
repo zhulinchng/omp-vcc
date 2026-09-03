@@ -315,6 +315,9 @@ describe("mix-matrix — 3-pass VCC chain with growth and keep rotation", () => 
     expect(r3.compaction).toBeDefined();
     expect(getCompactionHistory(cap.pi).length).toBe(3);
     expect(r3.compaction.summary.length).toBeLessThan(r1.compaction.summary.length + r2.compaction.summary.length + 5000);
+    // Recall hint survives chaining exactly once (no per-cycle duplication).
+    const notes = r3.compaction.summary.split("Do not redo work already completed.").length - 1;
+    expect(notes).toBe(1);
   });
 });
 

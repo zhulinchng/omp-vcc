@@ -192,7 +192,7 @@ omp config list | grep -E "vcc|compaction"
 Resolver `resolveSmartKeepUserTurns({branchEntries, requestedKeepUserTurns:null, explicit:false, smartKeepTail:true, charsPerToken})`:
 
 - `explicit===true` or `smartKeepTail===false` → return `baseKeep` unchanged.
-- `tailTokensForKeep(baseKeep)` → if `null` (compact-all/cancel) or `> minTokens 5k` → return base.
+- `tailTokensForKeep(baseKeep)` (live-window chars incl. `custom_message`) → if `null` (compact-all/cancel/empty-prefix) or `> minTokens 5k` → return base.
 - Else iterate `k = baseKeep+1 .. totalUserTurns`, break when `tokens==null || > maxTokens 25k`, select largest feasible `k`.
 
 Example: tail `keep:1` = 3 k → grows to `keep:3` with tail 22 k; if `keep:4` would be 28 k > max, stops at 3. Toast shows `smart-keep` tag via `formatCompactionStats`.

@@ -88,9 +88,14 @@ describe("normalize", () => {
     ]);
   });
 
-  it("skips truly unknown message roles gracefully", () => {
+  it("normalizes custom role content as its own kind", () => {
     const custom = { role: "custom", content: "hello" } as any;
-    expect(normalize([custom])).toEqual([]);
+    expect(normalize([custom])).toEqual([{ kind: "custom", text: "hello", sourceIndex: 0 }]);
+  });
+
+  it("skips truly unknown message roles gracefully", () => {
+    const telex = { role: "telex", content: "hello" } as any;
+    expect(normalize([telex])).toEqual([]);
   });
 });
 

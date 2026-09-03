@@ -12,6 +12,7 @@ export interface FileOps {
 export type NormalizedBlock =
   | { kind: "user"; text: string; sourceIndex?: number }
   | { kind: "assistant"; text: string; sourceIndex?: number }
+  | { kind: "custom"; text: string; sourceIndex?: number }
   | { kind: "thinking"; text: string; sourceIndex?: number }
   | { kind: "tool_call"; name: string; args: Record<string, unknown>; sourceIndex?: number }
   | { kind: "tool_result"; name: string; text: string; sourceIndex?: number }

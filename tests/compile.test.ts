@@ -79,13 +79,26 @@ describe("compile", () => {
     expect(r).toContain("latest");
   });
 
-  it("wraps final output including recall note", () => {
+  it("wraps final output body; recall note appended verbatim once", () => {
     const r = compile({
       messages: [userMsg("check final summary wrapping")],
     });
-    const maxLineLength = Math.max(...r.split("\n").map((line) => line.length));
+    // The recall note is appended after wrapping (single 127-char line) so it
+    // survives the next cycle's strip instead of compounding.
+    const lines = r.split("\n");
+    const body = lines.slice(0, -2);
     expect(r).toContain("vcc_recall");
-    expect(maxLineLength).toBeLessThanOrEqual(120);
+    expect(Math.max(...body.map((line) => line.length))).toBeLessThanOrEqual(120);
+    expect(r.trimEnd().endsWith("Do not redo work already completed.")).toBe(true);
+  });
+  it("long single tokens hard-break within width with a continuation marker", () => {
+    const r = compile({
+      messages: [userMsg(`check ${"z".repeat(150)}`)],
+    });
+    const lines = r.split("\n");
+    const body = lines.slice(0, -2);
+    expect(Math.max(...body.map((line) => line.length))).toBeLessThanOrEqual(120);
+    expect(body.some((line) => line.endsWith("\\"))).toBe(true);
   });
 });
 

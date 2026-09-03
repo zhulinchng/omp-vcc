@@ -209,10 +209,24 @@ describe("review gaps: cross-session isolation", () => {
     const entriesB = [msg("n1", "user"), msg("n2", "assistant"), msg("n3", "user"), msg("n4", "assistant")];
     const resA = a.invokeBefore({ type: "session_before_compact", customInstructions: "__omp_vcc__ keep:1", branchEntries: entriesA, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 1000 }, signal: new AbortController().signal });
     expect(resA.compaction).toBeDefined();
+    // keep:2 with 2 users keeps the whole tail; with no previous summary there
+    // is nothing new to summarize -> cancel, session intact.
     const resB = b.invokeBefore({ type: "session_before_compact", customInstructions: "__omp_vcc__ keep:2", branchEntries: entriesB, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 1000 }, signal: new AbortController().signal });
-    expect(resB.compaction).toBeDefined();
-    // keep:2 with 2 users should compactAll -> firstKept ""
-    expect(resB.compaction.firstKeptEntryId).toBe("");
+    expect(resB.compaction).toBeUndefined();
+    expect(resB.cancel).toBe(true);
+    expect(b.notifyCalls.some((n: any) => n.msg.includes("Nothing new to compact"))).toBe(true);
+    // Isolation intact: B's cancel did not corrupt A's compaction.
     expect(resA.compaction.firstKeptEntryId).toBe("m3");
+  });
+
+  test("explicit keep-all with a previous summary keeps the tail", async () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const b = createMockPi();
+    registerBeforeCompactHook(b.pi);
+    const entriesB = [msg("n1", "user"), msg("n2", "assistant"), msg("n3", "user"), msg("n4", "assistant")];
+    const resB = b.invokeBefore({ type: "session_before_compact", customInstructions: "__omp_vcc__ keep:2", branchEntries: entriesB, preparation: { previousSummary: "[Session Goal]\n- Old goal\n\n---\n\nold brief", fileOps: { read: [], written: [], edited: [] }, tokensBefore: 1000 }, signal: new AbortController().signal });
+    expect(resB.compaction).toBeDefined();
+    expect(resB.compaction.firstKeptEntryId).toBe("n1");
+    expect(resB.compaction.summary).toContain("Old goal");
   });
 });

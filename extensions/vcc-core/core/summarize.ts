@@ -6,6 +6,7 @@ import { filterNoise } from "./filter-noise";
 import { buildSections } from "./build-sections";
 import { formatSummary, capBrief, BRIEF_MAX_LINES, RECALL_NOTE, wrapLongLines } from "./format";
 import { selectRankedBriefBlocks, type BriefRankingOptions } from "./rank";
+import { renderFileCategoryLines } from "../extract/files";
 
 export interface CompileInput {
   messages: Message[];
@@ -24,86 +25,155 @@ const SEPARATOR = "\n\n---\n\n";
 /** Extract a named section from summary text */
 const sectionOf = (text: string, header: string): string => {
   const tag = `[${header}]`;
-  const start = text.indexOf(tag);
-  if (start < 0) return "";
-  const after = text.slice(start);
-  // Find next section header or separator
+  // Scope to the headers region (before the first separator) and match the
+  // tag only at a line start: value lines may contain literal "[Tags]"
+  // mid-line and the brief transcript may contain ghost tags at line starts.
+  const head = text.split(SEPARATOR)[0];
+  const startMatch = new RegExp(`(^|\\n)${escapeRegExp(tag)}`).exec(head);
+  if (!startMatch) return "";
+  const start = startMatch.index + startMatch[1].length;
+  const after = head.slice(start);
+  // Find next section header (line-anchored) as the end boundary.
   const nextSection = HEADER_NAMES
     .filter((h) => h !== header)
-    .map((h) => after.indexOf(`[${h}]`))
-    .filter((n) => n > 0);
-  const nextSep = after.indexOf("\n\n---\n\n");
-  const candidates = [...nextSection, ...(nextSep > 0 ? [nextSep] : [])].sort((a, b) => a - b);
-  const end = candidates[0];
+    .map((h) => new RegExp(`\\n${escapeRegExp(`[${h}]`)}`).exec(after))
+    .filter((m) => m && m.index > 0)
+    .map((m) => m.index);
+  const end = nextSection.sort((a, b) => a - b)[0];
   return (end ? after.slice(0, end) : after).trim();
 };
 
 /** Extract the brief transcript part (everything after ---) */
 const briefOf = (text: string): string => {
   const idx = text.indexOf(SEPARATOR);
-  if (idx < 0) return "";
-  return text.slice(idx + SEPARATOR.length).trim();
+  if (idx >= 0) return text.slice(idx + SEPARATOR.length).trim();
+  // No separator: a stripped headerless summary is all brief, while a lone
+  // headers block (starts with a known tag) has no brief.
+  const tagPattern = new RegExp(`^\\[(${HEADER_NAMES.map(escapeRegExp).join("|")})\\]`);
+  if (tagPattern.test(text.trimStart())) return "";
+  return text.trim();
+};
+
+/** Rejoin wrapLongLines continuations (indented followers) before line-level
+ * merging, so wrapped value lines survive whole. Backslash-marked hard breaks
+ * rejoin without a space, normal breaks with one. */
+const joinContinuations = (text: string): string[] => {
+  const out: string[] = [];
+  for (const line of text.split("\n")) {
+    if (out.length > 0 && /^\s+\S/.test(line)) {
+      const cont = line.trim();
+      const prev = out[out.length - 1];
+      out[out.length - 1] = prev.endsWith("\\") ? prev.slice(0, -1) + cont : `${prev} ${cont}`;
+    } else {
+      out.push(line);
+    }
+  }
+  return out;
 };
 
 /** Merge a header section */
 const mergeHeaderSection = (header: string, prev: string, fresh: string): string => {
   // Outstanding Context is volatile -- always use fresh only
   if (header === "Outstanding Context") return fresh;
-  if (!prev) return fresh;
-  if (!fresh) return prev;
 
-  // Files And Changes: merge by category (Modified/Created/Read), dedup paths
+  // Files And Changes: merge by category (Modified/Created/Read), dedup paths.
+  // Always rendered through mergeFileLines (even one-sided) so stale bare
+  // "(+N more)" counts from legacy summaries are dropped and the display
+  // form stays canonical across cycles.
   if (header === "Files And Changes") {
+    if (!prev) return fresh;
     return mergeFileLines(prev, fresh);
   }
 
+  if (!prev) return fresh;
+  if (!fresh) return prev;
+
   // Session Goal, User Preferences: line-level dedup, cap
   const isClean = (l: string) => l.startsWith("- ") && !l.includes("<skill") && !l.includes("</skill");
-  const prevLines = prev.split("\n").filter(isClean);
-  const freshLines = fresh.split("\n").filter(isClean);
+  const prevLines = joinContinuations(prev).filter(isClean);
+  const freshLines = joinContinuations(fresh).filter(isClean);
   const combined = [...new Set([...prevLines, ...freshLines])];
   const CAP = header === "Session Goal" ? 8 : header === "Commits" ? 8 : 15;
   const capped = combined.length > CAP ? combined.slice(-CAP) : combined;
   if (capped.length === 0) return "";
   return `[${header}]\n${capped.join("\n")}`;
 };
-
-/** Merge Files And Changes by category, dedup paths across compactions */
 const mergeFileLines = (prev: string, fresh: string): string => {
   const categories = ["Modified", "Created", "Read"] as const;
   const merged: Record<string, Set<string>> = {};
   for (const cat of categories) merged[cat] = new Set();
 
-  // Parse "- Modified: a, b, c (+N more)" lines from both prev and fresh
+  // Parse three line forms from both prev and fresh:
+  //   "- Modified: a, b"                        (bare; legacy relative kept verbatim)
+  //   "- Modified (in /prefix/): a, b"          (prefix-collapsed display)
+  //   "- Modified (+2 more under /d/): b1, b2"  (grouped overflow; dir may be "")
+  // formatSummary wraps long lines at 120 cols with an indented continuation:
+  // normal breaks rejoin with a space, backslash-marked mid-token breaks
+  // rejoin without one. A bare "(+N more)" line/suffix carries no names and
+  // is ignored (legacy counts were lossy by design).
+  const addPaths = (cat: string, prefix: string, rest: string) => {
+    const clean = rest.replace(/\s*\(\+\d+ more\)\s*$/, "");
+    for (const p of clean.split(",")) {
+      const trimmed = p.trim();
+      if (trimmed) merged[cat].add(prefix + trimmed);
+    }
+  };
+  const parseHead = (cat: string, tail: string): { prefix: string; rest: string } | null => {
+    if (tail.startsWith(": ")) return { prefix: "", rest: tail.slice(2) };
+    if (tail.startsWith(" (in ")) {
+      const end = tail.indexOf("): ");
+      if (end > 0) return { prefix: tail.slice(5, end), rest: tail.slice(end + 3) };
+      return null;
+    }
+    const grouped = /^ \(\+(\d+) more( under (.+?))?\): (.*)$/.exec(tail);
+    if (grouped) {
+      const dir = grouped[3] ?? "";
+      return { prefix: dir && !dir.endsWith("/") ? `${dir}/` : dir, rest: grouped[4] };
+    }
+    return null;
+  };
   for (const text of [prev, fresh]) {
+    let current: { cat: string; prefix: string; rest: string } | null = null;
+    const flush = () => {
+      if (current) {
+        addPaths(current.cat, current.prefix, current.rest);
+        current = null;
+      }
+    };
     for (const line of text.split("\n")) {
-      for (const cat of categories) {
-        const prefix = `- ${cat}: `;
-        if (!line.startsWith(prefix)) continue;
-        let rest = line.slice(prefix.length);
-        // Strip "(+N more)" suffix
-        rest = rest.replace(/\s*\(\+\d+ more\)\s*$/, "");
-        for (const p of rest.split(",")) {
-          const trimmed = p.trim();
-          if (trimmed) merged[cat].add(trimmed);
-        }
+      const head = /^- (Modified|Created|Read)(.*)$/.exec(line);
+      // "- Modified" without one of the three tails is a bare count or
+      // malformed: flush any pending accumulation and ignore.
+      if (head && (categories as readonly string[]).includes(head[1])) {
+        flush();
+        const parsed = parseHead(head[1], head[2]);
+        if (parsed) current = { cat: head[1], prefix: parsed.prefix, rest: parsed.rest };
+        continue;
+      }
+      if (current && /^\s+\S/.test(line)) {
+        const cont = line.trim();
+        if (current.rest.endsWith("\\")) current.rest = current.rest.slice(0, -1) + cont;
+        else current.rest += " " + cont;
+      } else {
+        flush();
       }
     }
+    flush();
   }
 
   // Dedup: if already in Modified, drop from Created (file existed before)
   for (const p of merged.Modified) merged.Created.delete(p);
 
-  const cap = (set: Set<string>, limit: number) => {
-    const arr = [...set];
-    if (arr.length <= limit) return arr.join(", ");
-    return arr.slice(0, limit).join(", ") + ` (+${arr.length - limit} more)`;
-  };
-
+  // Display shares the fresh path's renderer (flat + grouped overflow +
+  // honest bare count). Prefix derivation is display-only: the merged set
+  // always holds full paths, so form flips never corrupt.
   const lines: string[] = [];
-  if (merged.Modified.size > 0) lines.push(`- Modified: ${cap(merged.Modified, 10)}`);
-  if (merged.Created.size > 0) lines.push(`- Created: ${cap(merged.Created, 10)}`);
-  if (merged.Read.size > 0) lines.push(`- Read: ${cap(merged.Read, 10)}`);
+  for (const cat of categories) {
+    if (merged[cat].size === 0) continue;
+    for (const line of renderFileCategoryLines(cat, [...merged[cat]])) {
+      lines.push(`- ${line}`);
+    }
+  }
   if (lines.length === 0) return "";
   return `[Files And Changes]\n${lines.join("\n")}`;
 };
@@ -183,7 +253,7 @@ const compileWithBriefBlocks = (input: CompileInput, options: CompileWithBriefBl
     : undefined;
   const merged = prev ? mergePrevious(prev, fresh, { preserveFreshBrief: options.preserveFreshBriefOnMerge }) : fresh;
   if (!merged) return "";
-  return wrapLongLines(merged + SEPARATOR + RECALL_NOTE);
+  return wrapLongLines(merged) + SEPARATOR + RECALL_NOTE;
 };
 
 export const compile = (input: CompileInput): string =>
@@ -199,10 +269,15 @@ export const compileRanked = (input: RankedCompileInput): string =>
     preserveFreshBriefOnMerge: true,
   });
 
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const RECALL_NOTE_PATTERN = new RegExp(RECALL_NOTE.split(" ").map(escapeRegExp).join("\\s+"));
+
 const stripRecallNote = (text: string): string => {
   // Remove trailing RECALL_NOTE (and any separators surrounding it) if present.
-  // Handles both current format (---\n\nNOTE) and bare trailing NOTE.
-  const idx = text.lastIndexOf(RECALL_NOTE);
-  if (idx < 0) return text;
-  return text.slice(0, idx).replace(/\s*(?:\n\n---\n\n)?\s*$/, "").trimEnd();
+  // Whitespace-insensitive: matches the current single-line format, a bare
+  // trailing note, and legacy copies wrapped mid-sentence by wrapLongLines.
+  const match = RECALL_NOTE_PATTERN.exec(text);
+  if (!match || match.index < 0) return text;
+  return text.slice(0, match.index).replace(/\s*(?:\n\n---\n\n)?\s*$/, "").trimEnd();
 };

@@ -31,8 +31,10 @@ const matches = (tools: Set<string>, name: string): boolean => tools.has(name.to
 /**
  * Find the longest common directory prefix among absolute paths.
  * Returns "" if fewer than 2 absolute paths or no meaningful common prefix.
+ * Shared with core/summarize.ts, which re-derives one prefix per merge so
+ * prev-cycle and fresh paths keep a consistent display form.
  */
-const longestCommonDirPrefix = (paths: string[]): string => {
+export const longestCommonDirPrefix = (paths: string[]): string => {
   const abs = paths.filter((p) => p.startsWith("/"));
   if (abs.length < 2) return "";
   const split = abs.map((p) => p.split("/"));
@@ -45,15 +47,6 @@ const longestCommonDirPrefix = (paths: string[]): string => {
   }
   if (i < 2) return ""; // require at least /a/b common
   return split[0].slice(0, i).join("/") + "/";
-};
-
-const trimPaths = (set: Set<string>, prefix: string): Set<string> => {
-  if (!prefix) return set;
-  const out = new Set<string>();
-  for (const p of set) {
-    out.add(p.startsWith(prefix) ? p.slice(prefix.length) : p);
-  }
-  return out;
 };
 
 export const extractFiles = (
@@ -76,13 +69,47 @@ export const extractFiles = (
     if (matches(FILE_CREATE_TOOLS, b.name)) act.created.add(p);
   }
 
-  const all = [...act.read, ...act.modified, ...act.created];
-  const prefix = longestCommonDirPrefix(all);
-  if (prefix) {
-    act.read = trimPaths(act.read, prefix);
-    act.modified = trimPaths(act.modified, prefix);
-    act.created = trimPaths(act.created, prefix);
-  }
-
+  // Full paths are carried verbatim: per-cycle prefix trimming made prev-cycle
+  // and fresh paths unresolvable when mixed. Display collapse happens in
+  // renderFileCategoryLines below, re-derived every render for consistency.
   return act;
+};
+
+/** Exact file paths shown flat per category; further named paths spill into
+ * per-directory overflow groups up to FILE_CATEGORY_TOTAL_CAP. */
+export const FILE_CATEGORY_DISPLAY_CAP = 20;
+/** Max NAMED file paths per category (flat + grouped overflow). Past this,
+ * excess degrades to a bare honest (+N more) count. */
+export const FILE_CATEGORY_TOTAL_CAP = 100;
+
+/**
+ * Render one Files-And-Changes category (lines WITHOUT the "- " bullet;
+ * callers add it or route through section()). Shared by the fresh path
+ * (build-sections) and the merge path (mergeFileLines) so both carry the
+ * same lossless overflow forms:
+ *   `Modified: a, b` / `Modified (in /prefix/): a, b` (flat, prefix-collapsed)
+ *   `Modified (+2 more under /d/): b1, b2`            (grouped overflow)
+ *   `Modified (+5 more)`                              (honest bare count)
+ */
+export const renderFileCategoryLines = (cat: string, paths: string[]): string[] => {
+  if (paths.length === 0) return [];
+  const prefix = longestCommonDirPrefix(paths);
+  const strip = (p: string) => (prefix && p.startsWith(prefix) ? p.slice(prefix.length) : p);
+  const flat = paths.slice(0, FILE_CATEGORY_DISPLAY_CAP).map(strip);
+  const lines = [prefix ? `${cat} (in ${prefix}): ${flat.join(", ")}` : `${cat}: ${flat.join(", ")}`];
+  const overflow = paths.slice(FILE_CATEGORY_DISPLAY_CAP, FILE_CATEGORY_TOTAL_CAP);
+  const groups = new Map<string, string[]>();
+  for (const p of overflow) {
+    const dir = p.includes("/") ? p.slice(0, p.lastIndexOf("/") + 1) : "";
+    const base = dir ? p.slice(dir.length) : p;
+    const list = groups.get(dir) ?? [];
+    list.push(base);
+    groups.set(dir, list);
+  }
+  for (const [dir, bases] of groups) {
+    lines.push(`${cat} (+${bases.length} more${dir ? ` under ${dir}` : ""}): ${bases.join(", ")}`);
+  }
+  const dropped = paths.length - FILE_CATEGORY_DISPLAY_CAP - overflow.length;
+  if (dropped > 0) lines.push(`${cat} (+${dropped} more)`);
+  return lines;
 };

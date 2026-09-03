@@ -3,7 +3,7 @@ import type { FileOps, NormalizedBlock } from "../types";
 import { clip, clipSentence, nonEmptyLines } from "./content";
 import type { SectionData } from "../sections";
 import { extractGoals } from "../extract/goals";
-import { extractFiles } from "../extract/files";
+import { extractFiles, renderFileCategoryLines } from "../extract/files";
 import { extractPreferences, dedupPreferencesAgainstGoals } from "../extract/preferences";
 import { extractCommits, formatCommits } from "../extract/commits";
 import { buildBriefSections, stringifyBrief } from "./brief";
@@ -41,21 +41,15 @@ const extractOutstandingContext = (blocks: NormalizedBlock[]): string[] => {
 
   return items.slice(0, 5);
 };
-
 const formatFileActivity = (blocks: NormalizedBlock[], fileOps?: FileOps): string[] => {
   const act = extractFiles(blocks, fileOps);
   // Dedup: if already Modified, drop from Created (file existed before)
   for (const p of act.modified) act.created.delete(p);
-  const lines: string[] = [];
-  const cap = (set: Set<string>, limit: number) => {
-    const arr = [...set];
-    if (arr.length <= limit) return arr.join(", ");
-    return arr.slice(0, limit).join(", ") + ` (+${arr.length - limit} more)`;
-  };
-  if (act.modified.size > 0) lines.push(`Modified: ${cap(act.modified, 10)}`);
-  if (act.created.size > 0) lines.push(`Created: ${cap(act.created, 10)}`);
-  if (act.read.size > 0) lines.push(`Read: ${cap(act.read, 10)}`);
-  return lines;
+  return [
+    ...renderFileCategoryLines("Modified", [...act.modified]),
+    ...renderFileCategoryLines("Created", [...act.created]),
+    ...renderFileCategoryLines("Read", [...act.read]),
+  ];
 };
 
 export const buildSections = (input: BuildSectionsInput): SectionData => {

@@ -60,6 +60,15 @@ const normalizeOne = (msg: Message, msgIndex: number): NormalizedBlock[] => {
     return blocks;
   }
 
+  // Injected context (custom_message entries: memory, skill context). Kept as
+  // its own kind so the brief can attribute it without mislabeling it as a
+  // user or assistant turn. branchSummary entries carry no content here.
+  if (msg.role === "custom") {
+    const text = sanitize(textOf(msg.content));
+    if (text) return [{ kind: "custom", text, sourceIndex: msgIndex }];
+    return [];
+  }
+
   return [];
 };
 
