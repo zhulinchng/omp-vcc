@@ -404,10 +404,10 @@ const BAYESIAN_PROBABILITY_FLOOR = 0.5;
 
 /**
  * Hard cap on total SEARCH results, applied to both the natural-language
- * (post-floor) and regex result paths so pagination stays bounded regardless
+ * (post-gate) and regex result paths so pagination stays bounded regardless
  * of how noisy or broad a query is.
  *
- * Evidence (same bench/corpora as BM25_RELATIVE_FLOOR, floor disabled to
+ * Evidence (same bench/corpora as the tail gate, gate disabled to
  * isolate the cap's effect; run 1 = 161 queries, run 2 = 222 queries):
  * uncapped result counts ranged up to 380 (median 32 / 29.5, p90 119 /
  * 115.9). cap=50 sits ABOVE the corpus's own median in both runs but BELOW
