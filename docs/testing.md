@@ -6,11 +6,11 @@ Comprehensive reference for the `omp-vcc` test corpus: unit, integration, sessio
 
 ```sh
 bunx tsc --noEmit          # typecheck — 0 errors, vendored core // @ts-nocheck, skipLibCheck
-bun test                   # 515 tests, 48 files, 1443 expects, 0 fail  (~6s)
-bun test tests/e2e --timeout 120000   # 111 E2E only
+bun test                   # 538 tests, 50 files, 1546 expects, 0 fail  (~7s)
+bun test tests/e2e --timeout 120000   # 124 E2E only
 bun test tests/before-compact.test.ts # single suite
 bun run smoke              # 12 checks: 3 hooks + 5 commands (omp-vcc/pi-vcc/vcc-recall/pi-vcc-recall/vcc-stats, no alias) + 2 tools + dedup
-bun run e2e                # isolated OMP_DIR, omp plugin link, probe, then 111 E2E + artifacts/e2e-debug/
+bun run e2e                # isolated OMP_DIR, omp plugin link, probe, then 124 E2E + artifacts/e2e-debug/
 bun run e2e:direct         # alias for bun test tests/e2e
 ```
 
@@ -18,9 +18,9 @@ No API key required. E2E `vcc_recall` live LLM turn is `skipIf` when `ANTHROPIC_
 
 ```mermaid
 flowchart LR
-  TSC["bunx tsc --noEmit"] --> TEST["bun test\n515 pass"]
+  TSC["bunx tsc --noEmit"] --> TEST["bun test\n538 pass"]
   TEST --> SMOKE["bun run smoke\n3 hooks + 4 cmds + 2 tools"]
-  SMOKE --> E2E["bun run e2e\n111 E2E isolated OMP_DIR"]
+  SMOKE --> E2E["bun run e2e\n124 E2E isolated OMP_DIR"]
   E2E --> PUB{"prepublishOnly?"}
   PUB -->|yes| OK["publish ok"]
   PUB -->|no| DEV["dev loop"]
@@ -50,19 +50,21 @@ flowchart TB
     G2["compaction-stats-gaps 36\npercent 0, budgetCut, boundaries\ncopy isolation, capping,\ntool/command variants\nperPi clear, enrichment"]
     G3["compaction-bugs-fix 10\nfallback 0, perPi isolation\nvcc_stats perPi, sections filter\nperPiKeys leak"]
   end
-  subgraph E2E["E2E — execution and results (99)"]
+  subgraph E2E["E2E — execution and results (124)"]
     E1["manual-compaction 10\n/omp-vcc keep:1/2/0, alias\norphan, reset_boundary,\ntoo_few, toolResult snap,\ncalibrate, merge bounded"]
-    E2["auto-compaction 7\nthreshold proxy, override gate\nvccEnabled gate, smartKeep,\nOVERSIZED 2.5×, snap"]
+    E2["auto-compaction 6\nthreshold proxy, override gate\nvccEnabled gate, smartKeep,\nOVERSIZED 2.5×, snap"]
     E3["settings 7\nscaffold, XDG priority\nlegacy migration, overlay\ndebug, manifest"]
     E4["recall 13\nkeyword/regex/fallback\npagination, scope, touched\nexpand, drill-down, truncated"]
     E5["stats 10\nNo-compaction, detail, history\ntable edges, 50-cap, per-pi\nauthoritative, toast"]
-    E6["lifecycle 7\ninvisible-continue, context filter\nfromExtension, willRetry\nconvertToLlm"]
+    E6["lifecycle 8\ninvisible-continue, context filter\nfromExtension, willRetry\nconvertToLlm, authoritative"]
     E7["pipeline 7\nANSI, filter-noise\nbuild-sections, brief cap 120\ncalibrate 2-6, thinking/toolCall"]
-    E8["edge-cases 19\nexhaustive gaps: empty, keep>total\nexact 2.5× boundary, negative\nscaffold, ENOENT, queue-op\nDigits→, image 4800"]
+    E8["edge-cases 21\nexhaustive gaps: empty, keep>total\nexact 2.5× boundary, negative\nscaffold, ENOENT, queue-op\nDigits→, image 4800"]
     E9["mixed-sequential 12\nA→B→C chains: compact→recall→stats\ndebug overlay, vccEnabled toggle\noverride, touched, history cap"]
-    E10["omp-integration 4\nreal omp spawn, doctor\nlist --json, isolation\ndebug with isolated env"]
+    E10["omp-integration 5\nreal omp spawn, doctor\nlist --json, isolation\ndebug with isolated env\nsequential mixed"]
+    E11["combined-compaction 12\nsequential VCC chains\nsnapcompact bypass, vision gate\nchainShakeHint ±, per-pi\norphan/snap/boundary, brief cap"]
+    E12["compaction-mix-matrix 13\ncommand matrix via handlers\n3-pass chain, VCC+snapcompact\nVCC+handoff/shake/soft/remote\nboundary interleaves"]
   end
-  Unit & Integration & Sessions & Savings --> ALL["bun test 477 pass"]
+  Unit & Integration & Sessions & Savings --> ALL["bun test 414 pass"]
   E2E --> RUNNER["bun run e2e\nisolated OMP_DIR"]
   ALL & RUNNER --> CI["CI gates green"]
 ```
@@ -71,17 +73,15 @@ flowchart TB
 |---|---|---|---|---|---|
 | Unit | `tests/brief.test.ts` + 15 more | ~150 | `bun test` | none | Deterministic output for fixtures, no LLM, no host |
 | Integration | `before-compact*.test.ts`, `pi-vcc-command*`, `smart-keep*`, `invisible-continue*` | ~95 | `bun test` | none | Hook `session_before_compact`→`session_compact` flow, command parsing |
-| Sessions | `real-sessions.test.ts`, `review-gaps.test.ts` | ~15 | `bun test` | `~/.pi/sessions` optional, falls back synthetic | Copied large sessions, `reset_boundary`, ENOENT |
-| Savings | `compaction-stats*.test.ts`, `compaction-bugs-fix.test.ts` | 68 | `bun test` | none | Toast `omp-vcc: 90.0k→22.0k`, table, `details.savings` v2, `perPi` WeakMap |
-| E2E | `tests/e2e/*.e2e.test.ts` (10 files) | 99 | `bun run e2e` or `bun test tests/e2e` | `bun`, `omp` optional for `omp-integration` | Execution results via real pipeline, isolated `OMP_DIR`, mixed sequences |
+| E2E | `tests/e2e/*.e2e.test.ts` (12 files) | 124 | `bun run e2e` or `bun test tests/e2e` | `bun`, `omp` optional for `omp-integration` | Execution results via real pipeline, isolated `OMP_DIR`, mixed sequences |
 
 ## Running
 
 | Command | Scope | Gate |
 |---|---|---|
 | `bunx tsc --noEmit` | typecheck all `extensions/`, `scripts/`, `tests/` | CI first, `prepublishOnly` |
-| `bun test` | 477 tests, 46 files, 1359 expects | CI second |
-| `bun test tests/e2e --timeout 120000` | 99 E2E only | local E2E loop |
+| `bun test` | 414 tests, 38 files, 1078 expects | CI second |
+| `bun test tests/e2e --timeout 120000` | 124 E2E only | local E2E loop |
 | `bun test tests/before-compact.test.ts` | single suite | targeted |
 | `bun test --watch` | watch mode | dev |
 | `bun run smoke` | 12 checks: `session_before_compact`/`context`/`session_compact` hooks + `vcc_recall`/`vcc_stats` tools + `omp-vcc`/`pi-vcc`/`vcc-recall`/`pi-vcc-recall`/`vcc-stats` (single, no `omp-vcc-stats`) + dedup guards | CI third, `prepublishOnly` |
@@ -176,7 +176,7 @@ Unified via `hook.ts:38-105` `CompactionStats` + `details.ts:PiVccCompactionDeta
 | `compaction-stats-gaps.test.ts` (36) | Edge gaps: `percent 0`/`before 0`/`saved 0→—`/`after>before→0` no prefix, `999→500` vs `1.0k`, negative, empty table, `budgetCut` suffix, `timestamp null→—`, `derived saved`, `smartKeep`/`budgetCut`/`willRetry`, perPi isolation & clear, 50-cap global+perPi, enrichment missing/after>before/willRetry, `debug authoritativeSavings`, tool schema fallback when `zod.boolean` missing, `vcc-stats` `history`/`all` variants, `tokensBefore undefined` |
 | `compaction-bugs-fix.test.ts` (10) | Bugs: fallback `kept 0/2` when `tokensBefore` missing, perPi isolation for `vcc_stats`, sections filter `KNOWN_SECTIONS`, `perPiKeys` leak via `WeakMap` enumeration |
 
-## E2E suites (99 tests, `tests/e2e/`)
+## E2E suites (124 tests, `tests/e2e/`)
 
 Host-free when `omp` absent: exercises real `registerBeforeCompactHook` pipeline via `makeMockPi`/`makeMockCtx` with `createIsolatedOmpDir()` (`OMP_DIR`, `OMP_VCC_CONFIG_PATH = OMP_DIR/config.json`, `PI_CODING_AGENT_DIR` for legacy). When `omp` present, `scripts/e2e.ts` links plugin in `mkdtempSync` isolated `OMP_DIR` and `omp plugin doctor` proves 6 ok; `omp-integration.e2e.test.ts` then asserts `omp plugin list --json`.
 
@@ -203,7 +203,7 @@ Support:
 | `calibrate` 2–6 fallback 4 | `tokensBefore 0 → 4`, huge ratio → ≤6, small → ≥2 |
 | second compaction merges bounded | `summary1` as `previousSummary` → `summary2.length < summary1.length*2+2000` |
 
-### `auto-compaction.e2e.test.ts` (7)
+### `auto-compaction.e2e.test.ts` (6)
 
 | Test | Result |
 |---|---|
@@ -265,7 +265,7 @@ After manual compaction via `registerBeforeCompactHook`, asserts `getLastCompact
 | deferred toast | `scheduleCompactionStatsNotify(ctx, {...})` → after 600ms `notify` matches `/omp-vcc:/` (`setTimeout 500`) |
 | `vcc-stats` history/all | `history`/`all` variants for `vcc-stats` → table via `getCompactionHistory` |
 
-### `lifecycle.e2e.test.ts` (7)
+### `lifecycle.e2e.test.ts` (8)
 
 | Test | Result |
 |---|---|
@@ -292,7 +292,7 @@ Validates `Calibrate→SmartKeep→BuildOwnCut→Normalize→FilterNoise→Build
 | thinking/toolCall | `thinking` + `toolCall read path src/app.ts` + `toolResult` → `compaction` defined `summary>0` |
 | `SKILL.md` packaging | `skills/omp-vcc/SKILL.md` exists, `package.json files` contains `skills` |
 
-### `edge-cases.e2e.test.ts` (19)
+### `edge-cases.e2e.test.ts` (21)
 
 Exhaustive gaps that `review-gaps` + `compaction-stats-gaps` cover in unit but re-proven as execution:
 
@@ -337,7 +337,7 @@ flowchart TB
   G --> H["perPi history 50-cap"]
 ```
 
-### `omp-integration.e2e.test.ts` (4)
+### `omp-integration.e2e.test.ts` (5)
 
 Real `omp` spawn via `Bun.spawn(["omp",...], {env: isolated.env})` — skipped when `which omp` fails:
 
@@ -348,6 +348,40 @@ Real `omp` spawn via `Bun.spawn(["omp",...], {env: isolated.env})` — skipped w
 | sequential mixed | `omp --help` → `omp plugin doctor` | both not `timedOut`, help matches `/omp|help|plugin/` |
 | isolation | two `createIsolatedOmpDir()` | `ompDir` not `HOME`, distinct |
 | debug with isolated env | `writeFileSync isolated.configPath {debug true}` → host-free hook with `OMP_VCC_CONFIG_PATH=isolated.configPath` → `/tmp/omp-vcc-debug.json` exists | proves `loadSettings` respects isolated `OMP_VCC_CONFIG_PATH` even when `omp` present |
+
+### `combined-compaction.e2e.test.ts` (12)
+
+Sequential VCC chains plus additive host-strategy coexistence, all host-free via `createMockPi`:
+
+| Test | Result |
+|---|---|
+| manual VCC `keep:1` then second VCC on grown history | both `compaction` defined, `debug` snapshot `usedOwnCut true` |
+| `override:true` explicit `snapcompact` bypass | hook `void` (host would handle) |
+| `override:false` threshold proxy defers to host | `void`, VCC only via sentinel |
+| `chainShakeHint false` / `true` | 0 vs 1 `ctx.compact({mode:"shake"})` call after 40ms |
+| per-pi history isolation after two sequential compactions | per-pi lengths independent |
+| orphan recovery / `toolResult` snap / `reset_boundary` after VCC | each still cuts correctly post-compaction |
+| large session brief cap 120 lines / 1100→2000 tok ceiling | `summary.length` bounded |
+| mixed sequential compact → recall → stats after two compactions | hits `>0`, history 2 |
+| snapcompact vision gate (text-only degrades to VCC→shake) | hook still handles via VCC |
+
+### `compaction-mix-matrix.e2e.test.ts` (13)
+
+Command matrix plus mixed-strategy chains per `local/e2e-compaction-mix-plan.md`. Drives real `extensions/main.ts` factory handlers (Suite A) and `registerBeforeCompactHook` directly (Suites B–E); mock-mode host strategies via `compactMode` bypass + synthetic `comp()` entries (snapcompact and VCC archive the same `messagesToSummarize` slice, so sequential entries are the only valid combo per `docs/setup.md#combining-omp-vcc-with-shake-and-snapcompact`).
+
+| Suite | Chain |
+|---|---|
+| A1 command matrix | `/omp-vcc` default `keep:1` + `omp-vcc:` toast → `keep:2 + focus` (`requestedKeepUserTurns 2` explicit) → `/pi-vcc` alias under `override:false`; history 3 |
+| A2 recall | `/vcc-recall redis cache` + `hook\|inject scope:all page:1` + `page:99` out-of-range guidance + `mode:touched` parity (`src/file`) |
+| A3 stats + errors | `/vcc-stats` `Before → After` table after 3 compactions; `too_few` cancel (`tokensBefore 1000` avoids overflow-heuristic fallback) then orphan `""` recovery |
+| B 3-pass chain | `keep:1 → keep:2 → keep:1` with growth, `details.version 2`, `firstKeptEntryId` rotation, bounded merge, history 3 |
+| C1 VCC+snapcompact | VCC → explicit `compactMode:"snapcompact"` void → synthetic `comp("c-snap")` → VCC post-snap (`firstKeptEntryId` after `c-snap`) |
+| C2 vision gate | `override:false` threshold void + sentinel handled on identical entries |
+| C3 overflow retry | `reason:overflow willRetry:true` on too-few voids (falls through to host) → retry with full session succeeds; history counts VCC only |
+| D1/D2 normal + bypass table | `override:false` void/sentinel pair; `handoff`/`soft`/`remote`/`shake` each void with `override:true` |
+| D3 additive shake | `chainShakeHint` on → 1 `{mode:"shake"}` call, off → 0 |
+| D4 guards | `fromExtension:false` + `willRetry:true` trigger nothing |
+| E1/E2 boundaries | `reset_boundary` supersession + `toolResult` tail snap in-chain; `debug:true` snapshot `usedOwnCut true` with no full-transcript leak |
 
 ## Fixtures, helpers, support
 
