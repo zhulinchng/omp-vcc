@@ -389,11 +389,12 @@ export function getTouchedFiles(
  * occurrence already satisfies the whole query — its BM25 score differences
  * reflect term frequency and document length, not multi-term OR-tail noise,
  * so filtering by it there risks real matches for no corresponding noise
- * reduction. (Prior runs through scripts/benchmark-recall-quality.ts
- * confirmed the single-term bypass is a true no-op and that gating the
- * multi-term tail never changed top-1; those numbers pinned the old
- * relative 0.2 floor this absolute gate replaces, so they are superseded,
- * not restated.)
+ * reduction. (The bypass is structural, pinned by the single-term tests in
+ * `tests/search-entries.test.ts`; a seeded bench of 540 trials against the
+ * prior relative floor — old module resurrected from git, planted relevant
+ * docs in OR-tail noise — confirmed 1.0 planted recall for both filters with
+ * strictly less noise kept under the new gate, and top-1 == ungated in all
+ * 540 trials. See `docs/bayesian-recall-gate.md` §Evidence.)
  *
  * The top-scoring hit always survives by construction:
  * `applyProbabilityFloor` keeps the first entry unconditionally, so a
@@ -426,10 +427,10 @@ const BAYESIAN_PROBABILITY_FLOOR = 0.5;
  * truncated by it, versus 90/161 (56%) and 124/222 (56%) for cap=25, which
  * would also clip plenty of unremarkable ~30-match queries well under what
  * "noisy" implies. cap=50 also bounds the worst case (380) down by 87%.
- * Combined with the floor (production policy: floor=0.20 multi-term-only,
- * cap=50, vs. no filtering at all): 0 zero-hit regressions and 0 top-1
- * changes in both runs; top-5 changed in 5/161 (3%) and 5/222 (2%); median
- * result count 32→18 and 29.5→20; p90 119→50 and 115.9→50.
+ * Those runs measured the prior relative floor (0.20 multi-term-only); the
+ * cap applies post-gate either way, so the basis stands unchanged. Under the
+ * new absolute gate a seeded 540-trial bench likewise shows 0 zero-hit
+ * regressions and top-1 == ungated in all 540 trials.
  */
 const SEARCH_RESULT_CAP = 50;
 /**

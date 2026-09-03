@@ -547,6 +547,229 @@ describe("searchEntriesDetailed posterior noise gate", () => {
   });
 });
 
+describe("searchEntriesDetailed posterior gate hit-rate and edges", () => {
+  // Deterministic PRNG so the planted-relevance corpora below are stable.
+  const mulberry32 = (seed: number) => {
+    let a = seed >>> 0;
+    return () => {
+      a |= 0; a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  };
+  const FILLER = "lorem ipsum dolor sit amet consectetur adipiscing elit sed eiusmod tempor incididunt labore dolore magna aliqua enim quis nostrud exercitation ullamco laboris nisi aliquip commodo consequat aute irure reprehenderit voluptate velit cillum fugiat nulla pariatur standup retro backlog ticket".split(" ");
+  const QTERMS = ["redis", "cache", "invalidation", "failure"];
+  const mkEntries = (texts: string[]) => ({
+    e: texts.map((t, i) => ({ index: i, role: "user", summary: t }) as RenderedEntry),
+    m: texts.map((t) => ({ role: "user", content: t }) as any as Message),
+  });
+
+  it("keeps every planted full-coverage doc across lengths while collapsing the tail", () => {
+    // The hit-rate proof: relevant docs (all query terms; one-liner, medium,
+    // long, and an adversarial 400-word dilution) planted in 1-term OR-tail
+    // noise all survive the default gate; top-1 matches the ungated ranking.
+    for (const seed of [11, 22, 33]) {
+      const r = mulberry32(seed);
+      const pick = (arr: string[]) => arr[Math.floor(r() * arr.length)];
+      const fill = (n: number) => Array.from({ length: n }, () => pick(FILLER)).join(" ");
+      const sprinkle = (text: string, reps: number) => {
+        const w = text.split(" ");
+        for (let k = 0; k < reps; k++) for (const t of QTERMS) w.splice(Math.floor(r() * w.length), 0, t);
+        return w.join(" ");
+      };
+      const texts: string[] = [
+        sprinkle(fill(8), 1), // short one-liner (length prior minimum)
+        sprinkle(fill(45), 2), // medium
+        sprinkle(fill(200), 2), // long
+        sprinkle(fill(400), 1), // adversarial: full coverage, heavily diluted
+      ];
+      const planted = new Set([0, 1, 2, 3]);
+      while (texts.length < 60) {
+        const w = fill(10 + Math.floor(r() * 100)).split(" ");
+        w.splice(Math.floor(r() * w.length), 0, pick(QTERMS)); // 1-term tail
+        texts.push(w.join(" "));
+      }
+      const { e, m } = mkEntries(texts);
+      const ungated = searchEntriesDetailed(e, m, QTERMS.join(" "), { probabilityFloor: 0, cap: 1e9 });
+      const gated = searchEntriesDetailed(e, m, QTERMS.join(" "), { cap: 1e9 });
+      const kept = new Set(gated.hits.map((h) => h.index));
+      for (const p of planted) expect(kept.has(p)).toBe(true); // 100% planted recall
+      expect(gated.hits[0].index).toBe(ungated.hits[0].index); // top-1 never moves
+      expect(gated.hits.length).toBeLessThan(ungated.hits.length); // tail collapses
+      for (const h of gated.hits) expect(h.probability).toBeDefined();
+    }
+  });
+
+  it("coverage parity beats the threshold: a non-top full-coverage doc survives floor 0.99", () => {
+    // Structural (no calibration knife-edge): doc 1 covers every term, so
+    // distinctTerms == maxCoverage keeps it at any threshold; the partial
+    // tail still drops.
+    const { e, m } = mkEntries([
+      "alpha beta gamma delta ".repeat(3) + "design review",
+      "alpha beta gamma delta mentioned once in the notes",
+      "alpha mentioned once in an unrelated paragraph",
+    ]);
+    const r = searchEntriesDetailed(e, m, "alpha beta gamma delta", { probabilityFloor: 0.99, cap: 1e9 });
+    expect(r.hits.map((h) => h.index)).toEqual([0, 1]);
+  });
+
+  it("a uniformly weak corpus stands down: every 1-term match survives", () => {
+    // Parity symmetry with the uniform-good case: when the best coverage is
+    // 1 term, every 1-term doc covers the query as fully as the best doc, so
+    // a homogeneous corpus is preserved rather than massacred.
+    const { e, m } = mkEntries([
+      "alpha appears here in this note",
+      "beta appears here in this note",
+      "gamma appears here in this note",
+      "delta appears here in this note",
+      "alpha appears again in this note",
+    ]);
+    const r = searchEntriesDetailed(e, m, "alpha beta gamma delta", { cap: 1e9 });
+    expect(r.hits.map((h) => h.index).sort()).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it("a file-path-only match survives the multi-term gate with a null snippet", () => {
+    // Coverage counts the haystack (text + file paths), so a query matching
+    // only a file path is full-coverage, never OR-tail. Snippet comes from
+    // text alone, so it stays undefined rather than fabricating context.
+    const e: RenderedEntry[] = [
+      { index: 0, role: "user", summary: "redis cache design review notes" },
+      { index: 1, role: "user", summary: "standup notes", files: ["src/redis-cache.ts"] },
+      { index: 2, role: "user", summary: "redis mentioned once in unrelated padding " + "lorem ipsum ".repeat(20) },
+    ];
+    const m: Message[] = [
+      { role: "user", content: "redis cache design review notes" } as any,
+      { role: "user", content: "standup notes" } as any,
+      { role: "user", content: e[2].summary } as any,
+    ];
+    const r = searchEntriesDetailed(e, m, "redis cache", { cap: 1e9 });
+    expect(r.hits.map((h) => h.index).sort()).toEqual([0, 1]);
+    expect(r.hits.find((h) => h.index === 1)!.snippet).toBeUndefined();
+  });
+
+  it("falls back to the entry summary when messages are shorter than entries", () => {
+    const e: RenderedEntry[] = [
+      { index: 0, role: "user", summary: "alpha beta gamma design notes" },
+      { index: 1, role: "user", summary: "unrelated changelog entry" },
+    ];
+    const m: Message[] = [{ role: "user", content: "alpha beta gamma design notes" } as any];
+    const r = searchEntriesDetailed(e, m, "alpha beta gamma", { cap: 1e9 });
+    expect(r.hits.map((h) => h.index)).toEqual([0]);
+  });
+
+  it("an all-stopword multi-term query keeps its full-coverage match", () => {
+    // All-stopword queries keep their terms (filterStopwords fallback), so
+    // the gate applies — and the doc covering every term survives by parity.
+    const { e, m } = mkEntries(["the and of together", "nothing relevant here"]);
+    const r = searchEntriesDetailed(e, m, "the and of", { cap: 1e9 });
+    expect(r.hits.map((h) => h.index)).toEqual([0]);
+  });
+
+  it("a stopword-reduced single-effective-term query bypasses the gate structurally", () => {
+    // "the auth" reduces to [auth]: one effective term, so even a 0.9 floor
+    // keeps the low-probability hit — with its sub-cutoff probability still
+    // attached, proving the gate never ran rather than passing everything.
+    const { e, m } = mkEntries([
+      "the auth flow rewritten",
+      "one mention of auth here in unrelated notes",
+      "nothing relevant",
+    ]);
+    const r = searchEntriesDetailed(e, m, "the auth", { probabilityFloor: 0.9, cap: 1e9 });
+    expect(r.hits.map((h) => h.index)).toEqual([0, 1]);
+    expect(r.hits[1].probability!).toBeLessThan(0.5);
+  });
+
+  it("reports gate-then-cap honestly when the gated set still exceeds the cap", () => {
+    const texts = Array.from({ length: 60 }, (_, i) => `alpha beta gamma delta review number ${i} decision`);
+    const { e, m } = mkEntries(texts);
+    const r = searchEntriesDetailed(e, m, "alpha beta gamma delta"); // default cap 50
+    expect(r.hits).toHaveLength(50);
+    expect(r.totalBeforeCap).toBe(60);
+    expect(r.truncated).toBe(true);
+  });
+
+  it("regex-path hits carry no posterior probability", () => {
+    // The gate never runs for boolean regex matches — probability stays
+    // undefined and downstream formatters must tolerate its absence.
+    const { e, m } = mkEntries(["fix login bug", "auth module notes"]);
+    const r = searchEntriesDetailed(e, m, "login|auth");
+    expect(r.hits.length).toBeGreaterThan(0);
+    for (const h of r.hits) expect(h.probability).toBeUndefined();
+  });
+
+  it("returns empty for an empty corpus, with or without a query", () => {
+    expect(searchEntriesDetailed([], [], "alpha beta").hits).toEqual([]);
+    expect(searchEntriesDetailed([], [], "").hits).toEqual([]);
+  });
+
+  it("the production default is exactly floor 0.5, cap 50", () => {
+    // Pins the default tuning values themselves: changing the constant
+    // without updating this test (and the tuning docs) fails here.
+    const { e, m } = mkEntries([
+      "alpha beta gamma delta design review top entry",
+      "alpha beta gamma delta mentioned once",
+      "alpha mentioned once in an unrelated paragraph",
+    ]);
+    const def = searchEntriesDetailed(e, m, "alpha beta gamma delta");
+    const explicit = searchEntriesDetailed(e, m, "alpha beta gamma delta", { probabilityFloor: 0.5, cap: 50 });
+    expect(JSON.stringify(def)).toBe(JSON.stringify(explicit));
+  });
+
+  it("raising the floor only ever shrinks the kept set", () => {
+    // Threshold + parity + keep-first are all monotone in the floor, so a
+    // higher floor can drop tail hits but never admit one a lower floor
+    // drops. Structural — holds on any corpus, pinned here on a graded one.
+    const { e, m } = mkEntries([
+      "alpha beta gamma delta ".repeat(3) + "design review",
+      "alpha beta gamma delta mentioned once in the notes",
+      "alpha beta planning note for the release",
+      "alpha mentioned once in an unrelated paragraph",
+      "beta appears here only one time in a sentence about nothing",
+    ]);
+    const q = "alpha beta gamma delta";
+    const at = (f: number) =>
+      new Set(searchEntriesDetailed(e, m, q, { probabilityFloor: f, cap: 1e9 }).hits.map((h) => h.index));
+    const floors = [0.3, 0.4, 0.5, 0.6, 0.7];
+    const sets = floors.map(at);
+    for (let i = 0; i + 1 < sets.length; i++)
+      for (const idx of sets[i + 1]) expect(sets[i].has(idx)).toBe(true);
+    // And the knob actually bites: the strictest floor keeps strictly fewer.
+    expect(sets[4].size).toBeLessThan(sets[0].size);
+  });
+
+  it("planted recall is flat across the whole tuning band, noise falls with the floor", () => {
+    // Guards the no-retuning verdict: relevant docs survive at every floor
+    // in the plausible band, so the threshold only moves tail membership.
+    for (const seed of [5, 6]) {
+      const r = mulberry32(seed);
+      const pick = (arr: string[]) => arr[Math.floor(r() * arr.length)];
+      const fill = (n: number) => Array.from({ length: n }, () => pick(FILLER)).join(" ");
+      const sprinkle = (text: string, reps: number) => {
+        const w = text.split(" ");
+        for (let k = 0; k < reps; k++) for (const t of QTERMS) w.splice(Math.floor(r() * w.length), 0, t);
+        return w.join(" ");
+      };
+      const texts = [sprinkle(fill(8), 1), sprinkle(fill(45), 2), sprinkle(fill(400), 1)];
+      while (texts.length < 40) {
+        const w = fill(10 + Math.floor(r() * 80)).split(" ");
+        w.splice(Math.floor(r() * w.length), 0, pick(QTERMS));
+        texts.push(w.join(" "));
+      }
+      const { e, m } = mkEntries(texts);
+      const sizes: number[] = [];
+      for (const f of [0.3, 0.5, 0.7]) {
+        const g = searchEntriesDetailed(e, m, QTERMS.join(" "), { probabilityFloor: f, cap: 1e9 });
+        const kept = new Set(g.hits.map((h) => h.index));
+        for (const p of [0, 1, 2]) expect(kept.has(p)).toBe(true); // recall flat
+        sizes.push(g.hits.length);
+      }
+      expect(sizes[0]).toBeGreaterThanOrEqual(sizes[1]); // noise non-increasing
+      expect(sizes[1]).toBeGreaterThanOrEqual(sizes[2]);
+    }
+  });
+});
+
 describe("searchEntriesDetailed hard result cap", () => {
   const size = 60;
   const bm25Entries: RenderedEntry[] = Array.from({ length: size }, (_, i) => ({
