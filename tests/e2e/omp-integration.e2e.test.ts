@@ -86,4 +86,21 @@ describe("omp integration — real spawn with isolated OMP_DIR (skip if omp miss
     try { unlinkSync("/tmp/omp-vcc-debug.json"); } catch {}
     try { unlinkSync("/tmp/pi-vcc-debug.json"); } catch {}
   });
+
+  test("runOmp stdin/timeout/debugJson edges", async () => {
+    if (!ompAvailable || !isolated) return;
+    // stdin branch: --help ignores input but the write path still runs
+    const withInput = await runOmp(["--help"], { env: isolated.env, input: "hello\n", timeoutMs: 10000 });
+    expect(withInput.timedOut).toBe(false);
+    expect(withInput.stdout + withInput.stderr).toMatch(/omp|help|plugin/i);
+    // debugJson branch: pre-seeded file is picked up
+    const { writeFileSync, unlinkSync } = await import("fs");
+    writeFileSync("/tmp/omp-vcc-debug.json", JSON.stringify({ usedOwnCut: true }));
+    const withDebug = await runOmp(["--help"], { env: isolated.env, timeoutMs: 10000 });
+    expect(withDebug.debugJson).toEqual({ usedOwnCut: true });
+    try { unlinkSync("/tmp/omp-vcc-debug.json"); } catch {}
+    // timeout branch: 1ms always beats spawn+exec, kill path runs
+    const timed = await runOmp(["--help"], { env: isolated.env, timeoutMs: 1 });
+    expect(timed.timedOut).toBe(true);
+  });
 });

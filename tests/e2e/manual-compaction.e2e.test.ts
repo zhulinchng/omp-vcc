@@ -8,7 +8,7 @@ import { join } from "path";
 import { registerBeforeCompactHook, OMP_VCC_COMPACT_INSTRUCTION, PI_VCC_COMPACT_INSTRUCTION, buildOwnCut, getLastCompactionStats, getCompactionHistory, clearCompactionHistoryForTests, formatCompactionStats } from "../../extensions/vcc-core/hook";
 import { buildPiVccCustomInstructions, parseKeepAndPrompt } from "../../extensions/vcc-core/core/compact-args";
 import { createIsolatedOmpDir } from "./support/e2e-harness";
-import { buildSession, buildOrphanSession, buildCompactAllSession, buildTooFewSession, buildToolResultBoundarySession, msg, comp, branchSummary, resetBoundary } from "./support/session-builder";
+import { buildSession, buildOrphanSession, buildTooFewSession, buildToolResultBoundarySession, msg, comp, branchSummary, resetBoundary } from "./support/session-builder";
 
 let isolated: ReturnType<typeof createIsolatedOmpDir>;
 const DEBUG_PATH = "/tmp/omp-vcc-debug.json";

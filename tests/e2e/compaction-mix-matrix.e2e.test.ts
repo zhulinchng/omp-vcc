@@ -21,7 +21,7 @@ import {
 } from "../../extensions/vcc-core/hook";
 import { parseKeepAndPrompt } from "../../extensions/vcc-core/core/compact-args";
 import createExtension from "../../extensions/main";
-import { createIsolatedOmpDir } from "./support/e2e-harness";
+import { createIsolatedOmpDir, writeConfig as writeHarnessConfig } from "./support/e2e-harness";
 import {
   buildSession,
   buildOrphanSession,
@@ -41,7 +41,7 @@ const DEBUG_PATH = "/tmp/omp-vcc-debug.json";
 const DEBUG_LEGACY = "/tmp/pi-vcc-debug.json";
 
 function writeConfig(cfg: Record<string, unknown>): void {
-  writeFileSync(isolated.configPath, JSON.stringify(cfg));
+  writeHarnessConfig(isolated.configPath, cfg);
 }
 
 // Full pi capture: hook events + tool/command registrations + sent messages.

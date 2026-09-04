@@ -3,7 +3,6 @@
 import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { randomUUID } from "crypto";
 
 // ── isolated dir ──
 export interface IsolatedOmpDir {
@@ -39,32 +38,6 @@ export function createIsolatedOmpDir(): IsolatedOmpDir {
 export function writeConfig(configPath: string, cfg: Record<string, unknown>): void {
   mkdirSync(join(configPath, ".."), { recursive: true });
   writeFileSync(configPath, JSON.stringify(cfg, null, 2));
-}
-
-export function readConfig(configPath: string): Record<string, unknown> | null {
-  if (!existsSync(configPath)) return null;
-  try { return JSON.parse(readFileSync(configPath, "utf-8")); } catch { return null; }
-}
-
-// ── session fixture ──
-export interface SessionEntry {
-  id: string;
-  type: string;
-  [k: string]: any;
-}
-
-export function writeSessionFixture(ompDir: string, entries: SessionEntry[]): string {
-  const sessionsDir = join(ompDir, "sessions");
-  mkdirSync(sessionsDir, { recursive: true });
-  const file = join(sessionsDir, `test-${randomUUID()}.jsonl`);
-  const lines = entries.map((e) => JSON.stringify(e)).join("\n");
-  writeFileSync(file, lines + "\n");
-  return file;
-}
-
-export function readSessionFixture(file: string): SessionEntry[] {
-  if (!existsSync(file)) return [];
-  return readFileSync(file, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
 }
 
 // ── omp spawn ──
@@ -119,35 +92,4 @@ export async function isOmpAvailable(): Promise<boolean> {
     const code = await proc.exited;
     return code === 0;
   } catch { return false; }
-}
-
-export async function probeOmpFlags(): Promise<{ hasPrint: boolean; hasExtensionFlag: boolean; hasPlugin: boolean; helpText: string }> {
-  try {
-    const proc = Bun.spawn(["omp", "--help"], { stdout: "pipe", stderr: "pipe" });
-    await proc.exited;
-    const out = await new Response(proc.stdout).text().catch(() => "");
-    const err = await new Response(proc.stderr).text().catch(() => "");
-    const helpText = out + err;
-    return {
-      hasPrint: /--print|-p\b/.test(helpText),
-      hasExtensionFlag: /--extension|-e\b/.test(helpText),
-      hasPlugin: /plugin/.test(helpText),
-      helpText,
-    };
-  } catch {
-    return { hasPrint: false, hasExtensionFlag: false, hasPlugin: false, helpText: "" };
-  }
-}
-
-// ── assertions ──
-export function assertCompactionSavingsV2(details: any): void {
-  if (!details || !details.savings) throw new Error(`details.savings missing: ${JSON.stringify(details)}`);
-  const s = details.savings;
-  if (s.version !== 2) throw new Error(`savings.version expected 2 got ${s.version}`);
-  if (s.compactor !== "omp-vcc") throw new Error(`compactor expected omp-vcc got ${s.compactor}`);
-}
-
-export function assertSummarySections(summary: string, atLeastOneOf = ["[Session Goal]", "[Files And Changes]", "[Brief transcript]"]): void {
-  const has = atLeastOneOf.some((sec) => summary.includes(sec));
-  if (!has) throw new Error(`summary missing any of ${atLeastOneOf.join(", ")} — got: ${summary.slice(0, 500)}`);
 }

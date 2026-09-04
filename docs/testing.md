@@ -6,7 +6,7 @@ Comprehensive reference for the `omp-vcc` test corpus: unit, integration, sessio
 
 ```sh
 bunx tsc --noEmit          # typecheck — 0 errors, vendored core // @ts-nocheck, skipLibCheck
-bun test                   # 794 tests, 60 files, 2380 expects, 0 fail  (~7s)
+bun test                   # 800 tests, 61 files, 2396 expects, 0 fail  (~8s)
 bun test tests/e2e --timeout 120000   # 124 E2E only
 bun test tests/before-compact.test.ts # single suite
 bun run smoke              # 13 checks: 3 hooks + 6 commands (omp-vcc/pi-vcc/vcc-recall/pi-vcc-recall/vcc-stats/vcc-config, no alias) + 2 tools + dedup
@@ -80,7 +80,7 @@ flowchart TB
 | Command | Scope | Gate |
 |---|---|---|
 | `bunx tsc --noEmit` | typecheck all `extensions/`, `scripts/`, `tests/` | CI first, `prepublishOnly` |
-| `bun test` | 794 tests, 60 files, 2380 expects | CI second |
+| `bun test` | 800 tests, 61 files, 2396 expects | CI second |
 | `bun test tests/e2e --timeout 120000` | 124 E2E only | local E2E loop |
 | `bun test tests/before-compact.test.ts` | single suite | targeted |
 | `bun test --watch` | watch mode | dev |
@@ -433,10 +433,9 @@ CI job e2e:    npm i -g @oh-my-pi/pi-coding-agent (best-effort) → bun run e2e 
 `bun run e2e` (`scripts/e2e.ts` `// @ts-nocheck`):
 
 1. `mkdtempSync(join(tmpdir(),"omp-vcc-e2e-runner-"))` → `OMP_DIR` + `config.json`
-2. `probeOmpFlags` `omp --help` → `{hasPrint,hasExtension,hasPlugin}`
-3. `omp plugin link .` with isolated `env` → `omp plugin doctor` expects 6 ok
-4. `Bun.spawn(["bun","test","tests/e2e","--timeout","120000"],{env})` pipes stdout/stderr, `await proc.exited`
-5. Collect `/tmp/omp-vcc-debug.json` + `/tmp/pi-vcc-debug.json` → `artifacts/e2e-debug/`, cleanup `OMP_DIR`
+2. `omp plugin link .` with isolated `env` → `omp plugin doctor` expects 6 ok
+3. `Bun.spawn(["bun","test","tests/e2e","--timeout","120000"],{env})` pipes stdout/stderr, `await proc.exited`
+4. Collect `/tmp/omp-vcc-debug.json` + `/tmp/pi-vcc-debug.json` → `artifacts/e2e-debug/`, cleanup `OMP_DIR`
 
 Artifacts: `cat /tmp/omp-vcc-debug.json | jq '.usedOwnCut,.savings,.tokenEstimate'` → `true` `keptTokensEst` `savedPercentEst` `charsPerToken 2–6` ; `sections` subset of `["Session Goal","Files And Changes","Commits","Outstanding Context","User Preferences"]`.
 
@@ -455,7 +454,10 @@ Artifacts: `cat /tmp/omp-vcc-debug.json | jq '.usedOwnCut,.savings,.tokenEstimat
 - `perPi` isolation: each `pi` object is a distinct `WeakMap` key; `clearCompactionHistoryForTests()` clears both global and per-pi via `perPiKeys` Set.
 - `smartKeepTail` default `true` boosts small tails (`MIN 5k→MAX 25k`); set `smartKeepTail:false` in `isolated.configPath` for deterministic `keep:1`.
 - `debug` dual writes `/tmp/omp-vcc-debug.json` and `/tmp/pi-vcc-debug.json` (`hook.ts:360-364`) when `debug:true`; `e2e-harness` cleans both.
-- `omp` headless flag unknown — `probeOmpFlags` at runtime; fallback `script -q` heredoc not assumed.
+- Coverage residuals (accepted, not product gaps): `tests/e2e/support/e2e-harness.ts` keeps defensive I/O fallbacks
+  (`await proc.exited` catch, `Response.text().catch(() => "")`) that only fire on real stream failures — no deterministic
+  fault injection exists; `tests/helpers.ts` `setWidget` mock mirrors the host `ExtensionAPI` surface although no test
+  drives widgets yet. Product source (`extensions/`) is 100% lines / 100% funcs.
 - `Bun` is test runner; `node` will not resolve `.ts` imports (`bun.lock` committed, no `npm` lock).
 
 See also: [Harness Impact](harness.md) §§5,8,9 (bypass, `methodOrder`, verification `grep` map) · [Setup](setup.md) (linking, strategies) · [omp-compaction](omp-compaction.md) (calibrate→merge) · [omp-snapcompact](omp-snapcompact.md) (branchEntries lineage) · [PUBLISHING](PUBLISHING.md) (heredoc `OMP_DIR=$(mktemp -d) OMP_VCC_CONFIG_PATH=$TMP/config.json omp -e … <<-'OMPT'`)

@@ -107,6 +107,40 @@ describe("auto-compaction E2E — override, vccEnabled, smartKeep, oversized_tai
     delete process.env.OMP_VCC_CONFIG_PATH;
   });
 
+  test("buildSession withCompaction/reset/toolresults entries compact through the handler", async () => {
+    writeFileSync(isolated.configPath, JSON.stringify({ overrideDefaultCompaction: true, debug: false }));
+    process.env.OMP_VCC_CONFIG_PATH = isolated.configPath;
+    // orphan sentinel object form: prior compaction kept nothing usable
+    let mocked = createMockPi();
+    registerBeforeCompactHook(mocked.pi);
+    const orphan = buildSession({ turns: 3, withCompaction: { firstKeptEntryId: "" } }) as any[];
+    const rOrphan: any = await mocked.getBefore()(makeEvent(orphan, OMP_VCC_COMPACT_INSTRUCTION, 90000), mocked.ctx);
+    expect(rOrphan.compaction).toBeDefined();
+    // boolean form: default firstKeptEntryId is itself orphan
+    clearCompactionHistoryForTests();
+    mocked = createMockPi();
+    registerBeforeCompactHook(mocked.pi);
+    const orphanBool = buildSession({ turns: 3, withCompaction: true }) as any[];
+    const rOrphanBool: any = await mocked.getBefore()(makeEvent(orphanBool, OMP_VCC_COMPACT_INSTRUCTION, 90000), mocked.ctx);
+    expect(rOrphanBool.compaction).toBeDefined();
+    // reset boundary supersedes the prior compaction
+    clearCompactionHistoryForTests();
+    mocked = createMockPi();
+    registerBeforeCompactHook(mocked.pi);
+    const reset = buildSession({ turns: 3, withCompaction: true, withResetBoundary: true }) as any[];
+    const rReset: any = await mocked.getBefore()(makeEvent(reset, OMP_VCC_COMPACT_INSTRUCTION, 90000), mocked.ctx);
+    expect(rReset.compaction).toBeDefined();
+    // tool results ride the live window
+    clearCompactionHistoryForTests();
+    mocked = createMockPi();
+    registerBeforeCompactHook(mocked.pi);
+    const tools = buildSession({ turns: 4, withToolResults: true }) as any[];
+    const rTools: any = await mocked.getBefore()(makeEvent(tools, OMP_VCC_COMPACT_INSTRUCTION, 90000), mocked.ctx);
+    expect(rTools.compaction).toBeDefined();
+    expect(rTools.compaction.summary.length).toBeGreaterThan(0);
+    delete process.env.OMP_VCC_CONFIG_PATH;
+  });
+
   test("OVERSIZED_TAIL_FACTOR 2.5 rescue triggers no_anchor and oversized_tail", async () => {
     const { applyTailBudget, buildOwnCut, findBudgetCutIndex } = await import("../../extensions/vcc-core/hook");
     // no_anchor: compactAll sentinel from single user prompt autonomous

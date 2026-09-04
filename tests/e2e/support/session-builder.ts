@@ -20,10 +20,6 @@ export function comp(id: string, firstKeptEntryId?: string): Record<string, unkn
   return { id, type: "compaction", firstKeptEntryId, summary: "old summary", timestamp: "2026-01-01T00:00:00.000Z" };
 }
 
-export function customMsg(id: string, customType: string, content: unknown = []): Record<string, unknown> {
-  return { id, type: "custom_message", customType, content, display: false, timestamp: "2026-01-01T00:00:00.000Z" };
-}
-
 export function branchSummary(id: string, summary: string, fromId = "f1"): Record<string, unknown> {
   return { id, type: "branch_summary", summary, fromId, timestamp: "2026-01-01T00:00:00.000Z" };
 }
@@ -84,19 +80,6 @@ export function buildOrphanSession(): Record<string, unknown>[] {
   ];
 }
 
-export function buildCompactAllSession(): Record<string, unknown>[] {
-  resetIdCounter();
-  // single user prompt + autonomous tail — triggers compactAll when keep:1 but only 1 user turn
-  return [
-    msg(nextId(), "user", "go"),
-    msg(nextId(), "assistant", "calling tool"),
-    msg(nextId(), "toolResult", "result"),
-    msg(nextId(), "assistant", "more"),
-    msg(nextId(), "toolResult", "result2"),
-    msg(nextId(), "assistant", "done"),
-  ];
-}
-
 export function buildTooFewSession(): Record<string, unknown>[] {
   return [
     msg("m1", "user", "a"),
@@ -115,21 +98,6 @@ export function buildToolResultBoundarySession(): Record<string, unknown>[] {
   entries.push(msg(nextId(), "user", "final user that makes tail large " + "x".repeat(40000)));
   entries.push(msg(nextId(), "assistant", "assistant calls tool"));
   entries.push(msg(nextId(), "toolResult", "x".repeat(60000)));
-  return entries;
-}
-
-export function buildOversizedTailSession(): Record<string, unknown>[] {
-  // One user turn with gigantic autonomous tail > 2.5 * MAX_SMART_TAIL_TOKENS (25k tokens ~ 100k chars at 4cpt)
-  // At 4 cpt, 25k tokens = 100k chars, 2.5 factor = 62.5k tokens. So make tail 70k tokens ~ 280k chars
-  resetIdCounter();
-  const entries: Record<string, unknown>[] = [];
-  entries.push(msg(nextId(), "user", "initial goal"));
-  entries.push(msg(nextId(), "assistant", "starting work"));
-  // autonomous chain no user boundary
-  for (let i = 0; i < 5; i++) {
-    entries.push(msg(nextId(), "assistant", "tool call " + i + " " + "a".repeat(50000)));
-    entries.push(msg(nextId(), "toolResult", "b".repeat(50000)));
-  }
   return entries;
 }
 
