@@ -314,10 +314,13 @@ describe("bug fix: details.sections should not include [user]/[assistant] brief 
     const beforeCompact = handlers.get("session_before_compact") as any;
     const mkMsg = (id: string, role: any, content: any) => ({ id, type: "message", message: { role, content, timestamp: Date.now() } });
     const branch: any[] = [];
+    // Realistic 50k-token-session shape: substantive per-turn content so the
+    // removed prefix dwarfs the summary (growth guard cancels tiny-prefix
+    // compactions whose summary would exceed what they replace).
     for (let i = 0; i < 20; i++) {
-      branch.push(mkMsg(`u${i}`, "user", `Goal: fix auth ${i} — some user text`));
-      branch.push(mkMsg(`a${i}`, "assistant", [{ type: "text", text: `assistant reply ${i}` }]));
-      branch.push(mkMsg(`t${i}`, "toolResult", [{ type: "text", text: `tool result ${i}` }]));
+      branch.push(mkMsg(`u${i}`, "user", `Goal: fix auth ${i} — some user text ` + "detail ".repeat(200)));
+      branch.push(mkMsg(`a${i}`, "assistant", [{ type: "text", text: `assistant reply ${i} ` + "reply detail ".repeat(200) }]));
+      branch.push(mkMsg(`t${i}`, "toolResult", [{ type: "text", text: `tool result ${i} ` + "output ".repeat(100) }]));
     }
     const prep: any = { tokensBefore: 50000, previousSummary: "", fileOps: { read: new Set(["src/auth.ts"]), written: new Set(), edited: new Set() } };
     const res: any = await beforeCompact({ preparation: prep, branchEntries: branch, customInstructions: "__omp_vcc__ keep:1" }, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} }, logger: { debug: () => {} } });

@@ -76,6 +76,17 @@ export interface CompactionStats {
 
 export type BudgetCutKind = "no_anchor" | "oversized_tail";
 export const OVERSIZED_TAIL_FACTOR = 2.5;
+// Growth-guard tolerance: compacting removes N messages (freeing their
+// per-message framing) and adds one summary entry (framing + details JSON).
+// Char-diff is otherwise exact, but host token accounting has noise both
+// ways, so the guard only fires on MATERIAL growth: the net-new summary
+// content must exceed the removed prefix by more than a fixed framing
+// allowance (one entry, ~128 tok) or 25% of the prefix (per-message
+// overhead share) — or exceed the absolute cap (~1k tok) at any ratio, so
+// large-scale drift cannot hide behind a big denominator.
+export const COMPACTION_GROWTH_FIXED_MARGIN_CHARS = 512;
+export const COMPACTION_GROWTH_RELATIVE_MARGIN = 0.25;
+export const COMPACTION_GROWTH_ABSOLUTE_CAP_CHARS = 4096;
 
 let lastStats: CompactionStats | null = null;
 let lastCompactWasPiVcc = false;
@@ -951,8 +962,56 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       return { cancel: true };
     }
 
-    const tokensBefore = typeof preparation.tokensBefore === "number" ? preparation.tokensBefore : 0;
+    // Growth guard: never emit a summary that materially adds more than it
+    // removes. tokensAfter - tokensBefore ≈ (netNew - prefix) / cpt: the kept
+    // tail cancels out, so the comparison is calibration-independent and
+    // exact in chars (plan-mode "compact and execute" grew 85K→87K: a 2-msg
+    // prefix replaced by a fixed-cost summary + brief floor). Compare the
+    // net-new content (summary minus carried-forward previous summary, which
+    // is already counted in the live context) against the removed prefix.
+    // Fires only on material growth — a fixed framing allowance or 25% of the
+    // prefix (host accounting noise), or the absolute cap (~1k tok) at any
+    // ratio. On overflow/willRetry the window is exhausted and SOME compaction
+    // must happen: abstain (host default proceeds) instead of cancelling.
     const summaryChars = summary.length;
+    const prefixChars = agentMessages.reduce(
+      (sum: number, message: any) => sum + estimateMessageContentChars(message.content),
+      0,
+    );
+    const prevSummaryChars = typeof preparation.previousSummary === "string"
+      ? preparation.previousSummary.length
+      : 0;
+    const netNewSummaryChars = summaryChars - Math.min(summaryChars, prevSummaryChars);
+    const netGrowthChars = netNewSummaryChars - prefixChars;
+    const toleranceChars = Math.max(
+      COMPACTION_GROWTH_FIXED_MARGIN_CHARS,
+      Math.round(prefixChars * COMPACTION_GROWTH_RELATIVE_MARGIN),
+    );
+    if (netGrowthChars > toleranceChars || netGrowthChars > COMPACTION_GROWTH_ABSOLUTE_CAP_CHARS) {
+      const prefixTok = estimateTokensFromChars(prefixChars, tokenEstimate.charsPerToken);
+      const netNewTok = estimateTokensFromChars(netNewSummaryChars, tokenEstimate.charsPerToken);
+      dbg(settings, {
+        growthGuard: true,
+        cancelled: reason !== "overflow" && !willRetry,
+        fallbackToCore: reason === "overflow" || willRetry,
+        compaction: { reason, willRetry },
+        prefixChars,
+        prevSummaryChars,
+        netNewSummaryChars,
+        netGrowthChars,
+        toleranceChars,
+      });
+      try {
+        ctx?.ui?.notify?.(
+          `omp-vcc: compaction would grow context (prefix ~${formatTokens(prefixTok)} tok, summary adds ~${formatTokens(netNewTok)} tok) — ${reason === "overflow" || willRetry ? "deferring to host compaction" : "cancelled"}`,
+          "info",
+        );
+      } catch {}
+      if (reason === "overflow" || willRetry) return;
+      return { cancel: true };
+    }
+
+    const tokensBefore = typeof preparation.tokensBefore === "number" ? preparation.tokensBefore : 0;
     const summaryTokensEst = estimateTokensFromChars(summaryChars, tokenEstimate.charsPerToken);
     const tokensAfterEst = summaryTokensEst + keptTokensEst;
     const tokensSavedEst = tokensBefore > 0 ? Math.max(0, tokensBefore - tokensAfterEst) : 0;

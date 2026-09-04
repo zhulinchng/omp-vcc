@@ -6,7 +6,7 @@ Comprehensive reference for the `omp-vcc` test corpus: unit, integration, sessio
 
 ```sh
 bunx tsc --noEmit          # typecheck — 0 errors, vendored core // @ts-nocheck, skipLibCheck
-bun test                   # 800 tests, 61 files, 2396 expects, 0 fail  (~8s)
+bun test                   # 811 tests, 62 files, 2424 expects, 0 fail  (~8s)
 bun test tests/e2e --timeout 120000   # 124 E2E only
 bun test tests/before-compact.test.ts # single suite
 bun run smoke              # 13 checks: 3 hooks + 6 commands (omp-vcc/pi-vcc/vcc-recall/pi-vcc-recall/vcc-stats/vcc-config, no alias) + 2 tools + dedup
@@ -80,7 +80,7 @@ flowchart TB
 | Command | Scope | Gate |
 |---|---|---|
 | `bunx tsc --noEmit` | typecheck all `extensions/`, `scripts/`, `tests/` | CI first, `prepublishOnly` |
-| `bun test` | 800 tests, 61 files, 2396 expects | CI second |
+| `bun test` | 811 tests, 62 files, 2424 expects | CI second |
 | `bun test tests/e2e --timeout 120000` | 124 E2E only | local E2E loop |
 | `bun test tests/before-compact.test.ts` | single suite | targeted |
 | `bun test --watch` | watch mode | dev |
@@ -459,5 +459,13 @@ Artifacts: `cat /tmp/omp-vcc-debug.json | jq '.usedOwnCut,.savings,.tokenEstimat
   fault injection exists; `tests/helpers.ts` `setWidget` mock mirrors the host `ExtensionAPI` surface although no test
   drives widgets yet. Product source (`extensions/`) is 100% lines / 100% funcs.
 - `Bun` is test runner; `node` will not resolve `.ts` imports (`bun.lock` committed, no `npm` lock).
+- Growth guard (`hook.ts`, `COMPACTION_GROWTH_*`): a compaction cancels when
+  net-new summary chars exceed the removed prefix by more than `max(512, 25%
+  of prefix)` or `4096` absolute (~1k tok) — char-diff is calibration-free
+  (kept tail cancels out). Overflow/`willRetry` defers to host (window
+  exhausted, some compaction must happen). Tiny-prefix fixtures must use
+  coherent `tokensBefore` or they trip the guard; see
+  `tests/compaction-growth-guard.test.ts` (report shape: 45-char prefix +
+  cumulative fileOps → 1735-char summary, 38x).
 
 See also: [Harness Impact](harness.md) §§5,8,9 (bypass, `methodOrder`, verification `grep` map) · [Setup](setup.md) (linking, strategies) · [omp-compaction](omp-compaction.md) (calibrate→merge) · [omp-snapcompact](omp-snapcompact.md) (branchEntries lineage) · [PUBLISHING](PUBLISHING.md) (heredoc `OMP_DIR=$(mktemp -d) OMP_VCC_CONFIG_PATH=$TMP/config.json omp -e … <<-'OMPT'`)
