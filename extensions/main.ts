@@ -315,8 +315,7 @@ export default function (pi: ExtensionAPI): void {
       const piAny = pi as unknown as { sendMessage?: (msg: unknown, opts?: unknown) => void };
       const { rendered, rawMessages } = loadAllMessages(sessionFile, false, lineageEntryIds);
       if (!query) {
-        const { rendered: r } = loadAllMessages(sessionFile, false, lineageEntryIds);
-        const recent = r.slice(-DEFAULT_RECENT);
+        const recent = rendered.slice(-DEFAULT_RECENT);
         const output = (scope === "all" ? "Scope: all\n\n" : "") + formatRecallOutput(recent);
         try { piAny.sendMessage?.({ customType: "vcc-recall", content: output, display: true }, { triggerTurn: false }); } catch {}
         return;

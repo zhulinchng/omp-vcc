@@ -814,3 +814,43 @@ describe("searchEntriesDetailed hard result cap", () => {
     expect(r.truncated).toBe(false);
   });
 });
+
+describe("search hoisting invariants", () => {
+  const docs = [
+    "auth session login flow",
+    "auth token refresh retry",
+    "unrelated cache plugin notes",
+    "session handler branch merge",
+  ];
+  const mkEntries = () => docs.map((d, i) => ({ index: i, role: "user", summary: d }));
+  const mkMessages = () => docs.map((d) => ({ role: "user", content: d } as any));
+
+  it("duplicate terms count per occurrence in matchCount but gate as one term", () => {
+    const single = searchEntriesDetailed(mkEntries(), mkMessages(), "auth");
+    const dup = searchEntriesDetailed(mkEntries(), mkMessages(), "auth auth");
+    // Same hit set and order (effective single term → posterior gate bypassed).
+    expect(dup.hits.map((h) => h.index)).toEqual(single.hits.map((h) => h.index));
+    // matchCount counts each query element (documents the no-fuse contract).
+    for (const h of dup.hits) expect(h.matchCount).toBe(2);
+    for (const h of single.hits) expect(h.matchCount).toBe(1);
+  });
+
+  it("repeated searches are identical (no regex state bleeds across docs or calls)", () => {
+    const size = 300;
+    const entries = Array.from({ length: size }, (_, i) => ({
+      index: i, role: i % 2 ? "assistant" : "user",
+      summary: `doc ${i} auth session token ${i % 7 === 0 ? "handler compact" : "plain filler"}`,
+    }));
+    const messages = entries.map((e) => ({ role: e.role, content: e.summary } as any));
+    const first = searchEntriesDetailed(entries, messages, "auth session compact handler");
+    // Interleave different queries, then repeat the original.
+    searchEntriesDetailed(entries, messages, "filler");
+    searchEntriesDetailed(entries, messages, "handler|compact");
+    const second = searchEntriesDetailed(entries, messages, "auth session compact handler");
+    expect(second.hits.map((h) => h.index)).toEqual(first.hits.map((h) => h.index));
+    expect(second.hits.map((h) => [h.matchCount, h.probability])).toEqual(
+      first.hits.map((h) => [h.matchCount, h.probability]),
+    );
+    expect(second.totalBeforeCap).toBe(first.totalBeforeCap);
+  });
+});

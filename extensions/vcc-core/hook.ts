@@ -400,6 +400,27 @@ const previewContent = (content: unknown): string => {
   return "";
 };
 
+/** Join parts with "\n" truncated to `bound` chars — byte-identical to
+ *  `parts.join("\n").slice(0, bound)` without materializing the full
+ *  joined string (calibration samples join up to 50 message contents,
+ *  any one of which can be megabytes). */
+export const joinBounded = (parts: string[], bound: number): string => {
+  let out = "";
+  let rem = bound;
+  for (let i = 0; i < parts.length; i++) {
+    if (rem <= 0) break;
+    if (i > 0) {
+      out += "\n";
+      rem--;
+      if (rem <= 0) break;
+    }
+    const take = parts[i].slice(0, rem);
+    out += take;
+    rem -= take.length;
+  }
+  return out;
+};
+
 interface EntryWithMessage {
   entry: { id: string; type: string };
   message: { role: string; content: unknown };
@@ -795,15 +816,24 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const calibrationSummaryChars = typeof preparation.previousSummary === "string"
       ? preparation.previousSummary.length
       : 0;
-    // Content samples for the slice/tokens mismatch guards: head text (first
-    // 50 string contents) plus tail text (last 50) — a prose head with a dense
-    // tail is the exact shape that under-reported kept tails, so density is
-    // checked on both ends. Bounded (8k chars each).
-    const stringContents = calibrationCut.ok
-      ? calibrationCut.messages.map((message: any) => (typeof message.content === "string" ? message.content : ""))
-      : [];
-    const calibrationSample = stringContents.slice(0, 50).join("\n").slice(0, 8000);
-    const calibrationTailSample = stringContents.slice(-50).join("\n").slice(0, 8000);
+    // Content samples for the mismatch guards: head text (first 50 mapped
+    // contents — string content or "" per message) plus tail text (last 50).
+    // A prose head with a dense tail is the exact shape that under-reported
+    // kept tails, so density is checked on both ends. Bounded (8k chars each):
+    // only the sampled windows are joined, never the whole transcript.
+    const calibrationMsgs = calibrationCut.ok ? calibrationCut.messages : [];
+    const headContents: string[] = [];
+    for (let i = 0; i < calibrationMsgs.length && headContents.length < 50; i++) {
+      const c = (calibrationMsgs[i] as any).content;
+      headContents.push(typeof c === "string" ? c : "");
+    }
+    const tailContents: string[] = [];
+    for (let i = Math.max(0, calibrationMsgs.length - 50); i < calibrationMsgs.length; i++) {
+      const c = (calibrationMsgs[i] as any).content;
+      tailContents.push(typeof c === "string" ? c : "");
+    }
+    const calibrationSample = joinBounded(headContents, 8000);
+    const calibrationTailSample = joinBounded(tailContents, 8000);
     const tokenEstimate = calibrateCharsPerToken(
       calibrationMessageChars + calibrationSummaryChars,
       preparation.tokensBefore,

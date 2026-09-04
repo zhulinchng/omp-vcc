@@ -126,10 +126,8 @@ const looksLikeRegex = (query: string): boolean =>
   /[|*+?{}()[\]\\^$.]/.test(query);
 
 /** Build a regex for snippet highlighting — matches first available term. */
-const snippetRegex = (terms: string[]): RegExp => {
-  const alts = terms.map((t) => safeRegex(t).source);
-  return new RegExp(alts.join("|"), "i");
-};
+const snippetRegex = (sources: string[]): RegExp =>
+  new RegExp(sources.join("|"), "i");
 
 // ── Stopwords for natural language queries ──
 const STOPWORDS = new Set([
@@ -153,15 +151,29 @@ const filterStopwords = (terms: string[]): string[] => {
   return meaningful.length > 0 ? meaningful : terms;
 };
 
+/** One query term with its matchers compiled once per search: `re` (/i/) for
+ *  boolean tests, `freqRe` (/gi/) for occurrence counts via String.match
+ *  (which resets lastIndex, so reuse across docs is state-safe). */
+interface CompiledTerm {
+  term: string;
+  re: RegExp;
+  freqRe: RegExp;
+}
+
+const compileTerms = (terms: string[]): CompiledTerm[] =>
+  terms.map((t) => {
+    const re = safeRegex(t);
+    return { term: t, re, freqRe: new RegExp(re.source, "gi") };
+  });
+
 /** Count how many distinct terms match the haystack. */
-const countMatches = (hay: string, terms: string[]): number => {
+const countMatches = (hay: string, compiled: CompiledTerm[]): number => {
   let count = 0;
-  for (const t of terms) {
-    if (safeRegex(t).test(hay)) count++;
+  for (const c of compiled) {
+    if (c.re.test(hay)) count++;
   }
   return count;
 };
-
 // ── BM25-lite scoring ──
 const BM25_K = 1.2;
 const BM25_B = 0.75;
@@ -178,18 +190,21 @@ interface BM25Context {
   df: Map<string, number>; // term -> number of docs containing it
 }
 
-/** Precompute IDF and avgDl across all docs. */
-const buildBM25Context = (docs: string[], terms: string[], checkBudget: () => void): BM25Context => {
+/** Precompute IDF and avgDl across all docs. Word counts are measured once
+ *  by the caller (`wordLens`, parallel to `docs`) instead of re-splitting
+ *  every doc here and again in `bm25Score`. */
+const buildBM25Context = (docs: string[], compiled: CompiledTerm[], wordLens: number[], checkBudget: () => void): BM25Context => {
   const n = docs.length;
   const df = new Map<string, number>();
   let totalLen = 0;
 
-  for (const doc of docs) {
+  for (let d = 0; d < docs.length; d++) {
     checkBudget();
-    totalLen += doc.split(/\s+/).length;
-    for (const t of terms) {
-      if (safeRegex(t).test(doc)) {
-        df.set(t, (df.get(t) ?? 0) + 1);
+    const doc = docs[d];
+    totalLen += wordLens[d];
+    for (const c of compiled) {
+      if (c.re.test(doc)) {
+        df.set(c.term, (df.get(c.term) ?? 0) + 1);
       }
     }
   }
@@ -198,22 +213,20 @@ const buildBM25Context = (docs: string[], terms: string[], checkBudget: () => vo
 };
 
 /** BM25 score for a single doc against query terms, plus the calibration
- *  inputs the Bayesian posterior needs: total term frequency across terms,
- *  distinct normalized matched terms (coverage parity), and the doc-length
- *  ratio. Same pass — no re-scanning. */
-const bm25Score = (doc: string, terms: string[], ctx: BM25Context): { score: number; tf: number; distinctTerms: number; docLenRatio: number } => {
-  const dl = doc.split(/\s+/).length;
+ *  inputs the Bayesian posterior needs. `dl` is the doc's word count,
+ *  measured once by the caller alongside `wordLens` — no re-splitting. */
+const bm25Score = (doc: string, compiled: CompiledTerm[], ctx: BM25Context, dl: number): { score: number; tf: number; distinctTerms: number; docLenRatio: number } => {
   let score = 0;
   let totalTf = 0;
   const seenTerms = new Set<string>();
 
-  for (const t of terms) {
-    const termTf = termFreq(doc, safeRegex(t));
+  for (const c of compiled) {
+    const termTf = termFreq(doc, c.freqRe);
     if (termTf === 0) continue;
     totalTf += termTf;
-    seenTerms.add(t.toLowerCase());
+    seenTerms.add(c.term.toLowerCase());
 
-    const docFreq = ctx.df.get(t) ?? 0;
+    const docFreq = ctx.df.get(c.term) ?? 0;
     // IDF: log((N - df + 0.5) / (df + 0.5) + 1)
     const idf = Math.log((ctx.n - docFreq + 0.5) / (docFreq + 0.5) + 1);
     const tfNorm = (termTf * (BM25_K + 1)) / (termTf + BM25_K * (1 - BM25_B + BM25_B * dl / ctx.avgDl));
@@ -532,30 +545,37 @@ export const searchEntriesDetailed = (
   // Natural language / multi-word query: BM25 scoring
   const rawTerms = rawQuery.split(/\s+/);
   const terms = filterStopwords(rawTerms);
-  const snipRe = snippetRegex(terms);
+  const compiled = compileTerms(terms);
+  const snipRe = snippetRegex(compiled.map((c) => c.re.source));
 
-  // Build all docs for BM25 context
+  // Build all docs for BM25 context. Each message's searchable text is
+  // extracted once here (`texts`) and reused for snippets below; word
+  // counts (`wordLens`) are measured once for both context and scoring.
   const docs: string[] = [];
+  const texts: string[] = [];
+  const wordLens: number[] = [];
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
     const msg = messages[i];
     const text = msg ? fullText(msg) : e.summary;
     const filePart = e.files?.join(" ") ?? "";
-    docs.push(`${e.role} ${text} ${filePart}`);
+    const hay = `${e.role} ${text} ${filePart}`;
+    docs.push(hay);
+    texts.push(text);
+    wordLens.push(hay.split(/\s+/).length);
   }
 
-  const ctx = buildBM25Context(docs, terms, checkBudget);
+  const ctx = buildBM25Context(docs, compiled, wordLens, checkBudget);
 
   const scored: Array<{ hit: SearchHit; score: number; tf: number; distinctTerms: number; docLenRatio: number }> = [];
   for (let i = 0; i < entries.length; i++) {
     checkBudget();
     const e = entries[i];
     const hay = docs[i];
-    const mc = countMatches(hay, terms);
+    const mc = countMatches(hay, compiled);
     if (mc === 0) continue;
-    const { score, tf, distinctTerms, docLenRatio } = bm25Score(hay, terms, ctx);
-    const text = messages[i] ? fullText(messages[i]) : e.summary;
-    const snip = lineSnippet(text, snipRe);
+    const { score, tf, distinctTerms, docLenRatio } = bm25Score(hay, compiled, ctx, wordLens[i]);
+    const snip = lineSnippet(texts[i], snipRe);
     scored.push({
       hit: { ...e, snippet: snip, matchCount: mc },
       score,
