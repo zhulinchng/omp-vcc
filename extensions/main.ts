@@ -326,6 +326,12 @@ export default function (pi: ExtensionAPI): void {
       const scopeSuffix = scope === "all" ? " (scope: all)" : "";
       const scopeArg = scope === "all" ? " scope:all" : "";
       const truncationNote = truncated ? ` — showing ${hits.length} of ${totalBeforeCap} matches, refine your query for more precise results` : "";
+      if (hits.length > 0 && page > totalPages) {
+        const guidance = truncated ? `Use /pi-vcc-recall ${query}${scopeArg} page:N with N between 1 and ${totalPages}.` : `Use /pi-vcc-recall ${query}${scopeArg} page:N with N between 1 and ${totalPages}, or refine your query.`;
+        const text = `Page ${page} is outside the available range 1-${totalPages} (${hits.length} matches${scopeSuffix}${truncationNote}). ${guidance}`;
+        try { piAny.sendMessage?.({ customType: "vcc-recall", content: text, display: true }, { triggerTurn: false }); } catch {}
+        return;
+      }
       const start = (page - 1) * PAGE_SIZE;
       const pageResults = hits.slice(start, start + PAGE_SIZE);
       const header = totalPages > 1 ? `Page ${page}/${totalPages} (${hits.length} total matches${scopeSuffix}${truncationNote})` : `${hits.length} matches${scopeSuffix}${truncationNote}`;

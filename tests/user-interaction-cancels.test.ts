@@ -213,10 +213,10 @@ describe("user interaction: /omp-vcc failure and notify edges", () => {
     });
     expect(notify.some((n) => n.msg === "Nothing to compact" && n.level === "warning")).toBe(true);
   });
-  test("/pi-vcc-recall out-of-range page reports no matches without guidance", async () => {
-    // Divergence from /vcc-recall (which guides to a valid page): the alias
-    // has no out-of-range branch, so an empty page renders as "No matches"
-    // even though 7 matches exist. Pinned as the observable contract.
+  test("/pi-vcc-recall out-of-range page guides with alias syntax", async () => {
+    // Parity with /vcc-recall: a page past the end names the valid range and
+    // the alias command (not a false "No matches"), using /pi-vcc-recall
+    // syntax since that is what the user typed.
     const entries = Array.from({ length: 7 }, (_, i) => umsg(`m${i}`, `zebra_oor entry number ${i}`));
     const { dir, file, ids } = makeSession(entries);
     try {
@@ -224,9 +224,29 @@ describe("user interaction: /omp-vcc failure and notify edges", () => {
       const notify: any[] = [];
       await commands.get("pi-vcc-recall").handler("zebra_oor page:5", cmdCtx(file, ids, notify));
       expect(sent.length).toBe(1);
-      expect(sent[0].msg.content).toContain("No matches");
-      expect(sent[0].msg.content).not.toContain("outside the available range");
-      expect(sent[0].msg.content).not.toContain("Page 5/2");
+      expect(sent[0].msg.content).toContain("Page 5 is outside the available range 1-2");
+      expect(sent[0].msg.content).toContain("7 matches");
+      expect(sent[0].msg.content).not.toContain("No matches");
+      expect(sent[0].msg.content).toContain("/pi-vcc-recall");
+      expect(sent[0].msg.content).toContain("page:N");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("/pi-vcc-recall truncated out-of-range guidance does not repeat refine", async () => {
+    // 60 raw matches capped to 50 → pages 1-10. Page 11 guidance must not
+    // repeat the "refine your query" the truncation note already gave.
+    const entries = Array.from({ length: 60 }, (_, i) => umsg(`m${i}`, `zebra_trunc entry number ${i}`));
+    const { dir, file, ids } = makeSession(entries);
+    try {
+      const { commands, sent } = makePi();
+      const notify: any[] = [];
+      await commands.get("pi-vcc-recall").handler("zebra_trunc.*entry page:11", cmdCtx(file, ids, notify));
+      expect(sent.length).toBe(1);
+      expect(sent[0].msg.content).toContain("Page 11 is outside the available range 1-10");
+      expect(sent[0].msg.content).toContain("/pi-vcc-recall");
+      expect(sent[0].msg.content.match(/refine your query/g)?.length).toBe(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
