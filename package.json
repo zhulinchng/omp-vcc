@@ -1,6 +1,6 @@
 {
   "name": "omp-vcc",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "type": "module",
   "description": "Algorithmic VCC compaction for omp - fast lossless no-LLM",
   "author": "Zhu Lin <zhulin@czl.my>",
