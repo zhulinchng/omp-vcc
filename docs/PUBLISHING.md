@@ -141,6 +141,7 @@ workflow repoints only the package name (`npm pkg set name=@zhulinchng/omp-vcc`)
 — version and contents are otherwise identical to npmjs. Versions are
 immutable on that registry too: a run whose version is already published skips
 the publish step with a warning (`already-published=true`); bump first.
+A run whose version is older than the registry latest cannot take the implicit `latest` dist-tag, so the publish step retries it under the explicit `backfill` dist-tag (`latest` untouched) — the same tag manual backfills use.
 Installing from it requires an npm token with `read:packages`, even though
 the package is public.
 
@@ -338,5 +339,5 @@ to the host walk, and when to keep `snapcompact`/`handoff` alongside `omp-vcc`.
 | GPR package shows `private` after `--access public` | Make it public once via UI: package → Package settings → Danger Zone → Change visibility → Public (see point 8) |
 | `npm view` stale after publish | `curl -fsS https://registry.npmjs.org/omp-vcc | jq .["dist-tags"]` or `npm view omp-vcc dist-tags --json` — `npm view <pkg> version` caches |
 | `already-published=true` warning in `publish-gpr.yml` | Version is immutable — `npm version patch && git push --follow-tags && gh release create v...` |
-| `prepublishOnly` fails remotely but passes locally | Node/bun version drift — `publish-gpr.yml` pins Node 24 + `bun: latest`; run same locally |
+| `prepublishOnly` fails remotely but passes locally | Node/bun version drift — `publish-gpr.yml` pins Node 24 + `bun: 1.3.14`; run same locally |
 
