@@ -128,6 +128,42 @@ npm pack --dry-run  # check: LICENSE, README.md, scripts/uninstall-reset.js, ext
 5. Inspect what would ship before a real publish with `npm publish --dry-run`
    (or `npm pack`).
 
+### Patch-release and backfill runbook
+
+Patch flow (as run for `0.1.10`) — order matters:
+
+```sh
+# 1. Commit the fix first so the release tag includes it; leave unrelated files alone.
+git add <fix files> && git commit -m "fix(...): ..."
+# 2. Bump, then tag annotated (plain `git tag` is rejected here).
+npm version patch   # or minor / major
+git tag -a vX.Y.Z -m "vX.Y.Z"   # only if npm skipped the tag
+# 3. Gates on the exact tree you will publish.
+bunx tsc --noEmit && bun test && bun run smoke && npm pack --dry-run
+# 4. Push, then npmjs (needs OTP — tip 5), then the release, in this order.
+git push origin main --follow-tags
+npm publish --access public --otp <6-digit>
+gh release create vX.Y.Z --title vX.Y.Z --notes-file /tmp/vX.Y.Z-notes.md
+```
+
+Never cut the release before npmjs succeeds — the release triggers the GPR mirror and the registries would drift. Verify with `curl`, not `npm view` (cached — tip 9).
+
+Backfill (missing GitHub Releases or GPR versions, as done for `0.1.1`–`0.1.9`):
+
+```sh
+git push origin <missing-tag>   # tags must exist remotely before releasing
+# Create releases oldest-first so the newest ends up Latest; notes = npm/GPR
+# header + one bullet per user-facing change (template: checklist step 3).
+gh release create vX.Y.Z --title vX.Y.Z --notes-file /tmp/vX.Y.Z-notes.md
+# GPR versions the workflow missed: publish the tag tree verbatim under the
+# `backfill` dist-tag (`latest` untouched).
+git archive vX.Y.Z | tar -x -C /tmp/gpr-backfill/X.Y.Z
+cd /tmp/gpr-backfill/X.Y.Z && npm pkg set name=@zhulinchng/omp-vcc
+GITHUB_TOKEN=$(gh auth token) npm publish --userconfig /tmp/gpr-npmrc --access public --tag backfill --ignore-scripts
+```
+
+`--ignore-scripts` skips `prepublishOnly`: acceptable for backfill because the bytes are already immutable on npmjs — a backfill mirrors, it doesn't re-certify. Then `gh run rerun <red-run-id>` greens runs that failed only for lack of the version.
+
 ### GitHub Packages mirror
 
 Every GitHub Release also publishes a scoped mirror `@zhulinchng/omp-vcc`
