@@ -67,7 +67,7 @@ sequenceDiagram
 ## Implementation pipeline (omp-vcc)
 
 ```
-Calibrate → Smart keep → Build cut → Normalize (IR) → Filter noise → Build sections → Brief transcript (V_ui) → Format → Merge
+Calibrate → Smart keep → Build cut → Normalize (IR) → Filter noise → Build sections → Brief transcript (V_ui) → Format → Merge → Growth guard
 ```
 
 ```mermaid
@@ -81,11 +81,13 @@ flowchart LR
   G --> H["Brief V_ui\nbrief.ts + rank.ts TF-IDF\nperBlock 15*cpt"]
   H --> I["Format\nformat.ts\nbracketed + RECALL_NOTE"]
   I --> J["Merge\nsummarize.ts\nsticky dedup, volatile replace\nroll, capBrief 120 lines"]
-  J --> K["Output\n{summary, details,\nfirstKeptEntryId, tokensBefore}"]
+  J --> JG["Growth guard\nnetNew vs prefix chars\ncancel unless savings > max(512, 25%)\noverflow defers to host"]
+  JG --> K["Output\n{summary, details,\nfirstKeptEntryId, tokensBefore}"]
   K --> L["Savings\nkeptChars→keptTokensEst\nsummaryChars→summaryTokensEst\ntokensAfterEst→savedEst/percent\n+ authoritative enrich"]
 
   classDef stage fill:#fff3e0,stroke:#ef6c00
-  class A,B,C,D,E,F,G,H,I,J stage
+  classDef guard fill:#ffebee,stroke:#c62828
+  class JG guard
   class K,L fill:#e8f5e9,stroke:#2e7d32
 ```
 
@@ -101,6 +103,7 @@ Mapped from VCC compiler stages (§2.3) and pi-vcc 20-file core:
 | Filter noise | `filter-noise.ts` | harness filtering | `core/filter-noise.ts` |
 | Build sections | `build-sections.ts` regex extractors `extractGoals`, `extractFiles` (full paths verbatim; 20 flat + per-dir overflow groups to 100 named, honest bare count past), `extractCommits`, `extractPreferences`, `collapseSkillText` `RANKED_BRIEF_BUDGET*` | 5 semantic sections | `core/build-sections.ts` + `extract/*` |
 | Brief transcript (V_ui) | `brief.ts` chronological one-liners `(#N)` refs (`[user]`/`[assistant]`/`[custom]` tags; injected `custom_message` normalized as its own kind, ranked 12), `rank.ts` TF-IDF weighting, `format.ts` bracketed sections `RECALL_NOTE` (appended post-wrap, stripped whitespace-insensitively), `wrapLongLines` 120 cols with `\`-marked mid-token breaks the merge rejoins, `summarize.ts` bounded merge (sticky dedup, volatile replace, transcript roll, line-anchored tag parsing, `RANKED_BRIEF_BUDGET_TOKENS=1100` ceil 2000, `briefCharsPerBlock 15`, `BRIEF_MAX_LINES 120` cap via `capBrief`) | `V_ui` identity vs UI distinction eq.1, `V_adapt` eq.2 | `core/brief.ts`, `rank.ts`, `format.ts`, `summarize.ts` (`compileRanked`) |
+| Growth guard | post-merge check in `session_before_compact`: `netNew = summary − carried prev` vs removed prefix chars (kept tail cancels out, calibration-free); cancels unless savings exceed `max(512 chars, 25% of prefix)` or `4096`-char absolute cap; overflow/`willRetry` defers to host (`void`) with info notify; no stats recorded on cancel | non-growth invariant | `hook.ts` `COMPACTION_GROWTH_*` |
 | Recall ranking | `search-entries.ts` `searchEntriesDetailed` regex→OR (`rank.ts` rare-term weighted), `render-entries.ts`, `format-recall.ts`, `drill-down.ts` `#N:path` | `V_adapt` `match_lines(b,ρ)` preserving skeleton + `SEP` | `core/search-entries.ts`, `core/format-recall.ts`, `core/drill-down.ts` |
 **Module map** `extensions/vcc-core/`:
 
@@ -150,7 +153,7 @@ flowchart TB
 1. `scaffoldSettings()` → `~/.omp/omp-vcc/config.json` (XDG-aware, migrates `~/.pi/agent/pi-vcc-config.json`)
 2. `pi.on("context", filter omp/pi auto-continue marker)` strips `customType === "omp-vcc-auto-continue" || "pi-vcc-auto-continue"` (matches pi-vcc's `on('context')` filter)
 3. `pi.on("before_agent_start", clearPendingAutoContinue)`
-4. `pi.on("session_before_compact", handler)` → `parseCompactionInstructions` (accepts both `__pi_vcc__` and `__omp_vcc__` sentinels), `buildOwnCut`, `resolveSmartKeepUserTurns`, `applyTailBudget`, `calibrateCharsPerToken`, `compileRanked` with size-relative budget, computes `summaryChars → summaryTokensEst`, `keptChars → keptTokensEst`, `tokensAfterEst/savedEst/percent`, writes `details.savings` (`version:2`) + `dbg.savings` + `setLastStats` (per-pi `WeakMap`+`perPiKeys` + global, 50-capped, `timestamp`), returns `{compaction: {summary, details, tokensBefore, firstKeptEntryId}}` or `{cancel:true}` (overflow/willRetry fallback vs cancel). Reuses `convertToLlm` shim (host `session/messages` or identity).
+4. `pi.on("session_before_compact", handler)` → `parseCompactionInstructions` (accepts both `__pi_vcc__` and `__omp_vcc__` sentinels), `buildOwnCut`, `resolveSmartKeepUserTurns`, `applyTailBudget`, `calibrateCharsPerToken`, `compileRanked` with size-relative budget, growth guard (net-new vs prefix chars; cancel or defer to host on material growth), computes `summaryChars → summaryTokensEst`, `keptChars → keptTokensEst`, `tokensAfterEst/savedEst/percent`, writes `details.savings` (`version:2`) + `dbg.savings` + `setLastStats` (per-pi `WeakMap`+`perPiKeys` + global, 50-capped, `timestamp`), returns `{compaction: {summary, details, tokensBefore, firstKeptEntryId}}` or `{cancel:true}` (overflow/willRetry fallback vs cancel). Reuses `convertToLlm` shim (host `session/messages` or identity).
 5. `pi.on("session_compact", ...)` enriches `lastStats` with authoritative `compactionEntry.tokensAfter/tokensBefore → saved/percent` *before* `isPiVccLast/willRetry` early returns, then schedules toast (`formatCompactionStats` with `90k→22k (76% saved)` prefix, budgetCut aware, `999→500` vs `1.0k`) and `triggerInvisibleContinue` (`customType:"omp-vcc-auto-continue"` display:false triggerTurn:followUp) filtered in (2); `dbg.authoritativeSavings` when `debug:true`.
 6. `pi.registerTool("vcc_recall", ...)` via `pi.zod` (rho: regex→OR, lineage `active` vs `all`, pagination 5, `mode:'touched'`, `expand`, `parseDrillDown`).
 7. `pi.registerTool("vcc_stats", {history?:boolean})` (approval read, `perPi`+global history table via `formatStatsTable`/`formatLastStatsDetail`) + `pi.registerCommand("vcc-stats")` single (no `omp-vcc-stats` duplicate) + `pi.registerCommand("vcc-config")` single (effective config card via `loadSettingsWithSources` + `formatVccConfigCard`, args ignored, never throws).
@@ -177,14 +180,15 @@ sequenceDiagram
   Hook->>Hook: parseCompactionInstructions<br/>__omp_vcc__ || __pi_vcc__
   Hook->>Hook: buildOwnCut + resolveSmartKeep + applyTailBudget
   Hook->>Hook: calibrateCharsPerToken → compileRanked<br/>(normalize → filter → sections → brief → format → merge)
-  alt can compact
+  Hook->>Hook: growth guard<br/>netNew vs prefix chars
+  alt material growth (tiny prefix + cumulative fileOps)
+    Hook-->>Host: {cancel:true} + notify — session intact
+  else can compact
     Hook-->>Host: {compaction: {summary, details, firstKeptEntryId}}
     Host->>Host: session_compact
     Host->>Ext: session_compact handler
     Ext->>Host: notify toast + triggerInvisibleContinue<br/>customType:"omp-vcc-auto-continue"
     Host->>Ext: context filter strips marker<br/>model continues from summary
-  else cancel
-    Hook-->>Host: {cancel:true} — no LLM
   end
 
   Host->>Hook: vcc_recall {query, scope, page}<br/>→ searchEntriesDetailed → formatRecall

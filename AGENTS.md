@@ -7,7 +7,7 @@ Provides: auto `threshold`/`overflow` via `session_before_compact` (when `overri
 ## Architecture & Data Flow
 
 ```
-Calibrate → SmartKeep → BuildOwnCut → Normalize → FilterNoise → BuildSections → Brief (V_ui) → Merge
+Calibrate → SmartKeep → BuildOwnCut → Normalize → FilterNoise → BuildSections → Brief (V_ui) → Merge → Growth guard
                                           └─→ Recall (V_adapt)
 ```
 
