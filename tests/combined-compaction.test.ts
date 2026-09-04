@@ -425,6 +425,31 @@ describe("combined-compaction: chainShakeHint eager chain", () => {
     expect(compactCalls).toBe(0);
   });
 
+  test("chain shake rejection is swallowed without failing the handler", async () => {
+    setConfig({ overrideDefaultCompaction: true, vccEnabled: true, chainShakeHint: true, continueAfterThresholdCompact: false });
+    const pi: any = { on: (n: string, h: any) => { (pi as any)[n] = h; }, sendMessage: () => {}, sendUserMessage: () => {} };
+    registerBeforeCompactHook(pi);
+    const beforeHandler = (pi as any)["session_before_compact"];
+    const compactHandler = (pi as any)["session_compact"];
+    const entries = buildSession(6);
+    const event = makeEvent(entries, undefined, {}, 90000);
+    const ctxBefore: any = { settings: { get: (k: string) => (k.includes("chainShakeHint") ? true : undefined) }, config: { get: () => undefined }, ui: { notify: () => {} } };
+    const result = await beforeHandler(event, ctxBefore);
+    expect(result.compaction).toBeDefined();
+    let compactCalls = 0;
+    const ctxAfter: any = {
+      settings: { get: (k: string) => (k.includes("chainShakeHint") ? true : undefined) },
+      config: { get: () => undefined },
+      ui: { notify: () => {} },
+      compact: () => { compactCalls++; return Promise.reject(new Error("shake down")); },
+    };
+    await compactHandler({ fromExtension: true, compactionEntry: { id: "c9", tokensBefore: 90000, tokensAfter: 21000 } }, ctxAfter);
+    await new Promise((r) => setTimeout(r, 20));
+    // The shake was attempted and its rejection absorbed by .catch: resolved
+    // without throwing (an unhandled rejection would fail the file).
+    expect(compactCalls).toBe(1);
+  });
+
   test("chain does NOT trigger when fromExtension false or willRetry true or isPiVccLast", async () => {
     setConfig({ overrideDefaultCompaction: true, vccEnabled: true, chainShakeHint: true });
     const pi: any = { on: (n: string, h: any) => { (pi as any)[n] = h; }, sendMessage: () => {}, sendUserMessage: () => {} };

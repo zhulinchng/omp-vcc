@@ -6,7 +6,7 @@ Comprehensive reference for the `omp-vcc` test corpus: unit, integration, sessio
 
 ```sh
 bunx tsc --noEmit          # typecheck — 0 errors, vendored core // @ts-nocheck, skipLibCheck
-bun test                   # 791 tests, 60 files, 2367 expects, 0 fail  (~7s)
+bun test                   # 794 tests, 60 files, 2380 expects, 0 fail  (~7s)
 bun test tests/e2e --timeout 120000   # 124 E2E only
 bun test tests/before-compact.test.ts # single suite
 bun run smoke              # 13 checks: 3 hooks + 6 commands (omp-vcc/pi-vcc/vcc-recall/pi-vcc-recall/vcc-stats/vcc-config, no alias) + 2 tools + dedup
@@ -80,7 +80,7 @@ flowchart TB
 | Command | Scope | Gate |
 |---|---|---|
 | `bunx tsc --noEmit` | typecheck all `extensions/`, `scripts/`, `tests/` | CI first, `prepublishOnly` |
-| `bun test` | 791 tests, 60 files, 2367 expects | CI second |
+| `bun test` | 794 tests, 60 files, 2380 expects | CI second |
 | `bun test tests/e2e --timeout 120000` | 124 E2E only | local E2E loop |
 | `bun test tests/before-compact.test.ts` | single suite | targeted |
 | `bun test --watch` | watch mode | dev |

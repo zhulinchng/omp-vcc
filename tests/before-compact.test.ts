@@ -231,4 +231,21 @@ describe("buildOwnCut", () => {
     expect(r.keptUserTurns).toBe(2);
     expect(r.totalUserTurns).toBe(3);
   });
+
+  test("explicit keep-all with a pre-user prefix summarizes only the prefix", () => {
+    const r = buildOwnCut([
+      { id: "c0", type: "custom_message", customType: "memory", content: "prefix ctx", display: false },
+      msg("m1", "user", "a"),
+      msg("m2", "assistant", "b"),
+      msg("m3", "user", "c"),
+    ], 5, true);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.compactAll).toBe(false);
+    expect(r.firstKeptEntryId).toBe("m1");
+    expect(r.messages).toHaveLength(1);
+    expect(r.messages[0].content).toBe("prefix ctx");
+    expect(r.keptUserTurns).toBe(2);
+    expect(r.totalUserTurns).toBe(2);
+  });
 });

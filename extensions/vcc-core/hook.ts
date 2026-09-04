@@ -32,8 +32,8 @@ try {
 
 export { PI_VCC_COMPACT_INSTRUCTION } from "./core/compact-args";
 export const OMP_VCC_COMPACT_INSTRUCTION = "__omp_vcc__";
-// Accept both pi and omp sentinels for backwards compat
-const isVccSentinel = (s: string | undefined) => s === PI_VCC_COMPACT_INSTRUCTION || s === OMP_VCC_COMPACT_INSTRUCTION;
+// (Both pi/omp sentinels are matched inline at the explicit-mode bypass in
+// the session_before_compact handler below.)
 
 export interface CompactionStats {
   summarized: number;

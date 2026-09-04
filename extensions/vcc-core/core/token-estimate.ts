@@ -71,9 +71,7 @@ export const IMAGE_CONTENT_CHARS = 4800;
 const safeJsonStringify = (value: unknown): string => {
   try {
     return JSON.stringify(value ?? "") ?? "";
-  } catch {
-    return "";
-  }
+  } catch { return ""; }
 };
 
 /**

@@ -61,6 +61,18 @@ describe("compaction-gaps — section tag anchoring", () => {
     expect(head.match(/\[Session Goal\]/g)?.length ?? 0).toBe(1);
     expect(head).not.toContain("hallucinated goal");
   });
+
+  it("nearest following header wins when three sections follow", () => {
+    const prev =
+      `[Session Goal]\n- Ship auth\n\n[Files And Changes]\n- Modified: /repo/a.ts\n\n[Commits]\n- abc123 fix\n\n---\n\nprior brief`;
+    const out = compileRanked({ messages: fresh(), previousSummary: prev });
+    const head = out.split("\n\n---\n\n")[0];
+    const goal = head.slice(head.indexOf("[Session Goal]"), head.indexOf("[Files And Changes]"));
+    expect(goal).toContain("Ship auth");
+    expect(goal).not.toContain("Modified");
+    expect(out).toContain("/repo/a.ts");
+    expect(out).toContain("abc123 fix");
+  });
 });
 
 describe("compaction-gaps — oversized keep keeps the tail", () => {
