@@ -12,6 +12,7 @@ import { join } from "path";
 import {
   registerBeforeCompactHook,
   getLastCompactionStats,
+  evaluateGrowthGuard,
   OMP_VCC_COMPACT_INSTRUCTION,
   COMPACTION_GROWTH_FIXED_MARGIN_CHARS,
   COMPACTION_GROWTH_RELATIVE_MARGIN,
@@ -237,5 +238,104 @@ describe("compaction growth guard", () => {
     }
     const result: any = await invokeBefore(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, {}, {}, 90000));
     expect(result?.compaction).toBeDefined();
+  });
+});
+
+describe("evaluateGrowthGuard predicate — every arm and edge", () => {
+  // Handler-level tests can only trip the guard where the real summarizer
+  // produces material growth (it compresses well, so large-prefix trips are
+  // contrived). The math itself is pinned exactly here instead.
+  const cases: Array<[string, number, number, boolean]> = [
+    // [name, prefixChars, netNewChars, expectedTrip]
+    ["empty both ways", 0, 0, false],
+    ["zero prefix with content trips (fixed arm)", 0, 513, true],
+    ["zero prefix within fixed tolerance", 0, 512, false],
+    ["report class: 45-char prefix, 1735-char summary", 45, 1735, true],
+    ["small growth within fixed tolerance", 61, 218, false],
+    ["fixed-arm boundary is strict: growth == 512 proceeds", 1000, 1512, false],
+    ["fixed-arm boundary: growth == 513 trips", 1000, 1513, true],
+    ["relative arm dominates past 2048: tolerance is 25%", 4000, 4999, false],
+    ["relative arm: 1001 over 4000 trips", 4000, 5001, true],
+    ["rounding: prefix 3000 -> tolerance 750", 3000, 3750, false],
+    ["rounding: one char over trips", 3000, 3751, true],
+    ["shrinkage never trips", 5000, 1000, false],
+    ["net-zero summary never trips", 61, 0, false],
+    // Absolute-cap zone (synthetic: unreachable via the real summarizer,
+    // whose output scales slower than its input — backstop for pathological
+    // blowup, e.g. a future uncapped fileOps section).
+    ["absolute cap independent of ratio: 4500 over 20000 trips", 20000, 24500, true],
+    ["absolute cap boundary is strict: 4096 over proceeds", 20000, 24096, false],
+    ["absolute cap: 4097 over trips", 20000, 24097, true],
+    ["huge proportional prefix does not false-fire the cap", 20000, 23000, false],
+    ["verdict carries the math for debug", 45, 1735, true],
+  ];
+  for (const [name, prefix, netNew, trip] of cases) {
+    test(name, () => {
+      const v = evaluateGrowthGuard(prefix, netNew);
+      expect(v.trip).toBe(trip);
+      expect(v.netGrowthChars).toBe(netNew - prefix);
+      expect(v.toleranceChars).toBe(Math.max(512, Math.round(prefix * 0.25)));
+    });
+  }
+});
+
+describe("compaction growth guard — handler edges", () => {
+  test("explicit request during overflow still defers to host (void)", async () => {
+    const { pi, invokeBefore, notifyCalls } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const result: any = await invokeBefore(
+      makeEvent([...tinyPrefix(), giantTail()], OMP_VCC_COMPACT_INSTRUCTION, { reason: "overflow" }, { fileOps: sessionFileOps() }),
+    );
+    expect(result).toBeUndefined();
+    expect(notifyCalls.some((n) => n.msg.includes("deferring"))).toBe(true);
+    expect(getLastCompactionStats(pi)).toBeNull();
+  });
+
+  test("defer path records no stats", async () => {
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    await invokeBefore(
+      makeEvent([...tinyPrefix(), giantTail()], undefined, { willRetry: true }, { fileOps: sessionFileOps() }),
+    );
+    expect(getLastCompactionStats(pi)).toBeNull();
+  });
+
+  test("micro-session proceeds within fixed tolerance (no refusal churn)", async () => {
+    // 3 one-char messages: a ~50-char summary vs a 2-char prefix. Growth is
+    // real but within framing noise — refusing would churn explicit tiny
+    // compacts for zero benefit.
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = ["m1", "m2", "m3"].map((id, i) => ({
+      id, type: "message",
+      message: { role: i % 2 ? "assistant" : "user", content: "x", timestamp: T },
+    }));
+    const result: any = await invokeBefore(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, {}, {}, 5000));
+    expect(result?.compaction).toBeDefined();
+  });
+
+  test("guard trip writes a debug snapshot with the char math", async () => {
+    const { readFileSync, existsSync, unlinkSync } = await import("fs");
+    const DEBUG_PATH = "/tmp/omp-vcc-debug.json";
+    const prevCfg = readFileSync(CONFIG_PATH, "utf-8");
+    try {
+      writeFileSync(CONFIG_PATH, JSON.stringify({ overrideDefaultCompaction: true, debug: true }));
+      if (existsSync(DEBUG_PATH)) unlinkSync(DEBUG_PATH);
+      const { pi, invokeBefore } = createMockPi();
+      registerBeforeCompactHook(pi);
+      await invokeBefore(
+        makeEvent([...tinyPrefix(), giantTail()], undefined, {}, { fileOps: sessionFileOps() }),
+      );
+      expect(existsSync(DEBUG_PATH)).toBe(true);
+      const dbg = JSON.parse(readFileSync(DEBUG_PATH, "utf-8"));
+      expect(dbg.growthGuard).toBe(true);
+      expect(dbg.cancelled).toBe(true);
+      expect(dbg.prefixChars).toBeGreaterThan(0);
+      expect(dbg.netNewSummaryChars).toBeGreaterThan(dbg.prefixChars);
+      expect(dbg.toleranceChars).toBe(512);
+    } finally {
+      writeFileSync(CONFIG_PATH, prevCfg);
+      try { unlinkSync(DEBUG_PATH); } catch {}
+    }
   });
 });

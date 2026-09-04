@@ -88,6 +88,27 @@ export const COMPACTION_GROWTH_FIXED_MARGIN_CHARS = 512;
 export const COMPACTION_GROWTH_RELATIVE_MARGIN = 0.25;
 export const COMPACTION_GROWTH_ABSOLUTE_CAP_CHARS = 4096;
 
+export interface GrowthGuardVerdict {
+  trip: boolean;
+  netGrowthChars: number;
+  toleranceChars: number;
+}
+
+// Pure growth-guard predicate (calibration-free). Table-driven unit tests in
+// tests/compaction-growth-guard.test.ts pin every arm and edge.
+export const evaluateGrowthGuard = (prefixChars: number, netNewSummaryChars: number): GrowthGuardVerdict => {
+  const netGrowthChars = netNewSummaryChars - prefixChars;
+  const toleranceChars = Math.max(
+    COMPACTION_GROWTH_FIXED_MARGIN_CHARS,
+    Math.round(prefixChars * COMPACTION_GROWTH_RELATIVE_MARGIN),
+  );
+  return {
+    trip: netGrowthChars > toleranceChars || netGrowthChars > COMPACTION_GROWTH_ABSOLUTE_CAP_CHARS,
+    netGrowthChars,
+    toleranceChars,
+  };
+}
+
 let lastStats: CompactionStats | null = null;
 let lastCompactWasPiVcc = false;
 let pendingFollowUpPrompt: string | null = null;
@@ -982,12 +1003,9 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       ? preparation.previousSummary.length
       : 0;
     const netNewSummaryChars = summaryChars - Math.min(summaryChars, prevSummaryChars);
-    const netGrowthChars = netNewSummaryChars - prefixChars;
-    const toleranceChars = Math.max(
-      COMPACTION_GROWTH_FIXED_MARGIN_CHARS,
-      Math.round(prefixChars * COMPACTION_GROWTH_RELATIVE_MARGIN),
-    );
-    if (netGrowthChars > toleranceChars || netGrowthChars > COMPACTION_GROWTH_ABSOLUTE_CAP_CHARS) {
+    const guard = evaluateGrowthGuard(prefixChars, netNewSummaryChars);
+    const { netGrowthChars, toleranceChars } = guard;
+    if (guard.trip) {
       const prefixTok = estimateTokensFromChars(prefixChars, tokenEstimate.charsPerToken);
       const netNewTok = estimateTokensFromChars(netNewSummaryChars, tokenEstimate.charsPerToken);
       dbg(settings, {
