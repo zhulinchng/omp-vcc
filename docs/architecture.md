@@ -95,7 +95,7 @@ Mapped from VCC compiler stages (§2.3) and pi-vcc 20-file core:
 
 | Stage | pi-vcc module | VCC anchor | omp-vcc location |
 |---|---|---|---|
-| Calibrate `charsPerToken` | `token-estimate.ts` `calibrateCharsPerToken(totalChars / tokensBefore)` fallback 4, clamp 2–6, content-class guards (Latin raw<2.5→4, CJK raw>3→2, reported heuristic), `IMAGE_CONTENT_CHARS 4800` | line assignment before lowering | `extensions/vcc-core/core/token-estimate.ts` |
+| Calibrate `charsPerToken` | `token-estimate.ts` `calibrateCharsPerToken(totalChars / tokensBefore)` fallback 4, clamp 2–6, content-class guards (Latin raw<2.5→4 prose / →3 dense head-or-tail, CJK raw>3→2, reported heuristic), `IMAGE_CONTENT_CHARS 4800` | line assignment before lowering | `extensions/vcc-core/core/token-estimate.ts` |
 | Smart keep | `resolveSmartKeepUserTurns` `MIN 5k → MAX 25k`, grows `keep:1` while tail ≤ max, respects explicit `keep:N`, stops at `compactAll`/empty-prefix; `tailTokensForKeep` measures the live window (incl. `custom_message`) | size-relative budget | `extensions/vcc-core/hook.ts` |
 | Build cut | `buildOwnCut(branchEntries, keep:N, explicitKeep)` collects live messages via `firstKeptEntryId` + orphan recovery (`""` sentinel or missing id), enforces `>2` live, `cutIdx = userIndices[target]`; explicit keep covering all turns keeps the tail (default path still compacts all), empty summary + no previous summary → `{cancel:true}`; `compactAll` sentinel `firstKeptEntryId=""` | IR sequence `I=(n1..nN)` + lineage | `hook.ts` |
 | Tail budget rescue | `applyTailBudget` `OVERSIZED_TAIL_FACTOR 2.5`, `findBudgetCutIndex` token-budget scan + snap off `toolResult` boundary | rescue autonomous/oversized | `hook.ts` |
@@ -279,13 +279,21 @@ classDiagram
 - Empty/missing handled: `normalize` tolerates undefined content, `loadAllMessages` returns `[]`, `estimate*` heuristic fallback.
 - Repeated compactions merge bounded: `summarize.ts` sticky dedup, volatile replace, transcript roll.
 - `firstKeptEntryId=""` sentinel ensures `buildSessionContext` matches 0 kept, next `buildOwnCut` triggers orphan recovery.
+- Prompt-cache friendly by construction (prefix match: any byte change at N
+  invalidates everything after). The summary becomes the new conversation
+  prefix (system, summary, kept tail): deterministic bytes for identical input
+  (no timestamps/randomness in the compile path), no per-request volatile
+  data, append-mostly re-compaction (stable `[Session Goal]` head, fresh brief
+  at the tail). Guard cancels additionally preserve the existing cache by
+  leaving history intact; the invisible-continue marker is filtered out of the
+  payload (not even cached). Pinned in `tests/summary-cache-stability.test.ts`.
 
 ```mermaid
 stateDiagram-v2
   [*] --> Ready
   Ready --> Compacting: session_before_compact
   Compacting --> Summarized: buildOwnCut ok\ncompileRanked
-  Compacting --> Canceled: too_few / no_live_messages\n→ {cancel:true}
+  Compacting --> Canceled: too_few / no_live_messages\ngrowth guard (material net-new)\n→ {cancel:true}
   Summarized --> Toasted: session_compact\nnotify + invisible-continue?
   Toasted --> Ready: context filter strips\nomp-vcc-auto-continue
   Canceled --> Ready

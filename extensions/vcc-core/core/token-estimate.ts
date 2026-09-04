@@ -2,6 +2,21 @@
 export const DEFAULT_CHARS_PER_TOKEN = 4;
 export const MIN_CHARS_PER_TOKEN = 2;
 export const MAX_CHARS_PER_TOKEN = 6;
+// Prior for dense machine-generated content (tool dumps, hex/uuid streams:
+// measured ~2.1-2.7 cpt on cl100k_base vs ~4.4-5.2 for code/prose). Used when
+// the slice/tokens ratio contradicts the Latin prior AND the content looks
+// dense — forcing 4 there underestimates dense tails by up to ~1.9x.
+export const DENSE_CONTENT_CHARS_PER_TOKEN = 3;
+// A sample counts as dense when fewer than this fraction of its chars are
+// letters/spaces (measured: dense 0.43, tool output 0.66, code 0.82, prose
+// 0.97 — 0.7 separates machine output from human text).
+export const DENSE_CONTENT_PROSE_FRACTION = 0.7;
+
+export const isDenseContent = (text: string | undefined): boolean => {
+  if (!text) return false;
+  const letters = (text.match(/[A-Za-z ]/g) ?? []).length;
+  return letters / text.length < DENSE_CONTENT_PROSE_FRACTION;
+};
 
 export type TokenEstimateMode = "heuristic" | "calibrated";
 
@@ -20,6 +35,7 @@ export const calibrateCharsPerToken = (
   sourceChars: number,
   sourceTokens: number | undefined,
   sampleText?: string,
+  tailSampleText?: string,
 ): TokenEstimateCalibration => {
   if (!sourceTokens || sourceTokens <= 0 || sourceChars <= 0) {
     return { mode: "heuristic", charsPerToken: DEFAULT_CHARS_PER_TOKEN };
@@ -36,12 +52,18 @@ export const calibrateCharsPerToken = (
   // for Latin text — trusting it inflates every token estimate and the
   // pipeline over-trims. Conversely a high raw on CJK text means the token
   // count under-describes the slice. When the ratio contradicts the
-  // content-class prior, fall back to that prior (reported as heuristic).
   if (sampleText) {
     const cjkChars = (sampleText.match(/[\u2E80-\u9FFF\uAC00-\uD7FF\u3000-\u303F]/g) ?? []).length;
     const cjk = sampleText.length > 0 && cjkChars / sampleText.length >= 0.2;
     if (!cjk && rawCharsPerToken < 2.5) {
-      return { mode: "heuristic", charsPerToken: DEFAULT_CHARS_PER_TOKEN, sourceChars, sourceTokens, rawCharsPerToken };
+      // Dense machine-generated content tokenizes near ~2-2.7 cpt, so a low
+      // raw can be truth (not system-prompt inflation). The head sample alone
+      // cannot tell them apart — a prose head with a dense tail is the exact
+      // shape that under-reported kept tails — so either end being dense
+      // selects the dense prior (3) over the prose prior (4).
+      const dense = isDenseContent(sampleText) || isDenseContent(tailSampleText);
+      const prior = dense ? DENSE_CONTENT_CHARS_PER_TOKEN : DEFAULT_CHARS_PER_TOKEN;
+      return { mode: "heuristic", charsPerToken: prior, sourceChars, sourceTokens, rawCharsPerToken };
     }
     if (cjk && rawCharsPerToken > 3) {
       return { mode: "heuristic", charsPerToken: MIN_CHARS_PER_TOKEN, sourceChars, sourceTokens, rawCharsPerToken };
@@ -140,6 +162,32 @@ export interface UsageStats {
  * against summed provider usage when present, heuristic fallback otherwise.
  */
 export const collectUsageStats = (messages: any[]): UsageStats => {
+  // Bounded content samples for the calibration slice/tokens guards
+  // (classification only needs a fraction of the text): head sample plus a
+  // tail sample, since a prose head with a dense tail selects the dense prior.
+  const head = { text: "" };
+  const tail = { text: "" };
+  const takeInto = (store: { text: string }, text: unknown) => {
+    if (store.text.length >= 8000 || typeof text !== "string" || !text) return;
+    store.text += (store.text ? "\n" : "") + text.slice(0, 8000 - store.text.length);
+  };
+  const samplePartsInto = (store: { text: string }, content: unknown) => {
+    if (typeof content === "string") takeInto(store, content);
+    else if (Array.isArray(content)) {
+      for (const part of content) {
+        if (part?.type === "text" && typeof part.text === "string") takeInto(store, part.text);
+      }
+    }
+  };
+  const sampleMessageInto = (store: { text: string }, m: any) => {
+    const role = typeof m?.role === "string" ? m.role : "unknown";
+    if (role === "bashExecution") {
+      takeInto(store, m?.command);
+      takeInto(store, m?.output);
+    } else {
+      samplePartsInto(store, m?.content);
+    }
+  };
   const byRole: Record<string, number> = {};
   const models = new Set<string>();
   let toolCallCount = 0;
@@ -147,21 +195,6 @@ export const collectUsageStats = (messages: any[]): UsageStats => {
   let outputChars = 0;
   let minTs = Infinity;
   let maxTs = -Infinity;
-  // Bounded content sample for the calibration slice/tokens guards
-  // (classification only needs a fraction of the text).
-  let sample = "";
-  const takeSample = (text: unknown) => {
-    if (sample.length >= 8000 || typeof text !== "string" || !text) return;
-    sample += (sample ? "\n" : "") + text.slice(0, 8000 - sample.length);
-  };
-  const sampleParts = (content: unknown) => {
-    if (typeof content === "string") takeSample(content);
-    else if (Array.isArray(content)) {
-      for (const part of content) {
-        if (part?.type === "text" && typeof part.text === "string") takeSample(part.text);
-      }
-    }
-  };
   const usageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   let sawUsage = false;
   for (const m of messages ?? []) {
@@ -181,23 +214,27 @@ export const collectUsageStats = (messages: any[]): UsageStats => {
     }
     if (role === "assistant") {
       outputChars += estimateMessageContentChars(m?.content);
-      sampleParts(m?.content);
+      sampleMessageInto(head, m);
       if (Array.isArray(m?.content)) {
         for (const part of m.content) if (part?.type === "toolCall") toolCallCount++;
       }
     } else if (role === "bashExecution") {
       inputChars += (typeof m?.command === "string" ? m.command.length : 0) + 1
         + (typeof m?.output === "string" ? m.output.length : 0);
-      takeSample(m?.command);
-      takeSample(m?.output);
+      sampleMessageInto(head, m);
     } else {
       inputChars += estimateMessageContentChars(m?.content);
-      sampleParts(m?.content);
+      sampleMessageInto(head, m);
     }
+  }
+  // Tail sample in reverse: the last messages dominate kept-tail estimates.
+  const list = messages ?? [];
+  for (let i = list.length - 1; i >= 0 && tail.text.length < 8000; i--) {
+    sampleMessageInto(tail, list[i]);
   }
   const totalChars = inputChars + outputChars;
   const sourceTokens = sawUsage ? usageTotals.input + usageTotals.output : undefined;
-  const calibration = calibrateCharsPerToken(totalChars, sourceTokens, sample || undefined);
+  const calibration = calibrateCharsPerToken(totalChars, sourceTokens, head.text || undefined, tail.text || undefined);
   return {
     messageCount: messages?.length ?? 0,
     byRole,

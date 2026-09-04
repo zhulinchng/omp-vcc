@@ -40,6 +40,32 @@ describe("token estimate", () => {
     });
   });
 
+  test("dense head sample selects the dense prior (3), prose keeps 4", () => {
+    const dense = "0x1a2b3c|sess:99-a3f9c2|q=1.618033989|{err:E1234,fn:__h_99_req}|//#endregion[99]\n".repeat(100);
+    const prose = "the quick brown fox jumps over the lazy dog. ".repeat(100);
+    // raw 2.0: dense truth (measured ~2.1 cpt) vs prose inflation.
+    expect(calibrateCharsPerToken(2000, 1000, dense)).toMatchObject({ mode: "heuristic", charsPerToken: 3 });
+    expect(calibrateCharsPerToken(2000, 1000, prose)).toMatchObject({ mode: "heuristic", charsPerToken: 4 });
+  });
+
+  test("dense tail alone selects the dense prior (prose head, dense tail)", () => {
+    const prose = "Planning approach drafted. Ready to execute the approved plan. ";
+    const dense = "0x1a2b3c|sess:99-a3f9c2|q=1.618033989|{err:E1234}|//#endregion[99]\n".repeat(120);
+    expect(calibrateCharsPerToken(2000, 1000, prose, dense).charsPerToken).toBe(3);
+    expect(calibrateCharsPerToken(2000, 1000, prose, prose).charsPerToken).toBe(4);
+    expect(calibrateCharsPerToken(2000, 1000, prose).charsPerToken).toBe(4);
+  });
+
+  test("usage stats sample the tail for dense-tail sessions", () => {
+    const dense = "0x1a2b3c|sess:99-a3f9c2|q=1.618033989|{err:E1234}|//#endregion[99]\n".repeat(200);
+    const s = collectUsageStats([
+      { role: "user", content: "Please analyze the failure dump below.", usage: { input: 80000, output: 0 } },
+      { role: "user", content: dense, usage: { input: 0, output: 0 } },
+    ] as any);
+    // raw ~2.4 with a dense tail: dense prior, not the prose 4.
+    expect(s.calibration).toMatchObject({ mode: "heuristic", charsPerToken: 3 });
+  });
+
   test("estimates message content chars from strings and content parts", () => {
     expect(estimateMessageContentChars("hello")).toBe(5);
     expect(estimateMessageContentChars([

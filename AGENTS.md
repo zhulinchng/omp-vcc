@@ -15,7 +15,7 @@ Monotonic line assignment before lowering guarantees `V_ui → V_full[s:e]` via 
 
 | Stage | Module | Key symbol |
 |---|---|---|
-| Calibrate | `core/token-estimate.ts` | `calibrateCharsPerToken` clamp 2–6, fallback 4 |
+| Calibrate | `core/token-estimate.ts` | `calibrateCharsPerToken` clamp 2–6, fallback 4 (dense head/tail → 3) |
 | SmartKeep | `hook.ts` | `resolveSmartKeepUserTurns` 5k→25k, explicit `keep:N` not boosted |
 | Build cut | `hook.ts` | `buildOwnCut` via `firstKeptEntryId` + orphan `""`, `compactAll` |
 | Budget rescue | `hook.ts` | `applyTailBudget`, `findBudgetCutIndex` ×2.5, snap off `toolResult` |
@@ -24,6 +24,7 @@ Monotonic line assignment before lowering guarantees `V_ui → V_full[s:e]` via 
 | Sections | `core/build-sections.ts` + `extract/*` | 5 sections: Goal, Files, Commits, Preferences, Outstanding |
 | Brief `V_ui` | `core/brief.ts`, `rank.ts`, `summarize.ts` | `RANKED_BRIEF_BUDGET_TOKENS 1100` ceil 2000, `BRIEF_MAX_LINES 120` |
 | Recall `V_adapt` | `core/search-entries.ts`, `format-recall.ts`, `drill-down.ts` | `searchEntriesDetailed` regex→OR TF-IDF, `#N:path` |
+| Growth guard | `hook.ts` | cancel unless net-new savings exceed `max(512, 25%)`/4096 cap; overflow defers |
 
 Lifecycle (`extensions/main.ts` factory `(pi: ExtensionAPI) => void`, hooks in `hook.ts`):
 

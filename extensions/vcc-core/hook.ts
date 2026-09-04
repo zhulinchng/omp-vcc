@@ -774,20 +774,20 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const calibrationSummaryChars = typeof preparation.previousSummary === "string"
       ? preparation.previousSummary.length
       : 0;
-    // Content sample for the slice/tokens mismatch guards: slice text when the
-    // calibration cut has any, else the previous summary. Bounded (first 50
-    // string contents, 8k chars) — classification only needs a fraction.
-    const calibrationSample = calibrationCut.ok
-      ? calibrationCut.messages
-          .slice(0, 50)
-          .map((message: any) => (typeof message.content === "string" ? message.content : ""))
-          .join("\n")
-          .slice(0, 8000)
-      : "";
+    // Content samples for the slice/tokens mismatch guards: head text (first
+    // 50 string contents) plus tail text (last 50) — a prose head with a dense
+    // tail is the exact shape that under-reported kept tails, so density is
+    // checked on both ends. Bounded (8k chars each).
+    const stringContents = calibrationCut.ok
+      ? calibrationCut.messages.map((message: any) => (typeof message.content === "string" ? message.content : ""))
+      : [];
+    const calibrationSample = stringContents.slice(0, 50).join("\n").slice(0, 8000);
+    const calibrationTailSample = stringContents.slice(-50).join("\n").slice(0, 8000);
     const tokenEstimate = calibrateCharsPerToken(
       calibrationMessageChars + calibrationSummaryChars,
       preparation.tokensBefore,
       calibrationSample || (typeof preparation.previousSummary === "string" ? preparation.previousSummary.slice(0, 8000) : undefined),
+      calibrationTailSample || undefined,
     );
 
     // Smart keep-tail: boost default keep when the tail is small.
