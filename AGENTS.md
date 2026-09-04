@@ -41,14 +41,12 @@ See `docs/harness.md §5` (bypass), `§8` (methodOrder coexistence), `docs/setup
 
 ```
 extensions/
-  main.ts               — factory: scaffold, tools, commands, test re-exports
+  main.ts               — factory: scaffold, tools, commands, test re-exports (single registrar for vcc_recall, /omp-vcc, /pi-vcc, /vcc-recall, /pi-vcc-recall)
   vcc-core/
-    hook.ts             — hooks + compaction + stats + per-pi state
+    hook.ts             — hooks + compaction + stats + per-pi state (+ invalidExpandIndices shared with the factory tool)
     core/               — vendored: brief, rank, format, token-estimate, normalize, filter-noise, sanitize, content, lineage, search-entries, etc.
     extract/            — commits, files, goals, preferences
     types.ts, details.ts, sections.ts
-    commands/vcc-recall.ts — shim
-commands/               — omp-vcc.md, vcc-recall.md (discovery fallback)
 skills/omp-vcc/SKILL.md — VCC workflow
 tests/                  — *.test.ts + support/ + fixtures.ts, helpers.ts
 scripts/                — smoke.ts, uninstall-reset.js

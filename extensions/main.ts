@@ -20,6 +20,7 @@ import {
   registerVccStatsTool as registerVccStatsToolHook,
   registerVccStatsCommand as registerVccStatsCommandHook,
   registerVccConfigCommand as registerVccConfigCommandHook,
+  invalidExpandIndices,
 } from "./vcc-core/hook";
 import { searchEntriesDetailed, getTouchedFiles } from "./vcc-core/core/search-entries";
 import { formatRecallOutput, formatTouchedOutput } from "./vcc-core/core/format-recall";
@@ -141,7 +142,7 @@ export default function (pi: ExtensionAPI): void {
         const { rendered: fullMsgs } = loadAllMessages(sessionFile, true, lineageEntryIds);
         const requested = [...expandSet];
         const byIndex = new Map(fullMsgs.map((m) => [m.index, m]));
-        const invalid = requested.filter((i) => !Number.isInteger(i) || !byIndex.has(i));
+        const invalid = invalidExpandIndices(requested, new Set(byIndex.keys()));
         if (invalid.length > 0) {
           return {
             content: [{ type: "text", text: `Cannot expand indices outside ${scope === "all" ? "session history" : "active lineage"}: ${invalid.join(", ")}` }],
@@ -339,7 +340,7 @@ export default function (pi: ExtensionAPI): void {
   registerVccConfigCommandHook(pi);
 
 }
-// ── Re-exports for pi-vcc test compatibility (not dead: tests import via hook directly,
-// but external consumers and the `vcc-recall` shim may import via main) ──
-export { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, OMP_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, getCompactionHistory, formatCompactionStats, formatStatsTable, formatLastStatsDetail, scheduleCompactionStatsNotify, AUTO_CONTINUE_CUSTOM_TYPE, LEGACY_AUTO_CONTINUE_CUSTOM_TYPE, invalidExpandIndices, registerRecallTool, registerVccRecallCommand, registerPiVccCommand, registerVccStatsTool, registerVccStatsCommand, registerVccConfigCommand, clearCompactionHistoryForTests } from "./vcc-core/hook";
+// ── Re-exports for test compatibility (hook-owned API only; the duplicate
+// recall/pi-vcc registrars were deleted — the factory is the single source) ──
+export { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, OMP_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, getCompactionHistory, formatCompactionStats, formatStatsTable, formatLastStatsDetail, scheduleCompactionStatsNotify, AUTO_CONTINUE_CUSTOM_TYPE, LEGACY_AUTO_CONTINUE_CUSTOM_TYPE, invalidExpandIndices, registerVccStatsTool, registerVccStatsCommand, registerVccConfigCommand, clearCompactionHistoryForTests } from "./vcc-core/hook";
 export { buildPiVccCustomInstructions, parseKeepAndPrompt } from "./vcc-core/core/compact-args";

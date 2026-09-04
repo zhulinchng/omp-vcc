@@ -7,7 +7,30 @@ import { parseEntryRef, expandEntry } from "../extensions/vcc-core/core/drill-do
 import { renderMessage } from "../extensions/vcc-core/core/render-entries";
 import { loadAllMessages } from "../extensions/vcc-core/core/load-messages";
 import { formatRecallOutput } from "../extensions/vcc-core/core/format-recall";
-import { registerRecallTool } from "../extensions/vcc-core/hook";
+import extension from "../extensions/main";
+
+const chain: any = { optional: () => chain, describe: () => chain };
+const mockZod: any = {
+  object: (o: any) => o,
+  boolean: () => chain,
+  string: () => chain,
+  array: (_a: any) => chain,
+  number: () => chain,
+  enum: (_a: any) => chain,
+};
+
+const register = () => {
+  let tool: any;
+  (extension as any)({
+    on: () => {},
+    registerTool: (t: any) => { if (t.name === "vcc_recall") tool = t; },
+    registerCommand: () => {},
+    zod: mockZod,
+    sendMessage: () => {},
+    sendUserMessage: async () => {},
+  });
+  return tool;
+};
 
 let dirCount = 0;
 const makeSession = (entries: any[]) => {
@@ -125,8 +148,7 @@ describe("recall #N dispatch and guidance footer", () => {
   it("routes a bare #N query to the full entry through the recall tool", async () => {
     const { dir, file } = makeLongSession();
     try {
-      let tool: any;
-      registerRecallTool({ registerTool: (t: any) => { tool = t; } } as any);
+      const tool = register();
       const result = await tool.execute("tc", { query: "#1", scope: "all" }, undefined, undefined, {
         sessionManager: { getSessionFile: () => file },
       });

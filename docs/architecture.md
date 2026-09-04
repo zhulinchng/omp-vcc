@@ -115,7 +115,6 @@ vcc-core/
   extract/
     commits.ts, files.ts, goals.ts, preferences.ts
   types.ts, details.ts (version 2 + savings), sections.ts
-  commands/vcc-recall.ts — shim for pi-vcc test compatibility
 ```
 
 Host pipeline that omp-vcc bypasses is detailed in [harness.md §5.2.1](harness.md) (prune → useless → threshold → prepareCompaction → walk methodOrder) and pinned host docs [omp-compaction.md](omp-compaction.md)/[omp-snapcompact.md](omp-snapcompact.md) @18781d8295.

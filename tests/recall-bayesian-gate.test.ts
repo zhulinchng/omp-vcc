@@ -3,14 +3,38 @@ import { describe, it, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { registerRecallTool } from "../extensions/vcc-core/hook";
-import { registerVccRecallCommand } from "../extensions/vcc-core/commands/vcc-recall";
+import extension from "../extensions/main";
+
+const chain: any = { optional: () => chain, describe: () => chain };
+const mockZod: any = {
+  object: (o: any) => o,
+  boolean: () => chain,
+  string: () => chain,
+  array: (_a: any) => chain,
+  number: () => chain,
+  enum: (_a: any) => chain,
+};
+
+const makeFactoryPi = (capture: { tool?: any; handler?: any; sent?: any[] }) => {
+  const sent: Array<{ customType: string; content: string; display: boolean }> = [];
+  (extension as any)({
+    on: () => {},
+    registerTool: (t: any) => { if (t.name === "vcc_recall") capture.tool = t; },
+    registerCommand: (name: string, command: { handler: any }) => {
+      if (name === "vcc-recall") capture.handler = command.handler;
+    },
+    zod: mockZod,
+    sendMessage: (msg: any) => { sent.push(msg); },
+    sendUserMessage: async () => {},
+  });
+  capture.sent = sent;
+};
 
 // Integration: Bayesian posterior gate × the rest of the recall system.
-// Everything here runs through the production paths (tool/command, default
-// tuning, scope filtering, pagination, expand/drill-down, touched mode) —
-// the unit suites pin the gate math itself; this suite pins what the gate
-// does to tool-facing behavior.
+// Everything here runs through the production factory paths (tool/command,
+// default tuning, scope filtering, pagination, expand/drill-down, touched
+// mode) — the unit suites pin the gate math itself; this suite pins what
+// the gate does to tool-facing behavior.
 
 const userMsg = (id: string, content: string) => ({
   type: "message",
@@ -28,9 +52,9 @@ const makeSession = (entries: any[]) => {
 };
 
 const registerTool = () => {
-  let tool: any;
-  registerRecallTool({ registerTool: (t: any) => { tool = t; } } as any);
-  return tool;
+  const capture: { tool?: any } = {};
+  makeFactoryPi(capture);
+  return capture.tool;
 };
 
 const invokeTool = async (
@@ -236,16 +260,11 @@ describe("vcc_recall Bayesian gate integration", () => {
   });
 });
 
-describe("/pi-vcc-recall command Bayesian gate integration", () => {
+describe("/vcc-recall command Bayesian gate integration", () => {
   const register = () => {
-    let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
-    const sent: Array<{ customType: string; content: string; display: boolean }> = [];
-    const pi = {
-      registerCommand: (_name: string, command: { handler: typeof handler }) => { handler = command.handler; },
-      sendMessage: (msg: any) => { sent.push(msg); },
-    } as any;
-    registerVccRecallCommand(pi);
-    return { handler: handler!, sent };
+    const capture: { handler?: any; sent?: any[] } = {};
+    makeFactoryPi(capture);
+    return { handler: capture.handler!, sent: capture.sent! };
   };
 
   it("gates the multi-term tail in command output", async () => {

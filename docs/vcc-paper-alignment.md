@@ -109,8 +109,8 @@ Steps:
    `sessionManager` exposes nothing beyond `getSessionFile`/`getBranch`/`getEntries`.
    If no stable discovery API exists, glob `<OMP_DIR>/sessions/**/*.jsonl` directly
    (same approach as the reference's `~/.claude/projects` glob).
-2. Add `scope: "archive"` to the `vcc_recall` schema in `main.ts` (`registerTool`)
-   and `hook.ts` (`registerRecallTool`), plus `parseRecallScope` in
+2. Add `scope: "archive"` to the `vcc_recall` schema in `main.ts` (the
+   factory owns the single tool registration), plus `parseRecallScope` in
    `recall-scope.ts`. Bare `#N` refs stay file-local (current session); archived hits
    carry a `session:` label prefix in the rendered line.
 3. Reuse `loadAllMessages` + `searchEntriesDetailed` + `formatRecallOutput` per file;

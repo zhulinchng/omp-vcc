@@ -2,8 +2,9 @@
 // Residual gap coverage for core modules: each test pins one uncovered branch
 // (verified against current file content). No overlap with existing suites —
 // sibling workers own preferences/dispatch/drill-down; content.test.ts never
-// exercises clip/clipSentence/snippet/firstLine; no test touches shortPath,
-// summarizeToolArgs, or hook-level registerRecallTool/registerVccRecallCommand.
+// exercises clip/clipSentence/snippet/firstLine; no test touches shortPath
+// or summarizeToolArgs. Recall/command gap tests run through the factory
+// (the single production registrar).
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, mkdtempSync, rmSync, unlinkSync } from "fs";
 import { tmpdir, homedir } from "os";
@@ -17,12 +18,35 @@ import { compileBrief } from "../extensions/vcc-core/core/brief.ts";
 import { shortPath } from "../extensions/vcc-core/core/format-recall.ts";
 import {
   registerBeforeCompactHook,
-  registerRecallTool,
-  registerVccRecallCommand,
   PI_VCC_COMPACT_INSTRUCTION,
 } from "../extensions/vcc-core/hook.ts";
+import extension from "../extensions/main.ts";
 import { userMsg } from "./fixtures.ts";
 import { makeMockApi, makeMockCtx } from "./helpers.ts";
+
+const chain: any = { optional: () => chain, describe: () => chain };
+const mockZod: any = {
+  object: (o: any) => o,
+  boolean: () => chain,
+  string: () => chain,
+  array: (_a: any) => chain,
+  number: () => chain,
+  enum: (_a: any) => chain,
+};
+const makeFactoryPi = (capture: { tool?: any; commands?: Map<string, any>; sent?: any[] }) => {
+  const commands = new Map<string, any>();
+  const sent: any[] = [];
+  (extension as any)({
+    on: () => {},
+    registerTool: (t: any) => { if (t.name === "vcc_recall") capture.tool = t; },
+    registerCommand: (name: string, def: any) => commands.set(name, def),
+    zod: mockZod,
+    sendMessage: (m: any, o: any) => sent.push({ m, o }),
+    sendUserMessage: async () => {},
+  });
+  capture.commands = commands;
+  capture.sent = sent;
+};
 
 let CFG_DIR: string;
 let CONFIG_PATH: string;
@@ -388,31 +412,24 @@ describe("hook residual gaps", () => {
     expect(shakeCalls).toEqual([{ mode: "shake" }]);
   });
 
-  it("registerRecallTool builds a zod schema when pi.zod is present", () => {
-    // hook.ts registerRecallTool: pi.zod.object branch (no-zod {} path is covered).
-    const fakeZod: any = {
-      object: (s: any) => ({ __shape: s }),
-      string: () => ({ optional: () => ({}) }),
-      number: () => ({ optional: () => ({}) }),
-      array: (_: any) => ({ optional: () => ({}) }),
-      enum: (_: any) => ({ optional: () => ({}) }),
-    };
-    let tool: any;
-    registerRecallTool({ registerTool: (t: any) => { tool = t; }, zod: fakeZod } as any);
-    expect(tool.name).toBe("vcc_recall");
-    expect(Object.keys(tool.parameters.__shape).sort()).toEqual(["expand", "mode", "page", "query", "scope"]);
+  it("factory builds a vcc_recall zod schema with the five parameters", () => {
+    // Factory requires pi.zod; the shape carries all five parameters.
+    const capture: { tool?: any } = {};
+    makeFactoryPi(capture);
+    expect(capture.tool.name).toBe("vcc_recall");
+    expect(Object.keys(capture.tool.parameters).sort()).toEqual(["expand", "mode", "page", "query", "scope"]);
   });
 
-  it("hook recall tool refuses entry refs outside the active lineage", async () => {
-    // hook.ts registerRecallTool execute: lineage guard for #N (factory copy is
-    // covered by dispatch-gaps; this pins hook.ts's own copy).
+  it("recall tool refuses entry refs outside the active lineage", async () => {
+    // Factory execute: lineage guard for #N.
     const dir = mkdtempSync(join(tmpdir(), "core-residual-recall-"));
     try {
       const file = join(dir, "session.jsonl");
       const ids = ["m0", "m1", "m2", "m3", "m4"];
       writeFileSync(file, ids.map((id) => JSON.stringify({ type: "message", id, message: { role: "user", content: `message ${id}` } })).join("\n") + "\n", "utf8");
-      let tool: any;
-      registerRecallTool({ registerTool: (t: any) => { tool = t; } } as any);
+      const capture: { tool?: any } = {};
+      makeFactoryPi(capture);
+      const tool = capture.tool;
       const res = await tool.execute("tc", { query: "#3", scope: "lineage" }, undefined, undefined, {
         sessionManager: { getSessionFile: () => file, getBranch: () => [{ id: "m0" }] },
       });
@@ -424,15 +441,16 @@ describe("hook residual gaps", () => {
     }
   });
 
-  it("hook recall tool prefixes scope:all on the no-query recent path", async () => {
-    // hook.ts registerRecallTool execute: no-query fallback with scope all.
+  it("recall tool prefixes scope:all on the no-query recent path", async () => {
+    // Factory execute: no-query fallback with scope all.
     const dir = mkdtempSync(join(tmpdir(), "core-residual-recall-"));
     try {
       const file = join(dir, "session.jsonl");
       const ids = ["m0", "m1"];
       writeFileSync(file, ids.map((id) => JSON.stringify({ type: "message", id, message: { role: "user", content: `tail ${id}` } })).join("\n") + "\n", "utf8");
-      let tool: any;
-      registerRecallTool({ registerTool: (t: any) => { tool = t; } } as any);
+      const capture: { tool?: any } = {};
+      makeFactoryPi(capture);
+      const tool = capture.tool;
       const res = await tool.execute("tc", { scope: "all" }, undefined, undefined, {
         sessionManager: { getSessionFile: () => file, getBranch: () => ids.map((id) => ({ id })) },
       });
@@ -444,16 +462,17 @@ describe("hook residual gaps", () => {
     }
   });
 
-  it("hook recall command with empty args sends recent entries", async () => {
-    // hook.ts registerVccRecallCommand: !parsed.text → recent (no test imports it).
+  it("recall alias command with empty args sends recent entries", async () => {
+    // Factory /pi-vcc-recall: !query → recent.
     const dir = mkdtempSync(join(tmpdir(), "core-residual-recall-cmd-"));
     try {
       const file = join(dir, "session.jsonl");
       const ids = ["m0", "m1", "m2"];
       writeFileSync(file, ids.map((id) => JSON.stringify({ type: "message", id, message: { role: "user", content: `hello recent ${id}` } })).join("\n") + "\n", "utf8");
-      let handler: any;
-      const sent: any[] = [];
-      registerVccRecallCommand({ registerCommand: (_n: string, def: any) => { handler = def.handler; }, sendMessage: (m: any, o: any) => sent.push({ m, o }) } as any);
+      const capture: { commands?: Map<string, any>; sent?: any[] } = {};
+      makeFactoryPi(capture);
+      const handler = capture.commands!.get("pi-vcc-recall").handler;
+      const sent = capture.sent!;
       const ctx = makeMockCtx({
         sessionManager: { getSessionFile: () => file, getBranch: () => ids.map((id) => ({ id })), getEntries: () => ids.map((id) => ({ id })) },
         ui: { notify: () => {}, setWidget: () => {}, setHeader: () => {} },
@@ -467,16 +486,17 @@ describe("hook residual gaps", () => {
     }
   });
 
-  it("hook recall command with only page:N sends recent entries", async () => {
-    // hook.ts registerVccRecallCommand: page stripped → empty query → recent.
+  it("recall alias command with only page:N sends recent entries", async () => {
+    // Factory /pi-vcc-recall: page stripped → empty query → recent.
     const dir = mkdtempSync(join(tmpdir(), "core-residual-recall-cmd-"));
     try {
       const file = join(dir, "session.jsonl");
       const ids = ["m0", "m1"];
       writeFileSync(file, ids.map((id) => JSON.stringify({ type: "message", id, message: { role: "user", content: `page recent ${id}` } })).join("\n") + "\n", "utf8");
-      let handler: any;
-      const sent: any[] = [];
-      registerVccRecallCommand({ registerCommand: (_n: string, def: any) => { handler = def.handler; }, sendMessage: (m: any, o: any) => sent.push({ m, o }) } as any);
+      const capture: { commands?: Map<string, any>; sent?: any[] } = {};
+      makeFactoryPi(capture);
+      const handler = capture.commands!.get("pi-vcc-recall").handler;
+      const sent = capture.sent!;
       const ctx = makeMockCtx({
         sessionManager: { getSessionFile: () => file, getBranch: () => ids.map((id) => ({ id })), getEntries: () => ids.map((id) => ({ id })) },
         ui: { notify: () => {}, setWidget: () => {}, setHeader: () => {} },

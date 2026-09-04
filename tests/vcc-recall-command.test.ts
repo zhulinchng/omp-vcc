@@ -3,7 +3,17 @@ import { describe, it, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { registerVccRecallCommand } from "../extensions/vcc-core/commands/vcc-recall";
+import extension from "../extensions/main";
+
+const chain: any = { optional: () => chain, describe: () => chain };
+const mockZod: any = {
+  object: (o: any) => o,
+  boolean: () => chain,
+  string: () => chain,
+  array: (_a: any) => chain,
+  number: () => chain,
+  enum: (_a: any) => chain,
+};
 
 // ── Helpers (mirrors tests/recall-quality.test.ts, adapted for the command's
 //    sendMessage-based API instead of the tool's return-value API) ─────────
@@ -27,16 +37,16 @@ const makeSession = (n: number, textOf: (i: number) => string) => {
 const register = () => {
   let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
   const sent: Array<{ customType: string; content: string; display: boolean }> = [];
-  const pi = {
+  (extension as any)({
+    on: () => {},
+    registerTool: () => {},
     registerCommand: (name: string, command: { handler: typeof handler }) => {
-      expect(name).toBe("pi-vcc-recall");
-      handler = command.handler;
+      if (name === "vcc-recall") handler = command.handler;
     },
-    sendMessage: (msg: any) => {
-      sent.push(msg);
-    },
-  } as any;
-  registerVccRecallCommand(pi);
+    zod: mockZod,
+    sendMessage: (msg: any) => { sent.push(msg); },
+    sendUserMessage: async () => {},
+  });
   return { handler: handler!, sent };
 };
 
@@ -51,7 +61,7 @@ const invoke = async (handler: (args: string, ctx: any) => Promise<void>, file: 
   });
 };
 
-describe("/pi-vcc-recall command pagination and hard-cap truncation signaling", () => {
+describe("/vcc-recall command pagination and hard-cap truncation signaling", () => {
   it("reports a capped page count and an explicit truncation message when raw hits exceed the cap", async () => {
     // "." makes this a regex-mode query, matching every one of the 60
     // messages deterministically (no BM25/gate involved) — isolates the
@@ -90,7 +100,7 @@ describe("/pi-vcc-recall command pagination and hard-cap truncation signaling", 
     }
   });
 
-  it("reports an explicit out-of-range page (not a false 'No matches') using /pi-vcc-recall syntax, without duplicating 'refine your query'", async () => {
+  it("reports an explicit out-of-range page (not a false 'No matches') using /vcc-recall syntax, without duplicating 'refine your query'", async () => {
     // 60 raw matches capped to 50 → pages 1-10 exist. Page 11 has no rows to
     // slice, but hits.length (50) is > 0 — must not claim "No matches", and
     // since this IS a truncated result, the guidance must not repeat the
@@ -104,7 +114,7 @@ describe("/pi-vcc-recall command pagination and hard-cap truncation signaling", 
       expect(content).toContain("Page 11 is outside the available range 1-10");
       expect(content).toContain("50 matches");
       expect(content).not.toContain("No matches");
-      expect(content).toContain("/pi-vcc-recall");
+      expect(content).toContain("/vcc-recall");
       expect(content).toContain("page:N");
       // "refine your query" must appear exactly once (from the truncation
       // note), not again in the out-of-range guidance.

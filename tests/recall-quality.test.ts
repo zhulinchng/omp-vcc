@@ -3,7 +3,17 @@ import { describe, it, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { registerRecallTool } from "../extensions/vcc-core/hook";
+import extension from "../extensions/main";
+
+const chain: any = { optional: () => chain, describe: () => chain };
+const mockZod: any = {
+  object: (o: any) => o,
+  boolean: () => chain,
+  string: () => chain,
+  array: (_a: any) => chain,
+  number: () => chain,
+  enum: (_a: any) => chain,
+};
 
 // ── Helpers (mirrors tests/recall-tool-scope.test.ts) ──────────────────────
 
@@ -25,7 +35,14 @@ const makeSession = (n: number, textOf: (i: number) => string) => {
 
 const register = () => {
   let tool: any;
-  registerRecallTool({ registerTool: (t: any) => { tool = t; } } as any);
+  (extension as any)({
+    on: () => {},
+    registerTool: (t: any) => { if (t.name === "vcc_recall") tool = t; },
+    registerCommand: () => {},
+    zod: mockZod,
+    sendMessage: () => {},
+    sendUserMessage: async () => {},
+  });
   return tool;
 };
 

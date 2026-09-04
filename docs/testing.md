@@ -6,7 +6,7 @@ Comprehensive reference for the `omp-vcc` test corpus: unit, integration, sessio
 
 ```sh
 bunx tsc --noEmit          # typecheck — 0 errors, vendored core // @ts-nocheck, skipLibCheck
-bun test                   # 869 tests, 66 files, 2918 expects, 0 fail  (~8s)
+bun test                   # 869 tests, 66 files, 2901 expects, 0 fail  (~8s)
 bun test tests/e2e --timeout 120000   # 124 E2E only
 bun test tests/before-compact.test.ts # single suite
 bun run smoke              # 13 checks: 3 hooks + 6 commands (omp-vcc/pi-vcc/vcc-recall/pi-vcc-recall/vcc-stats/vcc-config, no alias) + 2 tools + dedup
@@ -80,7 +80,7 @@ flowchart TB
 | Command | Scope | Gate |
 |---|---|---|
 | `bunx tsc --noEmit` | typecheck all `extensions/`, `scripts/`, `tests/` | CI first, `prepublishOnly` |
-| `bun test` | 869 tests, 66 files, 2918 expects | CI second |
+| `bun test` | 869 tests, 66 files, 2901 expects | CI second |
 | `bun test tests/e2e --timeout 120000` | 124 E2E only | local E2E loop |
 | `bun test tests/before-compact.test.ts` | single suite | targeted |
 | `bun test --watch` | watch mode | dev |
@@ -144,7 +144,7 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 | `drill-down-gaps.test.ts` | `drill-down.ts` residual branches: edits/old-new/no-content bodies, 50KB full cap, offset first/middle/last/beyond windows, `:file` 0/1/N calls, ambiguous-match list, `parseEntryRef`/`parseDrillDown` null + suffix forms |
 | `extract-migrate-gaps.test.ts` | `extract/commits.ts` quoting/hash-pairing/skips/dedup/window + `formatCommits`; `migrate-stale.ts` tmp-HOME fixtures (no-lock, historic removal, deps guard, dup keeper, orphans, scope-dir cleanup); `skill-collapse.ts` dup/unclosed/stray forms; `extractPreferences` caps/rejections + goal dedup |
 | `dispatch-gaps.test.ts` | `extensions/main.ts` factory dispatch: `vcc_recall` execute (entry-ref/drill-down lineage guards + bypass, touched, expand valid/invalid, page range, scope:all, recent) + `/omp-vcc`/`/pi-vcc`/`/vcc-recall`/`/pi-vcc-recall` handlers |
-| `core-residual-gaps.test.ts` | residual branches: `content.ts` clip/surrogate/snippet, `summarize.ts` rejoin/parseHead, `search-entries.ts` quantifier/budget, `settings.ts` legacy migration, `tool-args.ts`, `brief.ts`, `format-recall.ts`, `hook.ts` preview/diagnostic/chain-shake/recall copies |
+| `core-residual-gaps.test.ts` | residual branches: `content.ts` clip/surrogate/snippet, `summarize.ts` rejoin/parseHead, `search-entries.ts` quantifier/budget, `settings.ts` legacy migration, `tool-args.ts`, `brief.ts`, `format-recall.ts`, `hook.ts` preview/diagnostic/chain-shake, factory recall tool schema + lineage guard + scope:all recent, factory `/pi-vcc-recall` recent paths |
 | `thinking.test.ts` (7) | thinking end-to-end: normalize keeps `thinking` blocks, brief elides, `renderMessage` `[thinking]` role, recall finds thinking-only terms |
 | `entry-ref.test.ts` (10) | `drill-down.ts` `parseEntryRef`/`expandEntry` bare `#N`/`#N:full`/`#N:offset[:limit]`, `Lines X-Y (of Z)` windows, recall-tool `#N` dispatch, `formatRecallOutput` hint footer |
 | `sanitize.test.ts` | already listed |
@@ -157,14 +157,14 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 |---|---|
 | `before-compact.test.ts` (13) | `hook.ts:buildOwnCut` — no prior compaction cuts at last user, `too_few_live_messages` ≤2, orphan `ORPHAN_ID` recovery, resumes from `firstKeptEntryId`, `compactAll` sentinel (single prompt + autonomous, no user, `keep:0`), `normalizeKeepUserTurns` |
 | `before-compact-hook.test.ts` (41) | `registerBeforeCompactHook` `session_before_compact`→`session_compact` — `overrideDefaultCompaction` gate, `vccEnabled` gate, `parseCompactionInstructions` accepts both `__omp_vcc__`/`__pi_vcc__`, `smartKeep` boost 5k→25k, `applyTailBudget` `no_anchor`/`oversized_tail`×2.5 snap off `toolResult`, `calibrateCharsPerToken`, `compileRanked` 1100→2000/15*cpt/120, `formatCompactionStats` `omp-vcc:` prefix, `session_compact` toast + `triggerInvisibleContinue`, debug dual write `/tmp/omp-vcc-debug.json` + `/tmp/pi-vcc-debug.json`, `perPi` history cap 50, `clearCompactionHistoryForTests` |
-| `pi-vcc-command.test.ts` | `extensions/main.ts:registerPiVccCommand` vs `registerBeforeCompactHook` keep parsing, `buildPiVccCustomInstructions` |
-| `vcc-recall-command.test.ts` | `/vcc-recall` slash command `parseRecallScope`/`parseRecallCommandArgs` `query scope:all page:N`, `pi.sendMessage({customType:"vcc-recall"})`, alias `/pi-vcc-recall` |
+| `pi-vcc-command.test.ts` | factory `/pi-vcc` alias: PI sentinel keep parsing, `buildPiVccCustomInstructions`, alias-branded toasts, follow-up send/skip/swallow, seeded-stats metric notify |
+| `vcc-recall-command.test.ts` | factory `/vcc-recall` slash command `parseRecallScope`/`parseRecallCommandArgs` `query scope:all page:N`, `pi.sendMessage({customType:"vcc-recall"})`, cap/guidance/pagination signaling |
 | `vcc-config-command.test.ts` (16) | `/vcc-config` slash command: registration (no alias) + factory wiring, handler renders loader view verbatim, partial/full/invalid-JSON files, `settings.get`/`config.get`/plain-map overlays, args ignored, missing `sendMessage`/`ui` tolerance, throwing notify tolerance, live `getSettingsPath`, fallback labeling, synthetic all-four status branches + key order |
 | `smart-keep.test.ts` | `resolveSmartKeepUserTurns` explicit never boosted, disabled returns 1, `tailTokensForKeep` live-window (incl. `custom_message`) stops growth at compact-all/empty-prefix, `MIN 5k → MAX 25k` |
 | `invisible-continue.test.ts` | `AUTO_CONTINUE_CUSTOM_TYPE` `omp-vcc-auto-continue` + legacy `pi-vcc-auto-continue`, `on(context)` strips by `customType` only, `on(before_agent_start)` clears timer, `triggerInvisibleContinue` `display:false triggerTurn:true deliverAs:'followUp'` |
 | `recall-expand.test.ts` | `invalidExpandIndices`, `expand` valid vs `999` invalid `Cannot expand indices outside` |
 | `recall-quality.test.ts` | `searchEntriesDetailed` ranking quality, posterior gate |
-| `recall-bayesian-gate.test.ts` (271 lines, 11) | Bayesian gate × system: tool header counts, expand/`#N` reachability of gated-out hits, gated pagination + out-of-range guidance, lineage vs `scope:all` calibration sets, `mode:touched` bypass, zero-hit phrasing, single-term parity, 300-entry budget, thinking-only survival, `/pi-vcc-recall` command output |
+| `recall-bayesian-gate.test.ts` (271 lines, 11) | Bayesian gate × system through the factory: tool header counts, expand/`#N` reachability of gated-out hits, gated pagination + out-of-range guidance, lineage vs `scope:all` calibration sets, `mode:touched` bypass, zero-hit phrasing, single-term parity, 300-entry budget, thinking-only survival, `/vcc-recall` command output |
 | `recall-touched-drilldown.test.ts` | `mode:touched` aggregation, `parseDrillDown` variants |
 
 ## Session suites
