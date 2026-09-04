@@ -126,11 +126,9 @@ const mergeFileLines = (prev: string, fresh: string): string => {
       return null;
     }
     const grouped = /^ \(\+(\d+) more( under (.+?))?\): (.*)$/.exec(tail);
-    if (grouped) {
-      const dir = grouped[3] ?? "";
-      return { prefix: dir && !dir.endsWith("/") ? `${dir}/` : dir, rest: grouped[4] };
-    }
-    return null;
+    if (!grouped) return null;
+    const dir = grouped[3] ?? "";
+    return { prefix: dir && !dir.endsWith("/") ? `${dir}/` : dir, rest: grouped[4] };
   };
   for (const text of [prev, fresh]) {
     let current: { cat: string; prefix: string; rest: string } | null = null;

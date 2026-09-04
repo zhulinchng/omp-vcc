@@ -204,13 +204,12 @@ export function parseDrillDown(query: string): {
   }
 
   if (suffix !== undefined) {
-    // Parse "offset" or "offset:limit"
+    // Parse "offset" or "offset:limit". The pattern above admits only
+    // numeric suffixes, so offset always parses here.
     const parts = suffix.split(":");
     const offset = parseInt(parts[0], 10);
     const limit = parts[1] !== undefined ? parseInt(parts[1], 10) : undefined;
-    if (!Number.isNaN(offset)) {
-      return { index, pathPattern, full: false, offset, limit };
-    }
+    return { index, pathPattern, full: false, offset, limit };
   }
 
   return {

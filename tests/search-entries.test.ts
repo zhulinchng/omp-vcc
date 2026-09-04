@@ -147,6 +147,13 @@ describe("searchEntries", () => {
     expect(snip).toContain("line 2");
     expect(snip).not.toContain("line 3");
   });
+
+  it("indexes bashExecution command plus output", () => {
+    const beEntries: RenderedEntry[] = [{ index: 0, role: "bashExecution", summary: "run" }];
+    const beMsgs = [{ role: "bashExecution", command: "git status", output: "zebra_worktree_clean" } as any];
+    expect(searchEntries(beEntries, beMsgs, "zebra_worktree_clean")).toHaveLength(1);
+    expect(searchEntries(beEntries, beMsgs, "git status")).toHaveLength(1);
+  });
 });
 
 describe("searchEntries regex safety", () => {

@@ -1294,11 +1294,9 @@ export const registerPiVccCommand = (pi: any) => {
           }
         },
         onError: (err) => {
-          if (err.message === "Compaction cancelled" || err.message === "Already compacted") {
-            ctx.ui.notify("Nothing to compact", "warning");
-          } else {
-            ctx.ui.notify(`Compaction failed: ${err.message}`, "error");
-          }
+          const cancelled = err.message === "Compaction cancelled" || err.message === "Already compacted";
+          const msg = cancelled ? "Nothing to compact" : `Compaction failed: ${err.message}`;
+          ctx.ui.notify(msg, cancelled ? "warning" : "error");
         },
       });
     },

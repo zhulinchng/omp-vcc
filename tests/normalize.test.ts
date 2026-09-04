@@ -93,6 +93,11 @@ describe("normalize", () => {
     expect(normalize([custom])).toEqual([{ kind: "custom", text: "hello", sourceIndex: 0 }]);
   });
 
+  it("drops custom role content that sanitizes to empty", () => {
+    const empty = { role: "custom", content: "" } as any;
+    expect(normalize([empty])).toEqual([]);
+  });
+
   it("skips truly unknown message roles gracefully", () => {
     const telex = { role: "telex", content: "hello" } as any;
     expect(normalize([telex])).toEqual([]);

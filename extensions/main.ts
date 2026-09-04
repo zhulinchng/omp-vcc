@@ -244,11 +244,9 @@ export default function (pi: ExtensionAPI): void {
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (msg === "Compaction cancelled" || msg === "Already compacted") {
-          try { c.ui.notify("Nothing to compact", "warning"); } catch {}
-        } else {
-          try { c.ui.notify(`Compaction failed: ${msg}`, "error"); } catch {}
-        }
+        const cancelled = msg === "Compaction cancelled" || msg === "Already compacted";
+        const note = cancelled ? "Nothing to compact" : `Compaction failed: ${msg}`;
+        try { c.ui.notify(note, cancelled ? "warning" : "error"); } catch {}
       }
     },
   });

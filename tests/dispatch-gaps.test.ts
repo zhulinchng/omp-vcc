@@ -439,6 +439,16 @@ describe("dispatch gaps: /omp-vcc and /pi-vcc commands (main factory)", () => {
     expect(notify.some((n) => n.msg === "Nothing to compact" && n.level === "warning")).toBe(true);
   });
 
+  test("/pi-vcc surfaces other failures as compaction errors", async () => {
+    const { commands } = makePi();
+    const notify: any[] = [];
+    await commands.get("pi-vcc").handler("", {
+      compact: async () => { throw new Error("boom disk"); },
+      ui: { notify: (msg: string, level?: string) => notify.push({ msg, level }) },
+    });
+    expect(notify.some((n) => n.msg === "Compaction failed: boom disk" && n.level === "error")).toBe(true);
+  });
+
   test("/pi-vcc follow-up prompt is sent as a user message", async () => {
     const { commands, userSent } = makePi();
     const notify: any[] = [];
