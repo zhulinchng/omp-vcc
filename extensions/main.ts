@@ -94,11 +94,9 @@ export default function (pi: ExtensionAPI): void {
 
       const q = p.query?.trim();
 
-      if (q && parseEntryRef(q)) {
-        const ref = parseEntryRef(q);
-        if (!ref) {
-          return { content: [{ type: "text", text: "Invalid entry ref query." }], details: undefined };
-        }
+      const entryRef = q ? parseEntryRef(q) : null;
+      if (entryRef) {
+        const ref = entryRef;
         if (lineageEntryIds) {
           const { rendered } = loadAllMessages(sessionFile, false, lineageEntryIds);
           const exists = rendered.some((m) => m.index === ref.index);
@@ -113,11 +111,9 @@ export default function (pi: ExtensionAPI): void {
         return { content: [{ type: "text", text }], details: undefined };
       }
 
-      if (q && parseDrillDown(q)) {
-        const parsed = parseDrillDown(q);
-        if (!parsed) {
-          return { content: [{ type: "text", text: "Invalid drill-down query." }], details: undefined };
-        }
+      const drill = q ? parseDrillDown(q) : null;
+      if (drill) {
+        const parsed = drill;
         if (lineageEntryIds) {
           const { rendered } = loadAllMessages(sessionFile, false, lineageEntryIds);
           const exists = rendered.some((m) => m.index === parsed.index);

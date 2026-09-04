@@ -84,7 +84,7 @@ export function migrateStalePluginEntries(home?: string): string {
             if (k.startsWith("@")) {
               const scopeDir = join(nm, k.split("/")[0]!);
               try {
-                if (fsSync.readdirSync(scopeDir).length === 0) fsSync.rmSync(scopeDir, { force: true });
+              if (fsSync.readdirSync(scopeDir).length === 0) fsSync.rmSync(scopeDir, { force: true, recursive: true });
               } catch {}
             }
           } catch {}
@@ -119,7 +119,7 @@ export function migrateStalePluginEntries(home?: string): string {
           if (k.startsWith("@")) {
             const scopeDir = join(nm, k.split("/")[0]!);
             try {
-              if (fsSync.readdirSync(scopeDir).length === 0) fsSync.rmSync(scopeDir, { force: true });
+              if (fsSync.readdirSync(scopeDir).length === 0) fsSync.rmSync(scopeDir, { force: true, recursive: true });
             } catch {}
           }
         } catch {}
@@ -145,7 +145,7 @@ export function migrateStalePluginEntries(home?: string): string {
         if (cand.startsWith("@")) {
           const scopeDir = join(nm, cand.split("/")[0]!);
           try {
-            if (fsSync.readdirSync(scopeDir).length === 0) fsSync.rmSync(scopeDir, { force: true });
+              if (fsSync.readdirSync(scopeDir).length === 0) fsSync.rmSync(scopeDir, { force: true, recursive: true });
           } catch {}
         }
       } catch {}

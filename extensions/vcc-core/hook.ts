@@ -162,20 +162,6 @@ export const triggerInvisibleContinue = (pi: ExtensionAPI): void => {
   );
 };
 
-const clearPendingAutoContinue = () => {
-  clearTimeout(pendingAutoContinueTimer as any);
-  pendingAutoContinueTimer = null;
-};
-
-const scheduleAutoContinue = (pi: any) => {
-  clearPendingAutoContinue();
-  pendingAutoContinueTimer = setTimeout(() => {
-    pendingAutoContinueTimer = null;
-    try {
-      triggerInvisibleContinue(pi);
-    } catch {}
-  }, 0);
-};
 
 export const getLastCompactionStats = (pi?: any) => {
   if (pi) {

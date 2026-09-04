@@ -6,7 +6,7 @@ Comprehensive reference for the `omp-vcc` test corpus: unit, integration, sessio
 
 ```sh
 bunx tsc --noEmit          # typecheck — 0 errors, vendored core // @ts-nocheck, skipLibCheck
-bun test                   # 661 tests, 56 files, 2095 expects, 0 fail  (~7s)
+bun test                   # 788 tests, 60 files, 2363 expects, 0 fail  (~7s)
 bun test tests/e2e --timeout 120000   # 124 E2E only
 bun test tests/before-compact.test.ts # single suite
 bun run smoke              # 13 checks: 3 hooks + 6 commands (omp-vcc/pi-vcc/vcc-recall/pi-vcc-recall/vcc-stats/vcc-config, no alias) + 2 tools + dedup
@@ -80,7 +80,7 @@ flowchart TB
 | Command | Scope | Gate |
 |---|---|---|
 | `bunx tsc --noEmit` | typecheck all `extensions/`, `scripts/`, `tests/` | CI first, `prepublishOnly` |
-| `bun test` | 661 tests, 56 files, 2095 expects | CI second |
+| `bun test` | 788 tests, 60 files, 2363 expects | CI second |
 | `bun test tests/e2e --timeout 120000` | 124 E2E only | local E2E loop |
 | `bun test tests/before-compact.test.ts` | single suite | targeted |
 | `bun test --watch` | watch mode | dev |
@@ -141,6 +141,10 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 | `render-entries.test.ts` | `render-entries.ts` rendered entry formatting, role tags |
 | `format-recall.test.ts` | `format-recall.ts` `formatRecallOutput` `Found N matches`, `#N` full-text hint footer on capped/clipped results, `formatTouchedOutput` `TOUCHED_PAGE_SIZE 5` `Page X/Y` |
 | `recall-touched-drilldown.test.ts` | `drill-down.ts` `parseDrillDown` `#N:path`/`#N:path:full`/`#N:path:offset:limit`, `expandEntryFile`; bare `#N` refs + `expandEntry` covered in `entry-ref.test.ts` |
+| `drill-down-gaps.test.ts` | `drill-down.ts` residual branches: edits/old-new/no-content bodies, 50KB full cap, offset first/middle/last/beyond windows, `:file` 0/1/N calls, ambiguous-match list, `parseEntryRef`/`parseDrillDown` null + suffix forms |
+| `extract-migrate-gaps.test.ts` | `extract/commits.ts` quoting/hash-pairing/skips/dedup/window + `formatCommits`; `migrate-stale.ts` tmp-HOME fixtures (no-lock, historic removal, deps guard, dup keeper, orphans, scope-dir cleanup); `skill-collapse.ts` dup/unclosed/stray forms; `extractPreferences` caps/rejections + goal dedup |
+| `dispatch-gaps.test.ts` | `extensions/main.ts` factory dispatch: `vcc_recall` execute (entry-ref/drill-down lineage guards + bypass, touched, expand valid/invalid, page range, scope:all, recent) + `/omp-vcc`/`/pi-vcc`/`/vcc-recall`/`/pi-vcc-recall` handlers |
+| `core-residual-gaps.test.ts` | residual branches: `content.ts` clip/surrogate/snippet, `summarize.ts` rejoin/parseHead, `search-entries.ts` quantifier/budget, `settings.ts` legacy migration, `tool-args.ts`, `brief.ts`, `format-recall.ts`, `hook.ts` preview/diagnostic/chain-shake/recall copies |
 | `thinking.test.ts` (7) | thinking end-to-end: normalize keeps `thinking` blocks, brief elides, `renderMessage` `[thinking]` role, recall finds thinking-only terms |
 | `entry-ref.test.ts` (10) | `drill-down.ts` `parseEntryRef`/`expandEntry` bare `#N`/`#N:full`/`#N:offset[:limit]`, `Lines X-Y (of Z)` windows, recall-tool `#N` dispatch, `formatRecallOutput` hint footer |
 | `sanitize.test.ts` | already listed |
