@@ -45,12 +45,17 @@ export const __setConvertToLlmForTests = (fn: ((messages: Array<unknown>) => Arr
 // Host-kind detection: omp and pi expose incompatible ctx.compact shapes
 // (omp: (string|CompactOptions)=>Promise<void> with instructions on the
 // string; pi: (CompactOptions)=>void with instructions only via
-// options.customInstructions). The @earendil-works scope is pi-exclusive and
-// @oh-my-pi is omp-exclusive, so module resolution discriminates — same
-// mechanism as the convertToLlm shim above. Default "omp" preserves the
-// legacy string-form call when host-free (tests/smoke).
+// options.customInstructions). Three layers, first hit wins:
+// 1. Explicit test override (__setHostKindForTests).
+// 2. Observable ctx shape — works in bundled runtimes where module
+//    resolution misses: pi's getSystemPrompt() returns a string, omp's
+//    returns string[]. Pure getters, safe to call.
+// 3. Module scope — works in dev/source runtimes: @earendil-works is
+//    pi-exclusive (same mechanism as the convertToLlm shim above).
+// Default "omp" preserves the legacy string-form call when host-free.
 const HOST_KIND_CANDIDATES = ["@earendil-works/pi-coding-agent", "@oh-my-pi/pi-coding-agent"] as const;
 export type VccHostKind = "pi" | "omp";
+export type VccCompactForm = "object" | "string";
 // Pure loader-driven resolver: first resolvable scope wins (@earendil-works
 // first, mirroring CONVERT_TO_LLM_CANDIDATES), else "omp".
 export const resolveHostKind = (load: (id: string) => unknown): VccHostKind => {
@@ -65,12 +70,37 @@ let defaultHostKind: VccHostKind = "omp";
 try {
   defaultHostKind = resolveHostKind((id) => createRequire(import.meta.url)(id));
 } catch {}
-let hostKind: VccHostKind = defaultHostKind;
-export const getHostKind = (): VccHostKind => hostKind;
+let hostKindOverride: VccHostKind | null = null;
+export const getHostKind = (): VccHostKind => hostKindOverride ?? defaultHostKind;
 // Test-only override (mirrors __setConvertToLlmForTests). Null restores the
 // detected default.
 export const __setHostKindForTests = (kind: VccHostKind | null): void => {
-  hostKind = kind ?? defaultHostKind;
+  hostKindOverride = kind;
+};
+// Layered compact-form decision for a live ctx. getSystemPrompt is read off
+// the calling ctx (command or event); absent (host-free mocks) falls through
+// to module scope, then the legacy default.
+export const resolveCompactForm = (
+  load: (id: string) => unknown,
+  getSystemPrompt?: () => unknown,
+): VccCompactForm => {
+  if (hostKindOverride) return hostKindOverride === "pi" ? "object" : "string";
+  try {
+    const sp = getSystemPrompt?.();
+    if (typeof sp === "string") return "object";
+    if (Array.isArray(sp)) return "string";
+  } catch {}
+  return resolveHostKind(load) === "pi" ? "object" : "string";
+};
+export const getCompactForm = (getSystemPrompt?: () => unknown): VccCompactForm => {
+  let load: (id: string) => unknown = () => {
+    throw new Error("no loader");
+  };
+  try {
+    const req = createRequire(import.meta.url);
+    load = (id) => req(id);
+  } catch {}
+  return resolveCompactForm(load, getSystemPrompt);
 };
 
 export { PI_VCC_COMPACT_INSTRUCTION } from "./core/compact-args";
@@ -1270,7 +1300,11 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       const cfgChain = loadSettings(ctx);
       const ctxMaybe = ctx as unknown as Record<string, unknown>;
       const compactFn = ctxMaybe["compact"];
-      if (cfgChain.chainShakeHint && getHostKind() === "omp" && typeof compactFn === "function" && !pendingChainShake.has(pi as unknown as object) && !willRetry && !isPiVccLast) {
+      const promptOf = ctxMaybe["getSystemPrompt"] as ((this: unknown) => unknown) | undefined;
+      // Form is detected off the live ctx so bundled runtimes (no module
+      // scope) still decide correctly.
+      const chainForm = getCompactForm(() => promptOf?.call(ctx));
+      if (cfgChain.chainShakeHint && chainForm === "string" && typeof compactFn === "function" && !pendingChainShake.has(pi as unknown as object) && !willRetry && !isPiVccLast) {
         pendingChainShake.add(pi as unknown as object);
         const maybePromise = (compactFn as unknown as (o: unknown) => Promise<void>).call(ctx, { mode: "shake" } as unknown);
         const asPromise = maybePromise as unknown as Promise<void> | void;

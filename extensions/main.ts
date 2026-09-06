@@ -21,7 +21,7 @@ import {
   registerVccStatsCommand as registerVccStatsCommandHook,
   registerVccConfigCommand as registerVccConfigCommandHook,
   invalidExpandIndices,
-  getHostKind,
+  getCompactForm,
 } from "./vcc-core/hook";
 import { searchEntriesDetailed, getTouchedFiles } from "./vcc-core/core/search-entries";
 import { formatRecallOutput, formatTouchedOutput } from "./vcc-core/core/format-recall";
@@ -182,7 +182,7 @@ export default function (pi: ExtensionAPI): void {
   registerVccStatsToolHook(pi);
 
   // Shared /omp-vcc + /pi-vcc runner. The two hosts expose incompatible
-  // ctx.compact shapes, so the call form branches on host kind:
+  // ctx.compact shapes, so the call form branches per live ctx:
   // - omp: compact(string | CompactOptions) => Promise<void>; instructions
   //   ride the string (the host splits string|object and drops instructions
   //   from the object form), completion = awaited resolution, errors throw
@@ -190,6 +190,9 @@ export default function (pi: ExtensionAPI): void {
   // - pi: compact(CompactOptions) => void; instructions ONLY via
   //   options.customInstructions (a bare string reads as undefined), outcome
   //   arrives via onComplete/onError. `settled` keeps one outcome.
+  // Form detection is layered (explicit test override → getSystemPrompt
+  // shape → module scope → legacy omp default) so bundled runtimes without
+  // module scope still decide correctly off the live ctx.
   const runCompactCommand = async (
     args: string,
     c: {
@@ -199,7 +202,7 @@ export default function (pi: ExtensionAPI): void {
     buildInstructions: (keep: number | null) => string,
     fallbackToast: string,
     preNotify: boolean,
-    hostKind: "pi" | "omp",
+    compactForm: "object" | "string",
   ): Promise<void> => {
     const parsed = parseKeepAndPrompt(args);
     const keep = parsed.keepUserTurns;
@@ -238,7 +241,7 @@ export default function (pi: ExtensionAPI): void {
         try { c.ui.notify(`Compaction failed: ${msg}`, "error"); } catch {}
       }
     };
-    if (hostKind === "pi") {
+    if (compactForm === "object") {
       try {
         c.compact({ customInstructions, onComplete: finishOk, onError: finishErr });
       } catch (err: unknown) {
@@ -260,8 +263,9 @@ export default function (pi: ExtensionAPI): void {
       const c = ctx as {
         compact: (options?: unknown) => Promise<void> | void;
         ui: { notify: (msg: string, level?: string) => void };
+        getSystemPrompt?: () => unknown;
       };
-      await runCompactCommand(args, c, buildOmpCustomInstructions, "Compacted with omp-vcc", true, getHostKind());
+      await runCompactCommand(args, c, buildOmpCustomInstructions, "Compacted with omp-vcc", true, getCompactForm(() => c.getSystemPrompt?.()));
     },
   });
 
@@ -272,8 +276,9 @@ export default function (pi: ExtensionAPI): void {
       const c = ctx as {
         compact: (options?: unknown) => Promise<void> | void;
         ui: { notify: (msg: string, level?: string) => void };
+        getSystemPrompt?: () => unknown;
       };
-      await runCompactCommand(args, c, buildPiVccCustomInstructions, "Compacted with pi-vcc (via omp-vcc)", false, getHostKind());
+      await runCompactCommand(args, c, buildPiVccCustomInstructions, "Compacted with pi-vcc (via omp-vcc)", false, getCompactForm(() => c.getSystemPrompt?.()));
     },
   });
 

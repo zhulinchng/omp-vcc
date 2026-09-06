@@ -48,6 +48,7 @@ afterAll(() => {
 function createHarness(opts: {
   compactImpl?: (arg: unknown) => Promise<void> | void;
   sendUserMessage?: (content: string) => unknown;
+  getSystemPrompt?: () => unknown;
 } = {}) {
   const commands = new Map<string, any>();
   const handlers = new Map<string, any>();
@@ -64,10 +65,11 @@ function createHarness(opts: {
     sendUserMessage: opts.sendUserMessage ?? ((content: string) => { userMessages.push(content); }),
   };
   (extension as any)(pi);
-  const ctx = {
+  const ctx: any = {
     // pi-faithful default: void return, outcome via captured callbacks.
     compact: opts.compactImpl ?? ((arg: unknown) => { compactCalls.push(arg); return undefined; }),
     ui: { notify: (msg: string, level?: string) => notifyCalls.push({ msg, level: level ?? "info" }) },
+    ...(opts.getSystemPrompt ? { getSystemPrompt: opts.getSystemPrompt } : {}),
   };
   return {
     invoke: (args = "") => commands.get("pi-vcc").handler(args, ctx),
@@ -346,5 +348,48 @@ describe("pi-vcc alias command on omp host (string compact form)", () => {
     await invoke("continue");
     expect(userMessages).toHaveLength(0);
     expect(notifyCalls).toEqual([{ msg: "Compaction failed: sync boom", level: "error" }]);
+  });
+});
+
+describe("compact form detection off the live ctx", () => {
+  // No module scope resolves in host-free tests, so with the override
+  // cleared the getSystemPrompt shape alone must decide the call form —
+  // this is the layer that saves bundled runtimes.
+  beforeEach(() => { __setHostKindForTests(null); });
+  afterEach(() => { __setHostKindForTests("pi"); });
+
+  test("string system prompt selects the pi object form", async () => {
+    let captured: any = null;
+    const { invoke } = createHarness({
+      compactImpl: (opts: unknown) => { captured = opts; return undefined; },
+      getSystemPrompt: () => "you are a coding agent",
+    });
+
+    await invoke("keep:2 continue");
+    expect(captured?.customInstructions).toBe(`${PI_VCC_COMPACT_INSTRUCTION} keep:2`);
+    expect(typeof captured?.onComplete).toBe("function");
+  });
+
+  test("array system prompt selects the omp string form", async () => {
+    const { invoke, compactCalls, notifyCalls } = createHarness({
+      compactImpl: async (arg: unknown) => { compactCalls.push(arg); },
+      getSystemPrompt: () => ["you are a coding agent"],
+    });
+
+    await invoke("keep:2");
+    expect(compactCalls).toHaveLength(1);
+    expect(compactCalls[0]).toBe(`${PI_VCC_COMPACT_INSTRUCTION} keep:2`);
+    expect(notifyCalls).toEqual([{ msg: "Compacted with pi-vcc (via omp-vcc)", level: "info" }]);
+  });
+
+  test("explicit override wins over a contradicting ctx shape", async () => {
+    __setHostKindForTests("omp");
+    const { invoke, compactCalls } = createHarness({
+      compactImpl: async (arg: unknown) => { compactCalls.push(arg); },
+      getSystemPrompt: () => "you are a coding agent",
+    });
+
+    await invoke("");
+    expect(typeof compactCalls[0]).toBe("string");
   });
 });

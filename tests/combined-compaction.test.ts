@@ -518,6 +518,37 @@ describe("combined-compaction: chainShakeHint eager chain", () => {
       __setHostKindForTests(null);
     }
   });
+
+  test("chain follows the live ctx shape when no override is set", async () => {
+    setConfig({ overrideDefaultCompaction: true, vccEnabled: true, chainShakeHint: true, continueAfterThresholdCompact: false });
+    __setHostKindForTests(null);
+    const plainCtx: any = { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } };
+    const freshPi = () => {
+      const pi: any = { on: (n: string, h: any) => { (pi as any)[n] = h; }, sendMessage: () => {}, sendUserMessage: () => {} };
+      registerBeforeCompactHook(pi);
+      return pi;
+    };
+    // omp-shaped ctx (array prompt): chain fires even with no module scope.
+    // Fresh pi per half: pendingChainShake is keyed by pi, so the second half
+    // pins the shape gate rather than the recursion guard.
+    const piOmp = freshPi();
+    const seededOmp: any = await (piOmp as any)["session_before_compact"](makeEvent(buildSession(6), undefined, {}, 90000), plainCtx);
+    expect(seededOmp?.compaction).toBeDefined();
+    let ompCalls = 0;
+    const ompCtx: any = { ...plainCtx, getSystemPrompt: () => ["prompt"], compact: () => { ompCalls++; return Promise.resolve(); } };
+    await (piOmp as any)["session_compact"]({ fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 21000 } }, ompCtx);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(ompCalls).toBe(1);
+    // pi-shaped ctx (string prompt): no chain — CompactOptions has no mode key.
+    const piPi = freshPi();
+    const seededPi: any = await (piPi as any)["session_before_compact"](makeEvent(buildSession(6), undefined, {}, 90000), plainCtx);
+    expect(seededPi?.compaction).toBeDefined();
+    let piCalls = 0;
+    const piCtx: any = { ...plainCtx, getSystemPrompt: () => "prompt", compact: () => { piCalls++; return undefined; } };
+    await (piPi as any)["session_compact"]({ fromExtension: true, compactionEntry: { id: "c2", tokensBefore: 90000, tokensAfter: 21000 } }, piCtx);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(piCalls).toBe(0);
+  });
 });
 
 describe("combined-compaction: settings chainShakeHint defaults and overlay", () => {

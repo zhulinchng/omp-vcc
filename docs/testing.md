@@ -6,7 +6,7 @@ Comprehensive reference for the `omp-vcc` test corpus: unit, integration, sessio
 
 ```sh
 bunx tsc --noEmit          # typecheck — 0 errors, vendored core // @ts-nocheck, skipLibCheck
-bun test                   # 916 tests, 68 files, 2996 expects, 0 fail  (~12s)
+bun test                   # 925 tests, 68 files, 3013 expects, 0 fail  (~12s)
 bun test tests/e2e --timeout 120000   # 124 E2E only
 bun test tests/before-compact.test.ts # single suite
 bun run smoke              # 16 checks: 3 hooks + 6 commands (omp-vcc/pi-vcc/vcc-recall/pi-vcc-recall/vcc-stats/vcc-config, no alias) + 2 tools + dedup + schema
