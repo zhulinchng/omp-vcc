@@ -224,7 +224,7 @@ flowchart TB
 | threshold, `override:true`, `["remote","snapcompact","handoff","shake","soft"]` (default) | VCC handles, host rescue may shake if still over band | VCC + (shake if dead-end) |
 | threshold, `override:false`, `["vcc","remote","snapcompact","handoff","shake","soft"]` (with patch) | walker picks VCC via `methodOrder`, fallback to snapcompact/shake | VCC → snapcompact/shake fallback |
 | manual `/omp-vcc keep:2` | always VCC (sentinel `__omp_vcc__`) | VCC |
-| manual `/omp-vcc keep:2` then `/compact snapcompact` | second call with `override:false` or explicit mode | VCC entry + snapcompact entry (sequential) |
+| manual `/omp-vcc keep:2` then `/compact snapcompact` | second call needs `override:false` (explicit modes are served by VCC while `override:true`) | VCC entry + snapcompact entry (sequential) |
 
 ```mermaid
 flowchart LR

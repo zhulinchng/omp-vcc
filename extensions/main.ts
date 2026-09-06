@@ -21,6 +21,7 @@ import {
   registerVccStatsCommand as registerVccStatsCommandHook,
   registerVccConfigCommand as registerVccConfigCommandHook,
   invalidExpandIndices,
+  getHostKind,
 } from "./vcc-core/hook";
 import { searchEntriesDetailed, getTouchedFiles } from "./vcc-core/core/search-entries";
 import { formatRecallOutput, formatTouchedOutput } from "./vcc-core/core/format-recall";
@@ -180,22 +181,25 @@ export default function (pi: ExtensionAPI): void {
   // ── vcc_stats tool — stats surface for savings (paper § verification) ──
   registerVccStatsToolHook(pi);
 
-  // Shared /omp-vcc + /pi-vcc runner. ctx.compact is fire-and-forget void on
-  // pi (CompactOptions{customInstructions,onComplete,onError}) and a
-  // completion-awaitable Promise<void> on omp. A bare string would silently
-  // drop customInstructions on pi (its wrapper reads options?.customInstructions),
-  // so always pass the object form (instructionsOrOptions per types.d.ts).
-  // The return discriminates: thenable → await it (omp) then finish; void →
-  // outcomes arrive via onComplete/onError (pi). `settled` keeps one outcome.
+  // Shared /omp-vcc + /pi-vcc runner. The two hosts expose incompatible
+  // ctx.compact shapes, so the call form branches on host kind:
+  // - omp: compact(string | CompactOptions) => Promise<void>; instructions
+  //   ride the string (the host splits string|object and drops instructions
+  //   from the object form), completion = awaited resolution, errors throw
+  //   ("Compaction cancelled" / "Already compacted" / "Nothing to compact…").
+  // - pi: compact(CompactOptions) => void; instructions ONLY via
+  //   options.customInstructions (a bare string reads as undefined), outcome
+  //   arrives via onComplete/onError. `settled` keeps one outcome.
   const runCompactCommand = async (
     args: string,
     c: {
-      compact: (options?: unknown) => Promise<void> | void;
+      compact: (arg?: unknown) => Promise<void> | void;
       ui: { notify: (msg: string, level?: string) => void };
     },
     buildInstructions: (keep: number | null) => string,
     fallbackToast: string,
     preNotify: boolean,
+    hostKind: "pi" | "omp",
   ): Promise<void> => {
     const parsed = parseKeepAndPrompt(args);
     const keep = parsed.keepUserTurns;
@@ -234,12 +238,17 @@ export default function (pi: ExtensionAPI): void {
         try { c.ui.notify(`Compaction failed: ${msg}`, "error"); } catch {}
       }
     };
-    try {
-      const result = c.compact({ customInstructions, onComplete: finishOk, onError: finishErr }) as Promise<void> | void;
-      if (result && typeof (result as Promise<void>).then === "function") {
-        await result;
-        finishOk();
+    if (hostKind === "pi") {
+      try {
+        c.compact({ customInstructions, onComplete: finishOk, onError: finishErr });
+      } catch (err: unknown) {
+        finishErr(err);
       }
+      return;
+    }
+    try {
+      await c.compact(customInstructions);
+      finishOk();
     } catch (err: unknown) {
       finishErr(err);
     }
@@ -252,7 +261,7 @@ export default function (pi: ExtensionAPI): void {
         compact: (options?: unknown) => Promise<void> | void;
         ui: { notify: (msg: string, level?: string) => void };
       };
-      await runCompactCommand(args, c, buildOmpCustomInstructions, "Compacted with omp-vcc", true);
+      await runCompactCommand(args, c, buildOmpCustomInstructions, "Compacted with omp-vcc", true, getHostKind());
     },
   });
 
@@ -264,7 +273,7 @@ export default function (pi: ExtensionAPI): void {
         compact: (options?: unknown) => Promise<void> | void;
         ui: { notify: (msg: string, level?: string) => void };
       };
-      await runCompactCommand(args, c, buildPiVccCustomInstructions, "Compacted with pi-vcc (via omp-vcc)", false);
+      await runCompactCommand(args, c, buildPiVccCustomInstructions, "Compacted with pi-vcc (via omp-vcc)", false, getHostKind());
     },
   });
 

@@ -6,7 +6,7 @@ Comprehensive reference for the `omp-vcc` test corpus: unit, integration, sessio
 
 ```sh
 bunx tsc --noEmit          # typecheck — 0 errors, vendored core // @ts-nocheck, skipLibCheck
-bun test                   # 905 tests, 67 files, 2979 expects, 0 fail  (~12s)
+bun test                   # 916 tests, 68 files, 2996 expects, 0 fail  (~12s)
 bun test tests/e2e --timeout 120000   # 124 E2E only
 bun test tests/before-compact.test.ts # single suite
 bun run smoke              # 16 checks: 3 hooks + 6 commands (omp-vcc/pi-vcc/vcc-recall/pi-vcc-recall/vcc-stats/vcc-config, no alias) + 2 tools + dedup + schema
@@ -365,7 +365,7 @@ Sequential VCC chains plus additive host-strategy coexistence, all host-free via
 | Test | Result |
 |---|---|
 | manual VCC `keep:1` then second VCC on grown history | both `compaction` defined, `debug` snapshot `usedOwnCut true` |
-| `override:true` explicit `snapcompact` bypass | hook `void` (host would handle) |
+| `override:true` explicit `compactMode`-field bypass (patch contract) | hook `void` (host would handle) |
 | `override:false` threshold proxy defers to host | `void`, VCC only via sentinel |
 | `chainShakeHint false` / `true` | 0 vs 1 `ctx.compact({mode:"shake"})` call after 40ms |
 | per-pi history isolation after two sequential compactions | per-pi lengths independent |
@@ -376,7 +376,7 @@ Sequential VCC chains plus additive host-strategy coexistence, all host-free via
 
 ### `compaction-mix-matrix.e2e.test.ts` (13)
 
-Command matrix plus mixed-strategy chains per `local/e2e-compaction-mix-plan.md`. Drives real `extensions/main.ts` factory handlers (Suite A) and `registerBeforeCompactHook` directly (Suites B–E); mock-mode host strategies via `compactMode` bypass + synthetic `comp()` entries (snapcompact and VCC archive the same `messagesToSummarize` slice, so sequential entries are the only valid combo per `docs/setup.md#combining-omp-vcc-with-shake-and-snapcompact`).
+Command matrix plus mixed-strategy chains per `local/e2e-compaction-mix-plan.md`. Drives real `extensions/main.ts` factory handlers (Suite A) and `registerBeforeCompactHook` directly (Suites B–E); mock-mode host strategies via `compactMode` event field (patch contract) + synthetic `comp()` entries (snapcompact and VCC archive the same `messagesToSummarize` slice, so sequential entries are the only valid combo per `docs/setup.md#combining-omp-vcc-with-shake-and-snapcompact`).
 
 | Suite | Chain |
 |---|---|

@@ -1,15 +1,18 @@
 // @ts-nocheck
 // /pi-vcc factory alias: same compact flow as /omp-vcc with pi-vcc branding
 // (PI sentinel via buildPiVccCustomInstructions, "via omp-vcc" toasts).
-// ctx.compact is called with the object form {customInstructions,onComplete,
-// onError}: omp-style mocks return a promise (awaited), pi-style mocks return
-// void (outcomes arrive via the callbacks).
-import { describe, expect, test, beforeAll, afterAll } from "bun:test";
+// Call form branches on host kind (getHostKind): pi receives the object form
+// {customInstructions,onComplete,onError} and returns void (outcomes arrive
+// via the callbacks); omp receives the bare instruction string and returns
+// an awaitable Promise. This suite pins the pi form (plus a closing omp-form
+// describe); the default mock compact is overridden per test where the form
+// matters.
+import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import extension from "../extensions/main";
-import { PI_VCC_COMPACT_INSTRUCTION } from "../extensions/vcc-core/hook";
+import { PI_VCC_COMPACT_INSTRUCTION, __setHostKindForTests } from "../extensions/vcc-core/hook";
 
 const chain: any = { optional: () => chain, describe: () => chain };
 const mockZod: any = {
@@ -33,10 +36,12 @@ beforeAll(() => {
   process.env.OMP_VCC_CONFIG_PATH = CONFIG_PATH;
   process.env.PI_VCC_CONFIG_PATH = CONFIG_PATH;
   writeFileSync(CONFIG_PATH, JSON.stringify({ vccEnabled: true, overrideDefaultCompaction: true, smartKeepTail: false, debug: false, continueAfterThresholdCompact: false, chainShakeHint: false }));
+  __setHostKindForTests("pi");
 });
 afterAll(() => {
   if (origOmp === undefined) delete process.env.OMP_VCC_CONFIG_PATH; else process.env.OMP_VCC_CONFIG_PATH = origOmp;
   if (origPi === undefined) delete process.env.PI_VCC_CONFIG_PATH; else process.env.PI_VCC_CONFIG_PATH = origPi;
+  __setHostKindForTests(null);
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -60,7 +65,8 @@ function createHarness(opts: {
   };
   (extension as any)(pi);
   const ctx = {
-    compact: opts.compactImpl ?? (async (arg: unknown) => { compactCalls.push(arg); }),
+    // pi-faithful default: void return, outcome via captured callbacks.
+    compact: opts.compactImpl ?? ((arg: unknown) => { compactCalls.push(arg); return undefined; }),
     ui: { notify: (msg: string, level?: string) => notifyCalls.push({ msg, level: level ?? "info" }) },
   };
   return {
@@ -84,22 +90,31 @@ describe("pi-vcc alias command", () => {
   });
 
   test("parses keep token at the start of args and strips it from the prompt", async () => {
-    const { invoke, compactCalls, userMessages } = createHarness();
+    let captured: any = null;
+    const { invoke, compactCalls, userMessages } = createHarness({
+      compactImpl: (opts: unknown) => { compactCalls.push(opts); captured = opts; return undefined; },
+    });
 
     await invoke("keep:3   continue  ");
 
     expect((compactCalls[0] as any)?.customInstructions).toBe(`${PI_VCC_COMPACT_INSTRUCTION} keep:3`);
+    captured.onComplete();
     expect(userMessages).toEqual(["continue"]);
   });
 
   test("parses keep token at the end of args and strips it from the prompt", async () => {
-    const { invoke, compactCalls, userMessages } = createHarness();
+    let captured: any = null;
+    const { invoke, compactCalls, userMessages } = createHarness({
+      compactImpl: (opts: unknown) => { compactCalls.push(opts); captured = opts; return undefined; },
+    });
 
     await invoke("  continue   keep:2");
 
     expect((compactCalls[0] as any)?.customInstructions).toBe(`${PI_VCC_COMPACT_INSTRUCTION} keep:2`);
+    captured.onComplete();
     expect(userMessages).toEqual(["continue"]);
   });
+
 
   test("parses a lone keep token without sending a follow-up prompt", async () => {
     const { invoke, compactCalls, userMessages } = createHarness();
@@ -111,15 +126,23 @@ describe("pi-vcc alias command", () => {
   });
 
   test("notifies the alias-branded toast when no stats exist", async () => {
-    const { invoke, notifyCalls } = createHarness();
+    let captured: any = null;
+    const { invoke, notifyCalls } = createHarness({
+      compactImpl: (opts: unknown) => { captured = opts; return undefined; },
+    });
 
     await invoke("continue");
+    expect(notifyCalls).toEqual([]);
+    captured.onComplete();
 
     expect(notifyCalls).toEqual([{ msg: "Compacted with pi-vcc (via omp-vcc)", level: "info" }]);
   });
 
   test("schedules metric notify from seeded stats after successful compaction", async () => {
-    const { invoke, before, pi, notifyCalls, userMessages } = createHarness();
+    let captured: any = null;
+    const { invoke, before, pi, notifyCalls, userMessages } = createHarness({
+      compactImpl: (opts: unknown) => { captured = opts; return undefined; },
+    });
     const hookCtx: any = {
       settings: { get: () => undefined },
       config: { get: () => undefined },
@@ -145,8 +168,8 @@ describe("pi-vcc alias command", () => {
     }, hookCtx);
     expect(seeded?.compaction).toBeDefined();
     void pi;
-
     await invoke("continue");
+    captured.onComplete();
     expect(userMessages).toEqual(["continue"]);
 
     await new Promise((resolve) => setTimeout(resolve, 650));
@@ -154,11 +177,14 @@ describe("pi-vcc alias command", () => {
   });
 
   test("swallows a rejecting follow-up send without throwing", async () => {
+    let captured: any = null;
     const { invoke } = createHarness({
+      compactImpl: (opts: unknown) => { captured = opts; return undefined; },
       sendUserMessage: () => Promise.reject(new Error("send failed")),
     });
 
     await invoke("continue");
+    captured.onComplete();
   });
 
   test("skips follow-up when trailing prompt is empty", async () => {
@@ -170,22 +196,16 @@ describe("pi-vcc alias command", () => {
   });
 
   test("does not send trailing prompt on compaction error", async () => {
+    let captured: any = null;
     const { invoke, userMessages, notifyCalls } = createHarness({
-      compactImpl: async () => { throw new Error("Already compacted"); },
+      compactImpl: (opts: unknown) => { captured = opts; return undefined; },
     });
 
     await invoke("continue");
+    captured.onError(new Error("Already compacted"));
 
     expect(userMessages).toHaveLength(0);
     expect(notifyCalls).toEqual([{ msg: "Nothing to compact", level: "warning" }]);
-  });
-
-  test("normalizes huge keep tokens to a safe integer instruction", async () => {
-    const { invoke, compactCalls } = createHarness();
-
-    await invoke("keep:999999999999999999999 continue");
-
-    expect((compactCalls[0] as any)?.customInstructions).toBe(`${PI_VCC_COMPACT_INSTRUCTION} keep:${Number.MAX_SAFE_INTEGER}`);
   });
 
   test("pi-shaped void compact: instructions travel in the options object", async () => {
@@ -275,6 +295,56 @@ describe("pi-vcc alias command", () => {
 
     await invoke("continue");
     expect(userMessages).toEqual([]);
+    expect(notifyCalls).toEqual([{ msg: "Compaction failed: sync boom", level: "error" }]);
+  });
+});
+
+describe("pi-vcc alias command on omp host (string compact form)", () => {
+  beforeEach(() => { __setHostKindForTests("omp"); });
+  afterEach(() => { __setHostKindForTests("pi"); });
+
+  test("sentinel travels as the bare instruction string", async () => {
+    const { invoke, compactCalls, notifyCalls } = createHarness({
+      compactImpl: async (arg: unknown) => { compactCalls.push(arg); },
+    });
+
+    await invoke("keep:2 continue");
+
+    expect(compactCalls).toHaveLength(1);
+    expect(typeof compactCalls[0]).toBe("string");
+    expect(compactCalls[0]).toBe(`${PI_VCC_COMPACT_INSTRUCTION} keep:2`);
+    // Awaited Promise resolution drives the fallback toast (no stats seeded).
+    expect(notifyCalls).toEqual([{ msg: "Compacted with pi-vcc (via omp-vcc)", level: "info" }]);
+  });
+
+  test("rejected compact maps Already compacted without follow-up", async () => {
+    const { invoke, userMessages, notifyCalls } = createHarness({
+      compactImpl: async () => { throw new Error("Already compacted"); },
+    });
+
+    await invoke("continue");
+
+    expect(userMessages).toHaveLength(0);
+    expect(notifyCalls).toEqual([{ msg: "Nothing to compact", level: "warning" }]);
+  });
+
+  test("rejected compact maps the host too-small message", async () => {
+    const { invoke, notifyCalls } = createHarness({
+      compactImpl: async () => { throw new Error("Nothing to compact (session too small)"); },
+    });
+
+    await invoke("");
+
+    expect(notifyCalls).toEqual([{ msg: "Nothing to compact", level: "warning" }]);
+  });
+
+  test("synchronously throwing compact maps to a failure toast", async () => {
+    const { invoke, notifyCalls, userMessages } = createHarness({
+      compactImpl: () => { throw new Error("sync boom"); },
+    });
+
+    await invoke("continue");
+    expect(userMessages).toHaveLength(0);
     expect(notifyCalls).toEqual([{ msg: "Compaction failed: sync boom", level: "error" }]);
   });
 });

@@ -13,6 +13,7 @@ import {
   buildOwnCut,
   applyTailBudget,
   findBudgetCutIndex,
+  __setHostKindForTests,
 } from "../extensions/vcc-core/hook";
 import { calibrateCharsPerToken } from "../extensions/vcc-core/core/token-estimate";
 import { loadSettings, DEFAULT_SETTINGS } from "../extensions/vcc-core/core/settings";
@@ -476,6 +477,46 @@ describe("combined-compaction: chainShakeHint eager chain", () => {
     await new Promise((r) => setTimeout(r, 20));
     // This call should be suppressed because isPiVccLast true
     expect(calls).toBe(0);
+  });
+  test("before handler yields a modeless compaction while a chain shake is in flight", async () => {
+    setConfig({ overrideDefaultCompaction: true, vccEnabled: true, chainShakeHint: true, continueAfterThresholdCompact: false });
+    const pi: any = { on: (n: string, h: any) => { (pi as any)[n] = h; }, sendMessage: () => {}, sendUserMessage: () => {} };
+    registerBeforeCompactHook(pi);
+    const beforeHandler = (pi as any)["session_before_compact"];
+    const compactHandler = (pi as any)["session_compact"];
+    const plainCtx: any = { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } };
+    const seeded: any = await beforeHandler(makeEvent(buildSession(6), undefined, {}, 90000), plainCtx);
+    expect(seeded?.compaction).toBeDefined();
+    // Fire the chain: pendingChainShake is now set for this pi.
+    const ctxAfter: any = { ...plainCtx, compact: () => Promise.resolve() };
+    await compactHandler({ fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 21000 } }, ctxAfter);
+    // A modeless host compaction arriving mid-flight must fall through so the
+    // host actually runs shake instead of VCC swallowing it into a second pass.
+    expect(await beforeHandler(makeEvent(buildSession(6), undefined, {}, 90000), plainCtx)).toBeUndefined();
+    // Sentinel compactions still win even mid-flight.
+    const sentinel: any = await beforeHandler(makeEvent(buildSession(6), OMP_VCC_COMPACT_INSTRUCTION, {}, 90000), plainCtx);
+    expect(sentinel?.compaction).toBeDefined();
+  });
+
+  test("chain never fires on pi host (CompactOptions has no mode key)", async () => {
+    setConfig({ overrideDefaultCompaction: true, vccEnabled: true, chainShakeHint: true, continueAfterThresholdCompact: false });
+    __setHostKindForTests("pi");
+    try {
+      const pi: any = { on: (n: string, h: any) => { (pi as any)[n] = h; }, sendMessage: () => {}, sendUserMessage: () => {} };
+      registerBeforeCompactHook(pi);
+      const beforeHandler = (pi as any)["session_before_compact"];
+      const compactHandler = (pi as any)["session_compact"];
+      const plainCtx: any = { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } };
+      const seeded: any = await beforeHandler(makeEvent(buildSession(6), undefined, {}, 90000), plainCtx);
+      expect(seeded?.compaction).toBeDefined();
+      let calls = 0;
+      const ctxAfter: any = { ...plainCtx, compact: () => { calls++; return undefined; } };
+      await compactHandler({ fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 21000 } }, ctxAfter);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(calls).toBe(0);
+    } finally {
+      __setHostKindForTests(null);
+    }
   });
 });
 

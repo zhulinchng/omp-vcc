@@ -27,7 +27,7 @@ flowchart LR
 ## Test matrix
 
 ```sh
-bun test            # 905 tests across 67 files, 2979 expect() calls, 0 fail
+bun test            # 916 tests across 68 files, 2996 expect() calls, 0 fail
 bun run smoke       # 16 checks: 3 hooks + 6 commands + 2 tools (vcc_recall, vcc_stats) + dedup + schema
 ```
 Ported from `pi-vcc@0.7.0` 31 suites (28 required) via `bun:test` + `node:test` hybrids, imports remapped `src/core`→`extensions/vcc-core/core`, `src/hooks/before-compact`→`extensions/vcc-core/hook`, sentinel `__pi_vcc__` also accepts `__omp_vcc__`, debug path `/tmp/omp-vcc-debug.json` (and legacy `/tmp/pi-vcc-debug.json`):

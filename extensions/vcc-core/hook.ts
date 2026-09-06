@@ -42,6 +42,36 @@ try {
 export const __setConvertToLlmForTests = (fn: ((messages: Array<unknown>) => Array<unknown>) | null): void => {
   convertToLlm = fn ?? ((m) => m);
 };
+// Host-kind detection: omp and pi expose incompatible ctx.compact shapes
+// (omp: (string|CompactOptions)=>Promise<void> with instructions on the
+// string; pi: (CompactOptions)=>void with instructions only via
+// options.customInstructions). The @earendil-works scope is pi-exclusive and
+// @oh-my-pi is omp-exclusive, so module resolution discriminates — same
+// mechanism as the convertToLlm shim above. Default "omp" preserves the
+// legacy string-form call when host-free (tests/smoke).
+const HOST_KIND_CANDIDATES = ["@earendil-works/pi-coding-agent", "@oh-my-pi/pi-coding-agent"] as const;
+export type VccHostKind = "pi" | "omp";
+// Pure loader-driven resolver: first resolvable scope wins (@earendil-works
+// first, mirroring CONVERT_TO_LLM_CANDIDATES), else "omp".
+export const resolveHostKind = (load: (id: string) => unknown): VccHostKind => {
+  for (const id of HOST_KIND_CANDIDATES) {
+    try {
+      if (load(id)) return id.startsWith("@earendil-works") ? "pi" : "omp";
+    } catch {}
+  }
+  return "omp";
+};
+let defaultHostKind: VccHostKind = "omp";
+try {
+  defaultHostKind = resolveHostKind((id) => createRequire(import.meta.url)(id));
+} catch {}
+let hostKind: VccHostKind = defaultHostKind;
+export const getHostKind = (): VccHostKind => hostKind;
+// Test-only override (mirrors __setConvertToLlmForTests). Null restores the
+// detected default.
+export const __setHostKindForTests = (kind: VccHostKind | null): void => {
+  hostKind = kind ?? defaultHostKind;
+};
 
 export { PI_VCC_COMPACT_INSTRUCTION } from "./core/compact-args";
 export const OMP_VCC_COMPACT_INSTRUCTION = "__omp_vcc__";
@@ -805,26 +835,26 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     // Always handle explicit /pi-vcc or /omp-vcc marker.
     // Otherwise, only handle when user opted in via settings.
     const { isPiVcc, keepUserTurns, keepUserTurnsExplicit, followUpPrompt } = parseCompactionInstructions(customInstructions);
-    setPendingFollowUpPrompt(pi, null);
     // Explicit host mode bypass: when the host signals an explicit compact mode
-    // (e.g. /compact snapcompact or --mode shake), let the host walker handle it
-    // even though overrideDefaultCompaction is true. This enables sequential
-    // VCC → snapcompact/shake combinations. The event field is only present when
-    // the optional native vcc patch is applied or a future host exposes it; when
-    // absent this branch is no-op and the existing override semantics remain.
-    // pi has no compactMode field: /compact <mode> arrives as bare
-    // customInstructions text (slash-commands-provider.ts:compactCommand), so a
-    // lone mode token (exact, case-insensitive) also bypasses. Longer focus
-    // text still flows to VCC/host normally. Sentinels are matched first.
+    // via an event field, let the host walker handle it even though
+    // overrideDefaultCompaction is true. This enables sequential VCC →
+    // snapcompact/shake combinations. No shipped host exposes such a field
+    // today — omp carries the mode in the compact() options (never the event)
+    // and pi has no modes (its /compact text is raw focus instructions, so
+    // lone mode words must NEVER bypass: on pi `/compact shake` means
+    // "focus on shake"). The branch stays as the contract for the optional
+    // native patch / future hosts; unpatched, override:true serves explicit
+    // omp modes via VCC (use override:false for native modes).
     const explicitMode = (event as any).compactMode ?? (event as any).explicitMode ?? (event as any).mode;
     if (!isPiVcc && typeof explicitMode === "string" && explicitMode) {
       const m = explicitMode.toLowerCase();
       if (m === "snapcompact" || m === "shake" || m === "soft" || m === "remote" || m === "handoff") return;
     }
-    if (!isPiVcc && typeof customInstructions === "string") {
-      const t = customInstructions.trim().toLowerCase();
-      if (t === "snapcompact" || t === "shake" || t === "soft" || t === "remote" || t === "handoff") return;
-    }
+    // Chain-shake yield: while a {mode:"shake"} chain is in flight (see
+    // session_compact below), let the host run it — otherwise VCC would
+    // swallow the modeless call into a second VCC pass. Sentinel compactions
+    // still handled (isPiVcc path falls through below).
+    if (!isPiVcc && pendingChainShake.has(pi as unknown as object)) return;
     if (!isPiVcc && !settings.overrideDefaultCompaction) return;
 
     const calibrationCut = buildOwnCut(branchEntries as any[], 0);
@@ -1230,15 +1260,17 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const isLargeCompaction = (stats.summarized > 10) || (stats.kept > 5) || (stats.keptTokensEst > 2000);
     const shouldContinueAfterAutoCompact = (reason === "threshold" || reason === "overflow" || (reason == null && isLargeCompaction)) && loadSettings(ctx).continueAfterThresholdCompact;
     scheduleCompactionStatsNotify(ctx, stats);
-    // Eager post-VCC shake chain (chainShakeHint). {mode:"shake"} is the omp
-    // native spelling (docs/configuration.md#native-strategy); pi's
-    // ctx.compact(CompactOptions) has no mode key, so leave chainShakeHint
-    // false on pi — host rescue remains the only shake path there.
+    // Eager post-VCC shake chain (chainShakeHint, omp only). {mode:"shake"}
+    // is the omp native spelling; the before handler above yields while
+    // pendingChainShake is set so the host actually runs shake instead of
+    // VCC swallowing the modeless call. pi's CompactOptions has no mode key
+    // (the call would trigger a spurious default compaction), so pi never
+    // chains — host rescue remains the only shake path there.
     try {
       const cfgChain = loadSettings(ctx);
       const ctxMaybe = ctx as unknown as Record<string, unknown>;
       const compactFn = ctxMaybe["compact"];
-      if (cfgChain.chainShakeHint && typeof compactFn === "function" && !pendingChainShake.has(pi as unknown as object) && !willRetry && !isPiVccLast) {
+      if (cfgChain.chainShakeHint && getHostKind() === "omp" && typeof compactFn === "function" && !pendingChainShake.has(pi as unknown as object) && !willRetry && !isPiVccLast) {
         pendingChainShake.add(pi as unknown as object);
         const maybePromise = (compactFn as unknown as (o: unknown) => Promise<void>).call(ctx, { mode: "shake" } as unknown);
         const asPromise = maybePromise as unknown as Promise<void> | void;

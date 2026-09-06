@@ -859,7 +859,7 @@ describe("registerBeforeCompactHook: custom_message reaches the summarizer", () 
   });
 });
 
-describe("registerBeforeCompactHook: pi text-form explicit mode bypass", () => {
+describe("registerBeforeCompactHook: focus text never bypasses as an explicit mode", () => {
   beforeEach(() => {
     if (existsSync(DEBUG_PATH)) unlinkSync(DEBUG_PATH);
   });
@@ -879,24 +879,28 @@ describe("registerBeforeCompactHook: pi text-form explicit mode bypass", () => {
     msg("a4", "assistant", "reply four"),
   ];
 
+  // Neither host exposes a mode field on the event (omp carries the mode in
+  // the compact() options, pi has no modes — its /compact text is raw focus).
+  // A lone mode word is therefore focus text ("focus on shake" on pi) and VCC
+  // handles it; only the compactMode event field (native patch contract)
+  // bypasses. Pinned per host so a future text-match regression is caught.
   test.each(["snapcompact", "shake", "soft", "remote", "handoff"])(
-    "pi /compact %s bypasses to host even with override:true",
+    "lone mode word '%s' is focus text: VCC handles even with override:true",
     (mode) => {
       setConfig({ debug: false, overrideDefaultCompaction: true });
-      const { pi, invokeBefore, notifyCalls } = createMockPi();
+      const { pi, invokeBefore } = createMockPi();
       registerBeforeCompactHook(pi);
       const result = invokeBefore(makeEvent(bigEntries(), mode, { reason: "manual", willRetry: false }));
-      expect(result).toBeUndefined();
-      expect(notifyCalls).toHaveLength(0);
+      expect(result?.compaction).toBeDefined();
     },
   );
 
-  test("mode token match is case-insensitive and trims whitespace", () => {
+  test("lone mode word with case/whitespace variants is still focus text", () => {
     setConfig({ debug: false, overrideDefaultCompaction: true });
     const { pi, invokeBefore } = createMockPi();
     registerBeforeCompactHook(pi);
-    expect(invokeBefore(makeEvent(bigEntries(), "  Shake  ", { reason: "manual", willRetry: false }))).toBeUndefined();
-    expect(invokeBefore(makeEvent(bigEntries(), "SNAPCOMPACT", { reason: "manual", willRetry: false }))).toBeUndefined();
+    expect(invokeBefore(makeEvent(bigEntries(), "  Shake  ", { reason: "manual", willRetry: false }))?.compaction).toBeDefined();
+    expect(invokeBefore(makeEvent(bigEntries(), "SNAPCOMPACT", { reason: "manual", willRetry: false }))?.compaction).toBeDefined();
   });
 
   test("longer focus text containing a mode word still flows to VCC", () => {

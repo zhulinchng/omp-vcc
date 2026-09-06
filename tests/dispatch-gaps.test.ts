@@ -371,7 +371,9 @@ describe("dispatch gaps: /omp-vcc and /pi-vcc commands (main factory)", () => {
       compact: async (arg: any) => { compactArg = arg; },
       ui: { notify: (msg: string, level?: string) => notify.push({ msg, level }) },
     });
-    expect(compactArg?.customInstructions).toBe(OMP_VCC_COMPACT_INSTRUCTION);
+    // omp form: the sentinel travels as the bare instruction string (the host
+    // splits string|object and drops instructions from the object form).
+    expect(compactArg).toBe(OMP_VCC_COMPACT_INSTRUCTION);
     expect(notify.some((n) => n.msg === "Compacted with omp-vcc")).toBe(true);
   });
 
@@ -406,7 +408,6 @@ describe("dispatch gaps: /omp-vcc and /pi-vcc commands (main factory)", () => {
     });
     expect(notify.some((n) => n.msg === "Compaction failed: boom disk" && n.level === "error")).toBe(true);
   });
-
   test("/pi-vcc falls back to the pi-vcc notice and uses pi instructions", async () => {
     const omp = makePi();
     const piHarness = makePi();
@@ -422,10 +423,12 @@ describe("dispatch gaps: /omp-vcc and /pi-vcc commands (main factory)", () => {
       compact: async (arg: any) => { piArg = arg; },
       ui: { notify: (msg: string) => piNotify.push(msg) },
     });
-    expect(piArg?.customInstructions).toBe(PI_VCC_COMPACT_INSTRUCTION);
-    expect(piArg?.customInstructions).not.toBe(ompArg?.customInstructions);
-    expect(String(piArg?.customInstructions)).toContain("__pi_vcc__");
-    expect(String(ompArg?.customInstructions)).not.toContain("__pi_vcc__");
+    // omp form: both travel as bare strings carrying their own sentinels.
+    expect(piArg).toBe(PI_VCC_COMPACT_INSTRUCTION);
+    expect(ompArg).toBe(OMP_VCC_COMPACT_INSTRUCTION);
+    expect(piArg).not.toBe(ompArg);
+    expect(String(piArg)).toContain("__pi_vcc__");
+    expect(String(ompArg)).not.toContain("__pi_vcc__");
     expect(piNotify).toContain("Compacted with pi-vcc (via omp-vcc)");
   });
 
