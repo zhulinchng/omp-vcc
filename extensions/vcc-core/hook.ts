@@ -9,20 +9,39 @@ import { calibrateCharsPerToken, estimateMessageContentChars, estimateMessageCon
 import type { PiVccCompactionDetails } from "./details";
 import type { CompactionReason } from "./types";
 
-// convertToLlm shim: try host export, fallback to identity (preserves AgentMessage for omp compileRanked)
+// convertToLlm shim: resolve the host export, fallback to identity (identity
+// is fine for bashExecution/custom, which the pipeline renders natively, but
+// it leaks !!-excluded spans and drops branchSummary entries — so the
+// @earendil-works root (pi's canonical export path) is tried first.
+const CONVERT_TO_LLM_CANDIDATES = [
+  "@earendil-works/pi-coding-agent",
+  "@oh-my-pi/pi-coding-agent",
+  "@oh-my-pi/pi-coding-agent/session/messages",
+] as const;
+// Pure loader-driven resolver: first candidate whose module exports a
+// convertToLlm function wins, else null (caller keeps identity).
+export const resolveConvertToLlm = (
+  load: (id: string) => any,
+): ((messages: any[]) => any[]) | null => {
+  for (const id of CONVERT_TO_LLM_CANDIDATES) {
+    try {
+      const mod = load(id);
+      if (mod && typeof mod.convertToLlm === "function") return mod.convertToLlm;
+    } catch {}
+  }
+  return null;
+};
 let convertToLlm: (messages: any[]) => any[] = (m) => m;
 try {
   const req = createRequire(import.meta.url);
-  const mod = req("@oh-my-pi/pi-coding-agent/session/messages") as any;
-  if (mod?.convertToLlm) convertToLlm = mod.convertToLlm;
+  convertToLlm = resolveConvertToLlm((id) => req(id)) ?? convertToLlm;
 } catch {}
-try {
-  if (convertToLlm.length === 0 || (convertToLlm as any).toString().includes("=> m")) {
-    const req2 = createRequire(import.meta.url);
-    const mod2 = req2("@oh-my-pi/pi-coding-agent") as any;
-    if (mod2?.convertToLlm) convertToLlm = mod2.convertToLlm;
-  }
-} catch {}
+// Test-only override for the module-level binding (mirrors
+// clearCompactionHistoryForTests): lets suites pin convertToLlm wiring without
+// stubbing node module resolution. Null resets to the identity fallback.
+export const __setConvertToLlmForTests = (fn: ((messages: Array<unknown>) => Array<unknown>) | null): void => {
+  convertToLlm = fn ?? ((m) => m);
+};
 
 export { PI_VCC_COMPACT_INSTRUCTION } from "./core/compact-args";
 export const OMP_VCC_COMPACT_INSTRUCTION = "__omp_vcc__";
@@ -793,10 +812,18 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     // VCC → snapcompact/shake combinations. The event field is only present when
     // the optional native vcc patch is applied or a future host exposes it; when
     // absent this branch is no-op and the existing override semantics remain.
+    // pi has no compactMode field: /compact <mode> arrives as bare
+    // customInstructions text (slash-commands-provider.ts:compactCommand), so a
+    // lone mode token (exact, case-insensitive) also bypasses. Longer focus
+    // text still flows to VCC/host normally. Sentinels are matched first.
     const explicitMode = (event as any).compactMode ?? (event as any).explicitMode ?? (event as any).mode;
     if (!isPiVcc && typeof explicitMode === "string" && explicitMode) {
       const m = explicitMode.toLowerCase();
       if (m === "snapcompact" || m === "shake" || m === "soft" || m === "remote" || m === "handoff") return;
+    }
+    if (!isPiVcc && typeof customInstructions === "string") {
+      const t = customInstructions.trim().toLowerCase();
+      if (t === "snapcompact" || t === "shake" || t === "soft" || t === "remote" || t === "handoff") return;
     }
     if (!isPiVcc && !settings.overrideDefaultCompaction) return;
 
@@ -1203,8 +1230,10 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const isLargeCompaction = (stats.summarized > 10) || (stats.kept > 5) || (stats.keptTokensEst > 2000);
     const shouldContinueAfterAutoCompact = (reason === "threshold" || reason === "overflow" || (reason == null && isLargeCompaction)) && loadSettings(ctx).continueAfterThresholdCompact;
     scheduleCompactionStatsNotify(ctx, stats);
-    // Eager post-VCC shake chain (chainShakeHint). Host rescue already handles
-    // dead-end; this forces a second shake entry even when headroom was made.
+    // Eager post-VCC shake chain (chainShakeHint). {mode:"shake"} is the omp
+    // native spelling (docs/configuration.md#native-strategy); pi's
+    // ctx.compact(CompactOptions) has no mode key, so leave chainShakeHint
+    // false on pi — host rescue remains the only shake path there.
     try {
       const cfgChain = loadSettings(ctx);
       const ctxMaybe = ctx as unknown as Record<string, unknown>;
@@ -1223,8 +1252,12 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       }
     } catch {}
     if (followUpPrompt) {
+      // Fire-and-forget: pi's sendUserMessage returns void, omp's returns a
+      // promise — never await either, but swallow async rejections so a
+      // failed redelivery cannot surface as an unhandled rejection.
       try {
-        await pi.sendUserMessage(followUpPrompt);
+        const sent = (pi as any).sendUserMessage?.(followUpPrompt) as Promise<void> | undefined;
+        if (sent && typeof sent.catch === "function") sent.catch(() => {});
       } catch {}
     } else if (shouldContinueAfterAutoCompact) {
       scheduleAutoContinueForPi(pi);

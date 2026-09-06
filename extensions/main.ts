@@ -180,43 +180,79 @@ export default function (pi: ExtensionAPI): void {
   // ── vcc_stats tool — stats surface for savings (paper § verification) ──
   registerVccStatsToolHook(pi);
 
+  // Shared /omp-vcc + /pi-vcc runner. ctx.compact is fire-and-forget void on
+  // pi (CompactOptions{customInstructions,onComplete,onError}) and a
+  // completion-awaitable Promise<void> on omp. A bare string would silently
+  // drop customInstructions on pi (its wrapper reads options?.customInstructions),
+  // so always pass the object form (instructionsOrOptions per types.d.ts).
+  // The return discriminates: thenable → await it (omp) then finish; void →
+  // outcomes arrive via onComplete/onError (pi). `settled` keeps one outcome.
+  const runCompactCommand = async (
+    args: string,
+    c: {
+      compact: (options?: unknown) => Promise<void> | void;
+      ui: { notify: (msg: string, level?: string) => void };
+    },
+    buildInstructions: (keep: number | null) => string,
+    fallbackToast: string,
+    preNotify: boolean,
+  ): Promise<void> => {
+    const parsed = parseKeepAndPrompt(args);
+    const keep = parsed.keepUserTurns;
+    const followUpPrompt = parsed.followUpPrompt;
+    const customInstructions = buildInstructions(keep);
+    if (preNotify) {
+      try {
+        c.ui.notify(`omp-vcc: compacting with keep:${keep ?? 1}${followUpPrompt ? ` + focus` : ""}...`, "info");
+      } catch {}
+    }
+    let settled = false;
+    const finishOk = (): void => {
+      if (settled) return;
+      settled = true;
+      const stats = getLastCompactionStats(pi);
+      if (stats) {
+        scheduleCompactionStatsNotify(c as unknown as { ui: { notify: (msg: string, level?: string) => void } }, stats);
+      } else {
+        try { c.ui.notify(fallbackToast, "info"); } catch {}
+      }
+      if (followUpPrompt) {
+        try {
+          const piAny = pi as unknown as { sendUserMessage?: (content: string) => unknown };
+          const sent = piAny.sendUserMessage?.(followUpPrompt) as Promise<void> | undefined;
+          if (sent && typeof sent.catch === "function") sent.catch(() => {});
+        } catch {}
+      }
+    };
+    const finishErr = (err: unknown): void => {
+      if (settled) return;
+      settled = true;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg === "Compaction cancelled" || msg === "Already compacted" || msg.startsWith("Nothing to compact")) {
+        try { c.ui.notify("Nothing to compact", "warning"); } catch {}
+      } else {
+        try { c.ui.notify(`Compaction failed: ${msg}`, "error"); } catch {}
+      }
+    };
+    try {
+      const result = c.compact({ customInstructions, onComplete: finishOk, onError: finishErr }) as Promise<void> | void;
+      if (result && typeof (result as Promise<void>).then === "function") {
+        await result;
+        finishOk();
+      }
+    } catch (err: unknown) {
+      finishErr(err);
+    }
+  };
+
   pi.registerCommand("omp-vcc", {
     description: "Compact conversation with omp-vcc structured summary (keep:N + optional focus)",
     handler: async (args: string, ctx: unknown) => {
       const c = ctx as {
-        compact: (instructions?: string) => Promise<void>;
+        compact: (options?: unknown) => Promise<void> | void;
         ui: { notify: (msg: string, level?: string) => void };
-        sessionManager?: { getSessionFile?: () => string | undefined };
       };
-      const parsed = parseKeepAndPrompt(args);
-      const keep = parsed.keepUserTurns;
-      const followUpPrompt = parsed.followUpPrompt;
-      const customInstructions = buildOmpCustomInstructions(keep);
-      try {
-        c.ui.notify(`omp-vcc: compacting with keep:${keep ?? 1}${followUpPrompt ? ` + focus` : ""}...`, "info");
-      } catch {}
-      try {
-        await c.compact(customInstructions);
-        const stats = getLastCompactionStats(pi);
-        if (stats) {
-          scheduleCompactionStatsNotify(c as unknown as { ui: { notify: (msg: string, level?: string) => void } }, stats);
-        } else {
-          try { c.ui.notify("Compacted with omp-vcc", "info"); } catch {}
-        }
-        if (followUpPrompt) {
-          try {
-            const piAny = pi as unknown as { sendUserMessage?: (content: string) => Promise<void> | void };
-            if (piAny.sendUserMessage) await piAny.sendUserMessage(followUpPrompt);
-          } catch {}
-        }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg === "Compaction cancelled" || msg === "Already compacted") {
-          try { c.ui.notify("Nothing to compact", "warning"); } catch {}
-        } else {
-          try { c.ui.notify(`Compaction failed: ${msg}`, "error"); } catch {}
-        }
-      }
+      await runCompactCommand(args, c, buildOmpCustomInstructions, "Compacted with omp-vcc", true);
     },
   });
 
@@ -225,30 +261,10 @@ export default function (pi: ExtensionAPI): void {
     description: "Alias for /omp-vcc (pi-vcc compat)",
     handler: async (args: string, ctx: unknown) => {
       const c = ctx as {
-        compact: (instructions?: string) => Promise<void>;
+        compact: (options?: unknown) => Promise<void> | void;
         ui: { notify: (msg: string, level?: string) => void };
       };
-      const parsed = parseKeepAndPrompt(args);
-      const keep = parsed.keepUserTurns;
-      const followUpPrompt = parsed.followUpPrompt;
-      const customInstructions = buildPiVccCustomInstructions(keep);
-      try {
-        await c.compact(customInstructions);
-        const stats = getLastCompactionStats(pi);
-        if (stats) scheduleCompactionStatsNotify(c as unknown as { ui: { notify: (msg: string, level?: string) => void } }, stats);
-        else try { c.ui.notify("Compacted with pi-vcc (via omp-vcc)", "info"); } catch {}
-        if (followUpPrompt) {
-          try {
-            const piAny = pi as unknown as { sendUserMessage?: (content: string) => Promise<void> | void };
-            if (piAny.sendUserMessage) await piAny.sendUserMessage(followUpPrompt);
-          } catch {}
-        }
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const cancelled = msg === "Compaction cancelled" || msg === "Already compacted";
-        const note = cancelled ? "Nothing to compact" : `Compaction failed: ${msg}`;
-        try { c.ui.notify(note, cancelled ? "warning" : "error"); } catch {}
-      }
+      await runCompactCommand(args, c, buildPiVccCustomInstructions, "Compacted with pi-vcc (via omp-vcc)", false);
     },
   });
 

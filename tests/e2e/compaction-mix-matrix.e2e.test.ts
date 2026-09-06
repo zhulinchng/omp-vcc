@@ -128,7 +128,8 @@ describe("mix-matrix — omp-vcc command matrix via real handlers", () => {
     expect(before).toBeDefined();
 
     const entries = buildSession({ turns: 5, charsPerTurn: 500 }) as any[];
-    const runCompactWith = (live: any[]) => async (ci?: string) => {
+    const runCompactWith = (live: any[]) => async (opts?: any) => {
+      const ci = typeof opts === "string" ? opts : opts?.customInstructions;
       const r: any = await before(makeEvent(live, ci, 90000), cap.ctx);
       if (!r || !r.compaction) throw new Error("Compaction cancelled");
     };
@@ -150,9 +151,9 @@ describe("mix-matrix — omp-vcc command matrix via real handlers", () => {
     let seenCi = "";
     const cmdCtx2: any = {
       ...cap.ctx,
-      compact: async (ci?: string) => {
-        seenCi = ci ?? "";
-        return runCompactWith(entries)(ci);
+      compact: async (opts?: any) => {
+        seenCi = String(typeof opts === "string" ? opts : opts?.customInstructions ?? "");
+        return runCompactWith(entries)(opts);
       },
     };
     await cap.commands["omp-vcc"].handler("keep:2 fix auth token refresh", cmdCtx2);
@@ -232,7 +233,8 @@ describe("mix-matrix — omp-vcc command matrix via real handlers", () => {
     createExtension(cap.pi);
     const before = cap.getBefore();
     const entries = buildSession({ turns: 5, charsPerTurn: 500 }) as any[];
-    const runCompactWith = (live: any[], tokens = 90000) => async (ci?: string) => {
+    const runCompactWith = (live: any[], tokens = 90000) => async (opts?: any) => {
+      const ci = typeof opts === "string" ? opts : opts?.customInstructions;
       const r: any = await before(makeEvent(live, ci, tokens), cap.ctx);
       if (!r || !r.compaction) throw new Error("Compaction cancelled");
     };

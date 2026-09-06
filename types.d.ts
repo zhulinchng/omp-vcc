@@ -14,13 +14,13 @@ declare module "@oh-my-pi/pi-coding-agent" {
       getBranch(fromId?: string): any[];
       getEntries(): any[];
     };
-    compact(instructionsOrOptions?: string | any): Promise<void>;
+    compact(instructionsOrOptions?: string | any): Promise<void> | void;
     sendMessage?: any;
     sendUserMessage?: any;
     [key: string]: unknown;
   }
   export interface ExtensionCommandContext extends ExtensionContext {
-    compact(instructionsOrOptions?: string | any): Promise<void>;
+    compact(instructionsOrOptions?: string | any): Promise<void> | void;
   }
   export interface ExtensionAPI {
     registerTool(tool: unknown): void;

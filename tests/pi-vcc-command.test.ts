@@ -1,8 +1,9 @@
 // @ts-nocheck
 // /pi-vcc factory alias: same compact flow as /omp-vcc with pi-vcc branding
 // (PI sentinel via buildPiVccCustomInstructions, "via omp-vcc" toasts).
-// Unlike the deleted hook registrar, the factory awaits compact directly —
-// there are no onComplete/onError callbacks; errors map inline.
+// ctx.compact is called with the object form {customInstructions,onComplete,
+// onError}: omp-style mocks return a promise (awaited), pi-style mocks return
+// void (outcomes arrive via the callbacks).
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -40,12 +41,12 @@ afterAll(() => {
 });
 
 function createHarness(opts: {
-  compactImpl?: (arg: string) => Promise<void> | void;
+  compactImpl?: (arg: unknown) => Promise<void> | void;
   sendUserMessage?: (content: string) => unknown;
 } = {}) {
   const commands = new Map<string, any>();
   const handlers = new Map<string, any>();
-  const compactCalls: string[] = [];
+  const compactCalls: unknown[] = [];
   const notifyCalls: Array<{ msg: string; level: string }> = [];
   const userMessages: string[] = [];
   const tools: any[] = [];
@@ -59,13 +60,14 @@ function createHarness(opts: {
   };
   (extension as any)(pi);
   const ctx = {
-    compact: opts.compactImpl ?? (async (arg: string) => { compactCalls.push(arg); }),
+    compact: opts.compactImpl ?? (async (arg: unknown) => { compactCalls.push(arg); }),
     ui: { notify: (msg: string, level?: string) => notifyCalls.push({ msg, level: level ?? "info" }) },
   };
   return {
     invoke: (args = "") => commands.get("pi-vcc").handler(args, ctx),
     before: handlers.get("session_before_compact"),
     pi,
+    tools,
     compactCalls,
     notifyCalls,
     userMessages,
@@ -77,9 +79,8 @@ describe("pi-vcc alias command", () => {
     const { invoke, compactCalls } = createHarness();
 
     await invoke();
-
     expect(compactCalls).toHaveLength(1);
-    expect(compactCalls[0]).toBe(PI_VCC_COMPACT_INSTRUCTION);
+    expect((compactCalls[0] as any)?.customInstructions).toBe(PI_VCC_COMPACT_INSTRUCTION);
   });
 
   test("parses keep token at the start of args and strips it from the prompt", async () => {
@@ -87,7 +88,7 @@ describe("pi-vcc alias command", () => {
 
     await invoke("keep:3   continue  ");
 
-    expect(compactCalls[0]).toBe(`${PI_VCC_COMPACT_INSTRUCTION} keep:3`);
+    expect((compactCalls[0] as any)?.customInstructions).toBe(`${PI_VCC_COMPACT_INSTRUCTION} keep:3`);
     expect(userMessages).toEqual(["continue"]);
   });
 
@@ -96,7 +97,7 @@ describe("pi-vcc alias command", () => {
 
     await invoke("  continue   keep:2");
 
-    expect(compactCalls[0]).toBe(`${PI_VCC_COMPACT_INSTRUCTION} keep:2`);
+    expect((compactCalls[0] as any)?.customInstructions).toBe(`${PI_VCC_COMPACT_INSTRUCTION} keep:2`);
     expect(userMessages).toEqual(["continue"]);
   });
 
@@ -105,7 +106,7 @@ describe("pi-vcc alias command", () => {
 
     await invoke("keep:4");
 
-    expect(compactCalls[0]).toBe(`${PI_VCC_COMPACT_INSTRUCTION} keep:4`);
+    expect((compactCalls[0] as any)?.customInstructions).toBe(`${PI_VCC_COMPACT_INSTRUCTION} keep:4`);
     expect(userMessages).toHaveLength(0);
   });
 
@@ -184,6 +185,96 @@ describe("pi-vcc alias command", () => {
 
     await invoke("keep:999999999999999999999 continue");
 
-    expect(compactCalls[0]).toBe(`${PI_VCC_COMPACT_INSTRUCTION} keep:${Number.MAX_SAFE_INTEGER}`);
+    expect((compactCalls[0] as any)?.customInstructions).toBe(`${PI_VCC_COMPACT_INSTRUCTION} keep:${Number.MAX_SAFE_INTEGER}`);
+  });
+
+  test("pi-shaped void compact: instructions travel in the options object", async () => {
+    let captured: any = null;
+    const { invoke } = createHarness({
+      compactImpl: (opts: unknown) => { captured = opts; return undefined; },
+    });
+
+    await invoke("keep:2 continue");
+
+    expect(captured?.customInstructions).toBe(`${PI_VCC_COMPACT_INSTRUCTION} keep:2`);
+    expect(typeof captured?.onComplete).toBe("function");
+    expect(typeof captured?.onError).toBe("function");
+  });
+
+  test("pi-shaped void compact: nothing notifies until onComplete fires", async () => {
+    let captured: any = null;
+    const { invoke, notifyCalls, userMessages } = createHarness({
+      compactImpl: (opts: unknown) => { captured = opts; return undefined; },
+    });
+
+    await invoke("continue");
+    expect(notifyCalls).toEqual([]);
+    expect(userMessages).toEqual([]);
+
+    captured.onComplete();
+    expect(userMessages).toEqual(["continue"]);
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    expect(notifyCalls).toEqual([{ msg: "Compacted with pi-vcc (via omp-vcc)", level: "info" }]);
+  });
+
+  test("pi-shaped void compact: onError maps Already compacted without follow-up", async () => {
+    let captured: any = null;
+    const { invoke, notifyCalls, userMessages } = createHarness({
+      compactImpl: (opts: unknown) => { captured = opts; return undefined; },
+    });
+
+    await invoke("continue");
+    captured.onError(new Error("Already compacted"));
+
+    expect(userMessages).toEqual([]);
+    expect(notifyCalls).toEqual([{ msg: "Nothing to compact", level: "warning" }]);
+  });
+
+  test("pi-shaped void compact: onError maps host too-small message without follow-up", async () => {
+    let captured: any = null;
+    const { invoke, notifyCalls, userMessages } = createHarness({
+      compactImpl: (opts: unknown) => { captured = opts; return undefined; },
+    });
+
+    await invoke("continue");
+    captured.onError(new Error("Nothing to compact (session too small)"));
+
+    expect(userMessages).toEqual([]);
+    expect(notifyCalls).toEqual([{ msg: "Nothing to compact", level: "warning" }]);
+  });
+
+  test("vcc_recall schema survives a host that strips unknown tool keys", async () => {
+    const { tools } = createHarness();
+    const tool = tools.find((t: any) => t.name === "vcc_recall");
+    expect(tool).toBeDefined();
+    // pi's ToolDefinition has no approval key: simulate a host that drops it.
+    const { approval, ...stripped } = tool as any;
+    void approval;
+    expect(stripped.name).toBe("vcc_recall");
+    expect(Object.keys(stripped.parameters ?? {}).sort()).toEqual(["expand", "mode", "page", "query", "scope"]);
+    expect(typeof stripped.execute).toBe("function");
+  });
+
+  test("settled guard keeps exactly one outcome on double onComplete", async () => {
+    let captured: any = null;
+    const { invoke, notifyCalls } = createHarness({
+      compactImpl: (opts: unknown) => { captured = opts; return undefined; },
+    });
+
+    await invoke("");
+    captured.onComplete();
+    captured.onComplete();
+    captured.onError(new Error("late boom"));
+    expect(notifyCalls).toEqual([{ msg: "Compacted with pi-vcc (via omp-vcc)", level: "info" }]);
+  });
+
+  test("synchronously throwing compact maps to a failure toast", async () => {
+    const { invoke, notifyCalls, userMessages } = createHarness({
+      compactImpl: () => { throw new Error("sync boom"); },
+    });
+
+    await invoke("continue");
+    expect(userMessages).toEqual([]);
+    expect(notifyCalls).toEqual([{ msg: "Compaction failed: sync boom", level: "error" }]);
   });
 });

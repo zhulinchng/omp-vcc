@@ -3,7 +3,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, unlinkSync, writeFileSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { loadSettings, DEFAULT_SETTINGS } from "../extensions/vcc-core/core/settings";
+import { loadSettings, loadSettingsWithSources, DEFAULT_SETTINGS } from "../extensions/vcc-core/core/settings";
 import { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION } from "../extensions/vcc-core/hook";
 
 let tmpRoot: string;
@@ -196,5 +196,53 @@ describe("registerBeforeCompactHook — gaps that failed on Node24", () => {
     expect(existsSync("/tmp/omp-vcc-debug.json")).toBe(true);
     const snap = JSON.parse(require("fs").readFileSync("/tmp/omp-vcc-debug.json", "utf-8"));
     expect(JSON.stringify(snap)).toContain("INJECTED_CTX_9999");
+  });
+});
+
+describe("settings overlay — pi-shaped ctx (no host settings channel)", () => {
+  test("file wins and nothing throws when ctx exposes no settings", () => {
+    const cfgPath = join(tmpRoot, "pi-ctx.json");
+    writeCfg(cfgPath, { debug: true, overrideDefaultCompaction: false });
+    process.env.OMP_VCC_CONFIG_PATH = cfgPath;
+    // pi ExtensionContext has no settings/config fields (verified — confirm first:
+    // pi packages/coding-agent/src/core/extensions/types.ts:309-349).
+    const piCtx = { hasUI: true, ui: { notify: () => {} } };
+    const s = loadSettings(piCtx);
+    expect(s.debug).toBe(true);
+    expect(s.overrideDefaultCompaction).toBe(false);
+    const view = loadSettingsWithSources(piCtx);
+    expect(view.values.debug).toBe(true);
+    expect(view.sources.debug).toBe("file");
+  });
+
+  test("omp-style ctx.settings overlay still applies on top of file", () => {
+    const cfgPath = join(tmpRoot, "overlay.json");
+    writeCfg(cfgPath, { debug: false });
+    process.env.OMP_VCC_CONFIG_PATH = cfgPath;
+    const ompCtx = {
+      hasUI: true,
+      ui: { notify: () => {} },
+      settings: { get: (k: string) => (k === "omp-vcc.debug" ? true : undefined) },
+    };
+    expect(loadSettings(ompCtx).debug).toBe(true);
+    expect(loadSettingsWithSources(ompCtx).sources.debug).toBe("overlay");
+  });
+
+  test("handler honors file config with a pi-shaped ctx", () => {
+    const cfgPath = join(tmpRoot, "handler.json");
+    writeCfg(cfgPath, { overrideDefaultCompaction: true, debug: false });
+    process.env.OMP_VCC_CONFIG_PATH = cfgPath;
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [
+      msg("u1", "user", "one"),
+      msg("a1", "assistant", "reply one"),
+      msg("u2", "user", "two"),
+      msg("a2", "assistant", "reply two"),
+      msg("u3", "user", "three"),
+      msg("a3", "assistant", "reply three"),
+    ];
+    const result = invokeBefore(makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION, { reason: "manual", willRetry: false }));
+    expect(result?.compaction).toBeDefined();
   });
 });

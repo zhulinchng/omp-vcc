@@ -212,6 +212,13 @@ describe("searchEntries mode fallback", () => {
     expect(hits.every((h) => h.matchCount === 1)).toBe(true); // regex path, not term path
   });
 
+  it("falls back to term search when a valid regex matches nothing", () => {
+    // "cache (redis)" compiles but matches no entry verbatim; the terms
+    // "cache"/"redis" still hit via BM25 instead of returning nothing.
+    const hits = searchEntries(entries, messages, "cache (redis)");
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
   it("returns nothing when neither mode matches", () => {
     expect(searchEntries(entries, messages, "kubernetes").length).toBe(0);
   });

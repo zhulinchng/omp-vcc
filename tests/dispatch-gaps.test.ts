@@ -371,7 +371,7 @@ describe("dispatch gaps: /omp-vcc and /pi-vcc commands (main factory)", () => {
       compact: async (arg: any) => { compactArg = arg; },
       ui: { notify: (msg: string, level?: string) => notify.push({ msg, level }) },
     });
-    expect(compactArg).toBe(OMP_VCC_COMPACT_INSTRUCTION);
+    expect(compactArg?.customInstructions).toBe(OMP_VCC_COMPACT_INSTRUCTION);
     expect(notify.some((n) => n.msg === "Compacted with omp-vcc")).toBe(true);
   });
 
@@ -422,10 +422,10 @@ describe("dispatch gaps: /omp-vcc and /pi-vcc commands (main factory)", () => {
       compact: async (arg: any) => { piArg = arg; },
       ui: { notify: (msg: string) => piNotify.push(msg) },
     });
-    expect(piArg).toBe(PI_VCC_COMPACT_INSTRUCTION);
-    expect(piArg).not.toBe(ompArg);
-    expect(String(piArg)).toContain("__pi_vcc__");
-    expect(String(ompArg)).not.toContain("__pi_vcc__");
+    expect(piArg?.customInstructions).toBe(PI_VCC_COMPACT_INSTRUCTION);
+    expect(piArg?.customInstructions).not.toBe(ompArg?.customInstructions);
+    expect(String(piArg?.customInstructions)).toContain("__pi_vcc__");
+    expect(String(ompArg?.customInstructions)).not.toContain("__pi_vcc__");
     expect(piNotify).toContain("Compacted with pi-vcc (via omp-vcc)");
   });
 

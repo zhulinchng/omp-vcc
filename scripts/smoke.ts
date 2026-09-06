@@ -60,6 +60,14 @@ try {
     tools.some((t) => t.name === "vcc_stats"),
   );
   check(
+    "vcc_recall schema has query/expand/page/scope/mode",
+    (() => {
+      const t = tools.find((t) => t.name === "vcc_recall");
+      const keys = t?.parameters ? Object.keys(t.parameters) : [];
+      return ["query", "expand", "page", "scope", "mode"].every((k) => keys.includes(k));
+    })(),
+  );
+  check(
     "omp-vcc command registered",
     commands.some((c) => c.name === "omp-vcc"),
   );

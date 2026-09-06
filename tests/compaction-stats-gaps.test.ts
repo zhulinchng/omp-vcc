@@ -604,3 +604,88 @@ describe("gap: formatStatsTable with both global and perPi after 50+ global", ()
     clearCompactionHistoryForTests();
   });
 });
+
+describe("gap: pi session_compact guards (reason/willRetry/isPiVccLast)", () => {
+  const sixTurns = () => [
+    msg("u1", "user", "topic one"), msg("a1", "assistant", "reply one"),
+    msg("u2", "user", "topic two"), msg("a2", "assistant", "reply two"),
+    msg("u3", "user", "topic three"), msg("a3", "assistant", "reply three"),
+    msg("u4", "user", "topic four"), msg("a4", "assistant", "reply four"),
+    msg("u5", "user", "topic five"), msg("a5", "assistant", "reply five"),
+    msg("u6", "user", "topic six"), msg("a6", "assistant", "reply six"),
+  ];
+  const prep = { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 100000 };
+
+  async function runCompactFlow(cfg: Record<string, unknown>, beforeEvent: any, afterEvent: any) {
+    const dir = mkdtempSync(join(tmpdir(), "vcc-pi-compact-"));
+    const cfgPath = join(dir, "config.json");
+    writeFileSync(cfgPath, JSON.stringify(cfg));
+    const orig = process.env.OMP_VCC_CONFIG_PATH;
+    process.env.OMP_VCC_CONFIG_PATH = cfgPath;
+    const sent: any[] = [];
+    const notified: any[] = [];
+    const pi: any = {
+      on: (ev: string, handler: any) => { pi[ev] = handler; },
+      sendMessage: (m: any, o: any) => { sent.push({ m, o }); },
+      sendUserMessage: () => {},
+    };
+    registerBeforeCompactHook(pi);
+    const ctx = { ui: { notify: (m: string, l?: string) => { notified.push({ m, l }); } } };
+    try {
+      const r = await pi["session_before_compact"](beforeEvent, ctx);
+      expect(r?.compaction).toBeDefined();
+      await pi["session_compact"](afterEvent, ctx);
+      await new Promise((res) => setTimeout(res, 650));
+      // Snapshot before finally clears per-pi + global history.
+      return { sent, notified, stats: getLastCompactionStats(pi) };
+    } finally {
+      process.env.OMP_VCC_CONFIG_PATH = orig;
+      try { rmSync(dir, { recursive: true, force: true }); } catch {}
+      clearCompactionHistoryForTests();
+    }
+  }
+
+  test("pi manual event enriches authoritative savings even when isPiVccLast", async () => {
+    const { sent, notified, stats } = await runCompactFlow(
+      { overrideDefaultCompaction: true, smartKeepTail: false, debug: false },
+      { type: "session_before_compact", customInstructions: `${OMP_VCC_COMPACT_INSTRUCTION} keep:1`, branchEntries: sixTurns(), preparation: prep, reason: "manual", willRetry: false, signal: new AbortController().signal },
+      { type: "session_compact", fromExtension: true, reason: "manual", willRetry: false, compactionEntry: { id: "c1", tokensBefore: 100000, tokensAfter: 25000 } },
+    );
+    expect(stats!.tokensAfter).toBe(25000);
+    expect(stats!.tokensSaved).toBe(75000);
+    expect(stats!.savedPercent).toBe(75);
+    // /pi-vcc owns its toast via onComplete: no host toast, no continue.
+    expect(notified).toEqual([]);
+    expect(sent).toEqual([]);
+  });
+
+  test("pi threshold with continueAfterThresholdCompact:false schedules nothing", async () => {
+    const { sent, notified } = await runCompactFlow(
+      { overrideDefaultCompaction: true, smartKeepTail: false, debug: false, continueAfterThresholdCompact: false },
+      { type: "session_before_compact", customInstructions: undefined, branchEntries: sixTurns(), preparation: prep, reason: "threshold", willRetry: false, signal: new AbortController().signal },
+      { type: "session_compact", fromExtension: true, reason: "threshold", willRetry: false, compactionEntry: { id: "c1", tokensBefore: 100000, tokensAfter: 25000 } },
+    );
+    expect(sent).toEqual([]);
+    expect(notified.map((n: any) => n.m).some((m: string) => m.includes("kept"))).toBe(true);
+  });
+
+  test("pi willRetry:true schedules nothing even when continuation enabled", async () => {
+    const { sent } = await runCompactFlow(
+      { overrideDefaultCompaction: true, smartKeepTail: false, debug: false, continueAfterThresholdCompact: true },
+      { type: "session_before_compact", customInstructions: undefined, branchEntries: sixTurns(), preparation: prep, reason: "overflow", willRetry: true, signal: new AbortController().signal },
+      { type: "session_compact", fromExtension: true, reason: "overflow", willRetry: true, compactionEntry: { id: "c1", tokensBefore: 100000, tokensAfter: 25000 } },
+    );
+    // pi's own agent.continue() owns the retry; a VCC invisible-continue would double-drive it.
+    expect(sent).toEqual([]);
+  });
+
+  test("pi threshold with continuation enabled sends exactly one invisible continue", async () => {
+    const { sent } = await runCompactFlow(
+      { overrideDefaultCompaction: true, smartKeepTail: false, debug: false, continueAfterThresholdCompact: true },
+      { type: "session_before_compact", customInstructions: undefined, branchEntries: sixTurns(), preparation: prep, reason: "threshold", willRetry: false, signal: new AbortController().signal },
+      { type: "session_compact", fromExtension: true, reason: "threshold", willRetry: false, compactionEntry: { id: "c1", tokensBefore: 100000, tokensAfter: 25000 } },
+    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0].m.customType).toBe("omp-vcc-auto-continue");
+  });
+});

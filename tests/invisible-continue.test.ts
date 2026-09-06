@@ -57,6 +57,21 @@ describe("invisible auto-continue: trigger + context filter", () => {
     const messages = ((once as any)?.messages ?? []) as any[];
     expect(messages).toEqual([]);
   });
+
+  it("context hook leaves pi-shaped compactionSummary and bashExecution intact", () => {
+    let handler: ((event: any) => unknown) | undefined;
+    const pi = { on: (e: string, h: any) => { if (e === "context") handler = h; } } as any;
+    registerBeforeCompactHook(pi);
+
+    const user = { role: "user", content: "keep" };
+    const summary = { role: "compactionSummary", summary: "prior work", tokensBefore: 90000, timestamp: 1 };
+    const bash = { role: "bashExecution", command: "ls", output: "a", timestamp: 2 };
+    const own = { role: "custom", customType: AUTO_CONTINUE_CUSTOM_TYPE, content: [] };
+    const legacy = { role: "custom", customType: "pi-vcc-auto-continue", content: [] };
+
+    const result = handler?.({ messages: [user, summary, bash, own, legacy] });
+    expect((result as any)?.messages).toEqual([user, summary, bash]);
+  });
 });
 
 describe("invisible auto-continue: summarize-path noise", () => {

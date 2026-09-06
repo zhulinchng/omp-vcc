@@ -195,7 +195,7 @@ describe("user interaction: /omp-vcc failure and notify edges", () => {
       compact: async (arg: any) => { ompArg = arg; },
       ui: { notify: (msg: string, level?: string) => ompNotify.push({ msg, level }) },
     });
-    expect(String(ompArg)).toContain("keep:0");
+    expect(String(ompArg?.customInstructions ?? ompArg)).toContain("keep:0");
     expect(ompNotify[0].msg).toBe("omp-vcc: compacting with keep:0 + focus...");
     await commands.get("pi-vcc").handler("", {
       compact: async () => {},

@@ -371,6 +371,19 @@ describe("registerBeforeCompactHook: compact-all path", () => {
     expect(notifyCalls.some((call) => call.msg.includes("kept 1/2 turns,"))).toBe(true);
   });
 
+  test("rejecting hook-level follow-up send is swallowed without failing compact", async () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore, invokeCompact, userMessages, notifyCalls } = createMockPi();
+    pi.sendUserMessage = () => Promise.reject(new Error("redelivery down"));
+    registerBeforeCompactHook(pi);
+    const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
+    invokeBefore(makeEvent(entries, "continue"));
+    await invokeCompact({ type: "session_compact", fromExtension: true });
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    expect(userMessages).toEqual([]);
+    expect(notifyCalls.some((call) => call.msg.includes("kept 1/2 turns,"))).toBe(true);
+  });
+
   test("override=true + /compact keep prefix keeps requested turns and strips follow-up", async () => {
     setConfig({ debug: false, overrideDefaultCompaction: true });
     const { pi, invokeBefore, invokeCompact, userMessages } = createMockPi();
@@ -843,5 +856,84 @@ describe("registerBeforeCompactHook: custom_message reaches the summarizer", () 
     const snapshot = JSON.parse(readFileSync(DEBUG_PATH, "utf-8"));
     expect(snapshot.usedOwnCut).toBe(true);
     expect(JSON.stringify(snapshot)).toContain("INJECTED_CTX_9999");
+  });
+});
+
+describe("registerBeforeCompactHook: pi text-form explicit mode bypass", () => {
+  beforeEach(() => {
+    if (existsSync(DEBUG_PATH)) unlinkSync(DEBUG_PATH);
+  });
+  afterEach(() => {
+    if (existsSync(CONFIG_PATH)) unlinkSync(CONFIG_PATH);
+    if (existsSync(DEBUG_PATH)) unlinkSync(DEBUG_PATH);
+  });
+
+  const bigEntries = () => [
+    msg("u1", "user", "topic one"),
+    msg("a1", "assistant", "reply one"),
+    msg("u2", "user", "topic two"),
+    msg("a2", "assistant", "reply two"),
+    msg("u3", "user", "topic three"),
+    msg("a3", "assistant", "reply three"),
+    msg("u4", "user", "topic four"),
+    msg("a4", "assistant", "reply four"),
+  ];
+
+  test.each(["snapcompact", "shake", "soft", "remote", "handoff"])(
+    "pi /compact %s bypasses to host even with override:true",
+    (mode) => {
+      setConfig({ debug: false, overrideDefaultCompaction: true });
+      const { pi, invokeBefore, notifyCalls } = createMockPi();
+      registerBeforeCompactHook(pi);
+      const result = invokeBefore(makeEvent(bigEntries(), mode, { reason: "manual", willRetry: false }));
+      expect(result).toBeUndefined();
+      expect(notifyCalls).toHaveLength(0);
+    },
+  );
+
+  test("mode token match is case-insensitive and trims whitespace", () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    expect(invokeBefore(makeEvent(bigEntries(), "  Shake  ", { reason: "manual", willRetry: false }))).toBeUndefined();
+    expect(invokeBefore(makeEvent(bigEntries(), "SNAPCOMPACT", { reason: "manual", willRetry: false }))).toBeUndefined();
+  });
+
+  test("longer focus text containing a mode word still flows to VCC", () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const result = invokeBefore(
+      makeEvent(bigEntries(), "focus on the shake function", { reason: "manual", willRetry: false }),
+    );
+    expect(result?.compaction).toBeDefined();
+  });
+
+  test("sentinel instructions take precedence over mode text", () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const result = invokeBefore(
+      makeEvent(bigEntries(), "__omp_vcc__ keep:1", { reason: "manual", willRetry: false }),
+    );
+    expect(result?.compaction).toBeDefined();
+  });
+
+  test("whitespace-only instructions are not an explicit mode and still flow", () => {
+    setConfig({ debug: false, overrideDefaultCompaction: true });
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [
+      msg("u1", "user", "topic one"),
+      msg("a1", "assistant", "reply one"),
+      msg("u2", "user", "topic two"),
+      msg("a2", "assistant", "reply two"),
+      msg("u3", "user", "topic three"),
+      msg("a3", "assistant", "reply three"),
+      msg("u4", "user", "topic four"),
+      msg("a4", "assistant", "reply four"),
+    ];
+    const result = invokeBefore(makeEvent(entries, "   ", { reason: "manual", willRetry: false }));
+    expect(result?.compaction).toBeDefined();
   });
 });
