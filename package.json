@@ -1,6 +1,6 @@
 {
   "name": "omp-vcc",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "type": "module",
   "description": "Algorithmic VCC compaction for omp - fast lossless no-LLM",
   "author": "Zhu Lin <zhulin@czl.my>",
@@ -67,7 +67,10 @@
       },
       "compactionSummaryMode": {
         "type": "enum",
-        "values": ["rewrite", "append"],
+        "values": [
+          "rewrite",
+          "append"
+        ],
         "default": "append",
         "description": "Use append-only compaction segments with a complete host fallback summary"
       },
@@ -140,7 +143,10 @@
       },
       "compactionSummaryMode": {
         "type": "enum",
-        "values": ["rewrite", "append"],
+        "values": [
+          "rewrite",
+          "append"
+        ],
         "default": "append",
         "description": "Use append-only compaction segments with a complete host fallback summary"
       },
