@@ -99,15 +99,22 @@ function formatToolCallContent(
   const MAX_FULL_BYTES = 50 * 1024;
 
   if (full) {
-    // Full content: capped at 50KB
-    if (Buffer.byteLength(body, "utf8") > MAX_FULL_BYTES) {
-      const truncated = body.slice(0, MAX_FULL_BYTES);
+    // Full content is capped at 50 KiB of UTF-8 without splitting a code point.
+    const totalBytes = Buffer.byteLength(body, "utf8");
+    if (totalBytes > MAX_FULL_BYTES) {
+      const bytes = Buffer.from(body, "utf8");
+      let end = MAX_FULL_BYTES;
+      if (end < bytes.length && (bytes[end] & 0xc0) === 0x80) {
+        while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+      }
+      const truncated = bytes.subarray(0, end).toString("utf8");
+      const omittedBytes = bytes.length - end;
       return `File: ${tc.path}
 Tool: ${tc.name}
 
 ${truncated}
 
-... (${Buffer.byteLength(body, "utf8") - MAX_FULL_BYTES} more bytes — file exceeds 50KB display limit. Use #${entryIndex}:${tc.path}:${previewLimit} for next page.)`;
+... (${omittedBytes} more bytes — file exceeds 50KB display limit. Use #${entryIndex}:${tc.path}:${previewLimit} for next page.)`;
     }
     return `File: ${tc.path}
 Tool: ${tc.name}

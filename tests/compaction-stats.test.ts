@@ -391,7 +391,7 @@ describe("hook integration savings + details", () => {
       signal: new AbortController().signal,
     };
     const res = await pi["session_before_compact"](ev, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
-    expect(res.compaction.details.version).toBe(2);
+    expect(res.compaction.details.version).toBe(3);
     expect(res.compaction.details.compactor).toBe("omp-vcc");
     expect(res.compaction.details.savings).toBeDefined();
     expect(res.compaction.details.savings.tokensBefore).toBe(90000);

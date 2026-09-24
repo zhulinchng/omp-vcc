@@ -2,7 +2,30 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
+import { createRequire } from "node:module";
 
+type PluginSettingsLoader = (pluginName: string, cwd: string) => Promise<Record<string, unknown>>;
+let pluginSettingsLoader: PluginSettingsLoader | null | undefined;
+const resolvePluginSettingsLoader = (): PluginSettingsLoader | null => {
+  if (pluginSettingsLoader !== undefined) return pluginSettingsLoader;
+  try {
+    const req = createRequire(import.meta.url);
+    for (const id of [
+      "@oh-my-pi/pi-coding-agent/extensibility/plugins",
+      "@earendil-works/pi-coding-agent/extensibility/plugins",
+    ]) {
+      try {
+        const mod = req(id) as { getPluginSettings?: PluginSettingsLoader };
+        if (typeof mod.getPluginSettings === "function") {
+          pluginSettingsLoader = mod.getPluginSettings;
+          return pluginSettingsLoader;
+        }
+      } catch {}
+    }
+  } catch {}
+  pluginSettingsLoader = null;
+  return pluginSettingsLoader;
+};
 // omp-vcc: XDG-aware config path, mirrored from pi-vcc but under ~/.omp
 // Priorities: $OMP_VCC_CONFIG_PATH > $PI_VCC_CONFIG_PATH (legacy) > ~/.omp/omp-vcc/config.json
 // Also respects $PI_CODING_AGENT_DIR / $OMP_DIR if set (oh-my-pi base dir)
@@ -22,8 +45,8 @@ const fallbackReadPath = (): string | null => {
   const candidates: string[] = [];
   if (process.env.OMP_VCC_CONFIG_PATH) candidates.push(process.env.OMP_VCC_CONFIG_PATH);
   if (process.env.PI_VCC_CONFIG_PATH) candidates.push(process.env.PI_VCC_CONFIG_PATH);
-  candidates.push(SETTINGS_PATH_DEFAULT);
   if (!candidates.includes(legacyPiPath)) candidates.push(legacyPiPath);
+  if (!candidates.includes(SETTINGS_PATH_DEFAULT)) candidates.push(SETTINGS_PATH_DEFAULT);
   for (const p of candidates) if (existsSync(p)) return p;
   // No candidate exists — return primary for creation path (used by scaffold)
   return null;
@@ -72,6 +95,18 @@ export interface PiVccSettings {
    * CompactionEntry).
    */
   chainShakeHint: boolean;
+  /** Use append-only segments with a mutable trailing summary. */
+  compactionSummaryMode: "rewrite" | "append";
+  /** Maximum provider-visible retained tool-output tokens; 0 disables projection. */
+  retainedToolOutputMaxTokens: number;
+  /** Emit a display-only notification for text dropped during compaction. */
+  showPreCompactionMessage: boolean;
+  /** Maximum model-facing recall response characters; 0 disables the cap. */
+  recallResponseMaxChars: number;
+  /** Query oh-my-pi's public native memory backend during compaction. */
+  nativeMemory: boolean;
+  /** Write bounded rotating JSONL metrics under the omp config directory. */
+  debugLog: boolean;
 }
 
 export const DEFAULT_SETTINGS: PiVccSettings = {
@@ -81,49 +116,204 @@ export const DEFAULT_SETTINGS: PiVccSettings = {
   continueAfterThresholdCompact: true,
   debug: false,
   chainShakeHint: false,
+  compactionSummaryMode: "append",
+  retainedToolOutputMaxTokens: 20_000,
+  showPreCompactionMessage: true,
+  recallResponseMaxChars: 48_000,
+  nativeMemory: true,
+  debugLog: false,
 };
 
-const readJson = (path: string): Record<string, unknown> | null => {
+export type JsonReadStatus =
+  | { kind: "missing" }
+  | { kind: "valid"; value: Record<string, unknown> }
+  | { kind: "invalid" };
+
+export const readJsonStatus = (path: string): JsonReadStatus => {
+  let raw: string;
   try {
-    return JSON.parse(readFileSync(path, "utf-8"));
-  } catch {
-    return null;
+    raw = readFileSync(path, "utf-8");
+  } catch (err) {
+    if ((err as { code?: string })?.code === "ENOENT") return { kind: "missing" };
+    return { kind: "invalid" };
   }
+  try {
+    const value = JSON.parse(raw);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { kind: "invalid" };
+    return { kind: "valid", value: value as Record<string, unknown> };
+  } catch {
+    return { kind: "invalid" };
+  }
+};
+
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+
+const warnedConfigPaths = new WeakMap<object, Set<string>>();
+const warnedConfigPathsWithoutContext = new Set<string>();
+const warnInvalidConfig = (ctx: unknown, path: string): void => {
+  const root = asRecord(ctx);
+  const owner = asRecord(root?.sessionManager) ?? (ctx && (typeof ctx === "object" || typeof ctx === "function") ? ctx as object : null);
+  const seen = owner ? warnedConfigPaths.get(owner) ?? new Set<string>() : warnedConfigPathsWithoutContext;
+  if (owner && !warnedConfigPaths.has(owner)) warnedConfigPaths.set(owner, seen);
+  if (seen.has(path)) return;
+  seen.add(path);
+  try {
+    const ui = asRecord(root?.ui);
+    if (typeof ui?.notify === "function") ui.notify.call(ui, `omp-vcc: config file ${path} is invalid; using defaults`, "warning");
+  } catch {}
+};
+
+const BOOLEAN_SETTING_KEYS: Array<keyof PiVccSettings> = [
+  "vccEnabled", "overrideDefaultCompaction", "smartKeepTail", "continueAfterThresholdCompact",
+  "debug", "chainShakeHint", "showPreCompactionMessage", "nativeMemory", "debugLog",
+];
+const isValidSettingValue = (key: keyof PiVccSettings, value: unknown): boolean => {
+  if (BOOLEAN_SETTING_KEYS.includes(key)) return typeof value === "boolean";
+  if (key === "compactionSummaryMode") return value === "rewrite" || value === "append";
+  if (key === "retainedToolOutputMaxTokens") return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 200_000;
+  if (key === "recallResponseMaxChars") return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 2_000_000;
+  return true;
+};
+
+const normalizeSettings = (value: Record<string, unknown> | undefined): PiVccSettings => {
+  const merged: PiVccSettings = { ...DEFAULT_SETTINGS, ...(value ?? {}) };
+  for (const key of BOOLEAN_SETTING_KEYS) {
+    if (typeof merged[key] !== "boolean") merged[key] = DEFAULT_SETTINGS[key];
+  }
+  if (merged.compactionSummaryMode !== "rewrite" && merged.compactionSummaryMode !== "append") {
+    merged.compactionSummaryMode = DEFAULT_SETTINGS.compactionSummaryMode;
+  }
+  const retained = merged.retainedToolOutputMaxTokens;
+  if (typeof retained !== "number" || !Number.isFinite(retained) || retained < 0 || retained > 200_000) {
+    merged.retainedToolOutputMaxTokens = DEFAULT_SETTINGS.retainedToolOutputMaxTokens;
+  }
+  const recall = merged.recallResponseMaxChars;
+  if (typeof recall !== "number" || !Number.isFinite(recall) || recall < 0 || recall > 2_000_000) {
+    merged.recallResponseMaxChars = DEFAULT_SETTINGS.recallResponseMaxChars;
+  }
+  return merged;
+};
+
+const tryGetSetting = (ctx: unknown, key: string): unknown => {
+  try {
+    const root = asRecord(ctx);
+    if (!root) return undefined;
+    for (const containerKey of ["settings", "config"] as const) {
+      const container = asRecord(root[containerKey]);
+      if (!container) continue;
+      const getter = container.get;
+      if (typeof getter === "function") return getter.call(container, key);
+      if (key in container) return container[key];
+    }
+  } catch {}
+  return undefined;
+};
+
+const contextOverlay = (ctx: unknown): Partial<PiVccSettings> => {
+  const overlay: Partial<PiVccSettings> = {};
+  for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
+    const value = tryGetSetting(ctx, `plugins.@zhulinchng/omp-vcc.${key}`)
+      ?? tryGetSetting(ctx, `plugins.omp-vcc.${key}`)
+      ?? tryGetSetting(ctx, `omp-vcc.${key}`)
+      ?? tryGetSetting(ctx, key);
+    if (value !== undefined) Object.assign(overlay, { [key]: value });
+  }
+  return overlay;
+};
+
+
+const readFileSettings = (ctx?: unknown): { values: PiVccSettings; parsed: Record<string, unknown> | null; readPath: string | null; filePresent: boolean; fileValid: boolean } => {
+  const primary = settingsPath();
+  const primaryStatus = readJsonStatus(primary);
+  let parsed: Record<string, unknown> | null = null;
+  let readPath: string | null = null;
+  let filePresent = primaryStatus.kind !== "missing";
+  let fileValid = false;
+  if (primaryStatus.kind === "valid") {
+    parsed = primaryStatus.value;
+    readPath = primary;
+    fileValid = true;
+  } else if (primaryStatus.kind === "invalid") {
+    readPath = primary;
+    warnInvalidConfig(ctx, primary);
+  } else {
+    const fb = fallbackReadPath();
+    if (fb && fb !== primary) {
+      const fallbackStatus = readJsonStatus(fb);
+      filePresent = true;
+      if (fallbackStatus.kind === "valid") {
+        parsed = fallbackStatus.value;
+        readPath = fb;
+        fileValid = true;
+      } else if (fallbackStatus.kind === "invalid") {
+        readPath = fb;
+        warnInvalidConfig(ctx, fb);
+      }
+    }
+  }
+  return { values: normalizeSettings(parsed ?? undefined), parsed, readPath, filePresent, fileValid };
 };
 
 export function loadSettings(ctx?: unknown): PiVccSettings {
-  // File is source of truth, but if the host provides plugin-scoped settings
-  // via ctx.settings (omp manifest `omp.settings` / `pi.settings` UI surface),
-  // merge them on top of file so /settings toggles take effect without restart.
-  // Host shapes vary: ctx.settings.get(key), ctx.config.get(key), or plain map.
-  const tryGet = (key: string): unknown => {
-    try {
-      const c = ctx as any;
-      if (!c) return undefined;
-      if (c.settings?.get) return c.settings.get(key);
-      if (c.config?.get) return c.config.get(key);
-      if (c.settings && typeof c.settings === "object" && key in c.settings) return c.settings[key];
-      if (c.config && typeof c.config === "object" && key in c.config) return c.config[key];
-    } catch {}
-    return undefined;
-  };
-  const file = (() => {
-    const primary = settingsPath();
-    const parsed = readJson(primary) ?? (() => {
-      const fb = fallbackReadPath();
-      return fb && fb !== primary ? readJson(fb) : null;
-    })();
-    if (!parsed || typeof parsed !== "object") return { ...DEFAULT_SETTINGS };
-    return { ...DEFAULT_SETTINGS, ...(parsed as Partial<PiVccSettings>) };
-  })();
+  const file = readFileSettings(ctx).values;
   if (!ctx) return file;
-  // Overlay plugin-scoped keys if host exposes them (e.g. plugins["@zhulinchng/omp-vcc"].vccEnabled)
-  const overlay: Partial<PiVccSettings> = {};
-  for (const k of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
-    const v = tryGet(`plugins.@zhulinchng/omp-vcc.${k}`) ?? tryGet(`plugins.omp-vcc.${k}`) ?? tryGet(`omp-vcc.${k}`) ?? tryGet(k);
-    if (v !== undefined) (overlay as any)[k] = v;
+  const overlay = contextOverlay(ctx);
+  return Object.keys(overlay).length ? normalizeSettings({ ...file, ...overlay }) : file;
+}
+
+const pluginSettingsCwd = (ctx: unknown): string | undefined => {
+  const cwd = asRecord(ctx)?.cwd;
+  return typeof cwd === "string" && cwd.length > 0 ? cwd : undefined;
+};
+
+/** Load file settings plus the host's public plugin-settings overlay. */
+export function loadSettingsWithPluginOverlay(ctx: unknown): PiVccSettings | Promise<PiVccSettings> {
+  const base = loadSettings(ctx);
+  const loader = resolvePluginSettingsLoader();
+  const cwd = pluginSettingsCwd(ctx);
+  if (!loader || !cwd) return base;
+  return Promise.resolve(loader("omp-vcc", cwd))
+    .then((overlay) => normalizeSettings({ ...base, ...overlay }))
+    .catch(() => base);
+}
+
+export function loadSettingsWithSources(ctx?: unknown): VccConfigView {
+  const path = settingsPath();
+  const file = readFileSettings(ctx);
+  const values = file.values;
+  const sources = {} as Record<keyof PiVccSettings, VccSettingSource>;
+  for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
+    sources[key] = file.fileValid && file.parsed && key in file.parsed && isValidSettingValue(key, file.parsed[key])
+      ? "file"
+      : "default";
   }
-  return Object.keys(overlay).length ? { ...file, ...overlay } : file;
+  if (ctx) {
+    const overlay = contextOverlay(ctx);
+    const merged = normalizeSettings({ ...values, ...overlay });
+    for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
+      values[key] = merged[key];
+      if (overlay[key] !== undefined) sources[key] = isValidSettingValue(key, overlay[key]) ? "overlay" : "default";
+    }
+  }
+  return { path, readPath: file.readPath, filePresent: file.filePresent, fileValid: file.fileValid, values, sources };
+}
+
+export function loadSettingsWithSourcesAsync(ctx: unknown): VccConfigView | Promise<VccConfigView> {
+  const view = loadSettingsWithSources(ctx);
+  const loader = resolvePluginSettingsLoader();
+  const cwd = pluginSettingsCwd(ctx);
+  if (!loader || !cwd) return view;
+  return Promise.resolve(loader("omp-vcc", cwd))
+    .then((overlay) => {
+      const merged = normalizeSettings({ ...view.values, ...overlay });
+      for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
+        view.values[key] = merged[key];
+        if (overlay[key] !== undefined) view.sources[key] = isValidSettingValue(key, overlay[key]) ? "overlay" : "default";
+      }
+      return view;
+    })
+    .catch(() => view);
 }
 
 /**
@@ -139,22 +329,26 @@ export function scaffoldSettings(): void {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
     if (!existsSync(path)) {
-      // migrate legacy pi-vcc config if present before creating fresh
-      const legacy = existsSync(legacyPiPath) ? readJson(legacyPiPath) : null;
-      if (legacy && typeof legacy === "object") {
-        const migrated = { ...DEFAULT_SETTINGS, ...(legacy as Partial<PiVccSettings>) };
-        writeFileSync(path, `${JSON.stringify(migrated, null, 2)}\n`);
-        return;
+      const fallback = fallbackReadPath();
+      if (fallback && fallback !== path) {
+        const status = readJsonStatus(fallback);
+        if (status.kind === "valid") {
+          writeFileSync(path, `${JSON.stringify(normalizeSettings(status.value), null, 2)}\n`);
+        } else if (status.kind === "invalid") {
+          return;
+        } else {
+          writeFileSync(path, `${JSON.stringify(DEFAULT_SETTINGS, null, 2)}\n`);
+        }
+      } else {
+        writeFileSync(path, `${JSON.stringify(DEFAULT_SETTINGS, null, 2)}\n`);
       }
-      writeFileSync(path, `${JSON.stringify(DEFAULT_SETTINGS, null, 2)}\n`);
       return;
     }
 
-    const parsed = readJson(path);
-    if (!parsed || typeof parsed !== "object") return; // don't clobber
-
+    const status = readJsonStatus(path);
+    if (status.kind !== "valid") return;
     let changed = false;
-    const next: Record<string, unknown> = { ...parsed };
+    const next: Record<string, unknown> = { ...status.value };
     for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
       if (!(key in next)) {
         next[key] = value;
@@ -188,58 +382,4 @@ export interface VccConfigView {
   /** Per-key provenance. Presence check is `key in parsed`, so a file key that
    * happens to equal the default still counts as `file`. */
   sources: Record<keyof PiVccSettings, VccSettingSource>;
-}
-
-/**
- * `loadSettings` plus provenance for `/vcc-config`. Read-only: never creates or
- * repairs files (`scaffoldSettings` owns that). Merge order mirrors `loadSettings`
- * exactly — defaults, then the first readable candidate (primary, else the same
- * `fallbackReadPath()` order), then the identical ctx overlay chain.
- */
-export function loadSettingsWithSources(ctx?: unknown): VccConfigView {
-  const path = settingsPath();
-  const primaryParsed = readJson(path);
-  let parsed: Record<string, unknown> | null = primaryParsed;
-  let readPath: string | null = primaryParsed ? path : null;
-  if (!parsed) {
-    const fb = fallbackReadPath();
-    if (fb && fb !== path) {
-      const fbParsed = readJson(fb);
-      if (fbParsed) {
-        parsed = fbParsed;
-        readPath = fb;
-      }
-    }
-  }
-  const candidateExists = fallbackReadPath() !== null;
-  const valid = !!parsed && typeof parsed === "object";
-  const values: PiVccSettings =
-    valid && parsed
-      ? { ...DEFAULT_SETTINGS, ...(parsed as Partial<PiVccSettings>) }
-      : { ...DEFAULT_SETTINGS };
-  const sources = {} as Record<keyof PiVccSettings, VccSettingSource>;
-  for (const k of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
-    sources[k] = valid && parsed && k in parsed ? "file" : "default";
-  }
-  if (ctx) {
-    const tryGet = (key: string): unknown => {
-      try {
-        const c = ctx as any;
-        if (!c) return undefined;
-        if (c.settings?.get) return c.settings.get(key);
-        if (c.config?.get) return c.config.get(key);
-        if (c.settings && typeof c.settings === "object" && key in c.settings) return c.settings[key];
-        if (c.config && typeof c.config === "object" && key in c.config) return c.config[key];
-      } catch {}
-      return undefined;
-    };
-    for (const k of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
-      const v = tryGet(`plugins.@zhulinchng/omp-vcc.${k}`) ?? tryGet(`plugins.omp-vcc.${k}`) ?? tryGet(`omp-vcc.${k}`) ?? tryGet(k);
-      if (v !== undefined) {
-        (values as any)[k] = v;
-        sources[k] = "overlay";
-      }
-    }
-  }
-  return { path, readPath, filePresent: candidateExists, fileValid: valid, values, sources };
 }

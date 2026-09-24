@@ -186,7 +186,7 @@ describe("resolveSmartKeepUserTurns", () => {
     expect(r.fromKeep).toBe(1);
   });
 
-  test("uses calibrated chars/token ratio when estimating tail size", () => {
+  test("uses script-aware estimates instead of calibrated chars/token for tail size", () => {
     const entries = [
       msg("u1", "user", tokenContent(3)),
       msg("a1", "assistant", tokenContent(3)),
@@ -205,9 +205,9 @@ describe("resolveSmartKeepUserTurns", () => {
       charsPerToken: 2,
     });
 
-    // With default 4 chars/token: keep:1 is 6 tokens and keep:2 is 12, so it would boost.
-    // Calibrated 2 chars/token makes keep:1 already 12 tokens (> minTokens=10), so it stays at 1.
-    expect(r.keepUserTurns).toBe(1);
-    expect(r.smartAdjusted).toBe(false);
+    // Script-aware Latin content remains four characters per token even when
+    // the host calibration ratio is two, so keep:2 stays within the 20-token cap.
+    expect(r.keepUserTurns).toBe(2);
+    expect(r.smartAdjusted).toBe(true);
   });
 });

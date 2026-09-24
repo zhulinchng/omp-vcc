@@ -139,6 +139,61 @@ export const estimateMessageContentTokens = (
   charsPerToken = DEFAULT_CHARS_PER_TOKEN,
 ): number => estimateTokensFromChars(estimateMessageContentChars(content), charsPerToken);
 
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+
+const isCjkCodePoint = (codePoint: number): boolean =>
+  (codePoint >= 0x2e80 && codePoint <= 0x9fff)
+  || (codePoint >= 0xac00 && codePoint <= 0xd7ff)
+  || (codePoint >= 0x3000 && codePoint <= 0x303f);
+
+/** Script-aware estimate for non-authoritative retained-tail and recall budgets. */
+export const estimateScriptAwareTokens = (text: string): number => {
+  if (!text) return 0;
+  let cjk = 0;
+  let other = 0;
+  for (const character of text) {
+    if (isCjkCodePoint(character.codePointAt(0) ?? 0)) cjk++;
+    else other++;
+  }
+  return cjk + Math.ceil(other / 4);
+};
+
+export const estimateScriptAwareMessageContentTokens = (content: unknown): number => {
+  if (typeof content === "string") return estimateScriptAwareTokens(content);
+  if (!Array.isArray(content)) return 0;
+  let total = 0;
+  for (const rawPart of content) {
+    const part = asRecord(rawPart);
+    if (!part) continue;
+    switch (part.type) {
+      case "text":
+        total += estimateScriptAwareTokens(typeof part.text === "string" ? part.text : "");
+        break;
+      case "thinking":
+        total += estimateScriptAwareTokens(typeof part.thinking === "string" ? part.thinking : "");
+        break;
+      case "toolCall": {
+        const args = part.arguments ?? part.input;
+        const argText = typeof args === "string" ? args : safeJsonStringify(args);
+        total += estimateScriptAwareTokens(`${typeof part.name === "string" ? part.name : ""}${argText}`);
+        break;
+      }
+      case "toolResult": {
+        const value = part.content;
+        total += estimateScriptAwareTokens(typeof value === "string" ? value : safeJsonStringify(value));
+        break;
+      }
+      case "image":
+        total += IMAGE_CONTENT_CHARS / DEFAULT_CHARS_PER_TOKEN;
+        break;
+      default:
+        total += estimateScriptAwareTokens(typeof part.text === "string" ? part.text : "");
+    }
+  }
+  return Math.ceil(total);
+};
+
 export interface UsageStats {
   messageCount: number;
   byRole: Record<string, number>;

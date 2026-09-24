@@ -154,21 +154,26 @@ Manual compaction never needs `overrideDefaultCompaction:true`. Auto threshold/o
 #   vcc_recall({ query: "auth", mode: "touched" })
 ```
 
-Plain keywords rank best; `regex|pipes` work too. Pagination is `5/page`.
+Plain keywords rank best; `regex|pipes` work too. Pagination is `5/page`. `mode:file` searches only file tool arguments, CJK terms use script-aware tokenization, and model-facing responses are bounded while slash-command output remains human-readable.
 
 ## Configuration in 30 seconds
 
-You have two surfaces — file (source of truth) and manifest `/settings` (UI overlay). File wins on restart, manifest via `ctx.settings` overlays at runtime.
+You have two surfaces — file (durable source of truth) and manifest `/settings` (host plugin-settings overlay). The current host bridge reads the public `getPluginSettings("omp-vcc", ctx.cwd)` API; older `ctx.settings`/`ctx.config` bridges remain supported. File changes apply on the next compaction; `/settings` changes apply immediately.
 
 ```sh
 # file (XDG)
 cat ~/.omp/omp-vcc/config.json
-# {
 #   "vccEnabled": true,
 #   "overrideDefaultCompaction": true,
 #   "smartKeepTail": true,
 #   "continueAfterThresholdCompact": true,
-#   "debug": false
+#   "debug": false,
+#   "compactionSummaryMode": "append",
+#   "retainedToolOutputMaxTokens": 20000,
+#   "showPreCompactionMessage": true,
+#   "recallResponseMaxChars": 48000,
+#   "nativeMemory": true,
+#   "debugLog": false
 # }
 
 # toggle without editing file (takes effect next compaction)
@@ -186,8 +191,12 @@ omp config list | grep vcc
 | `smartKeepTail` | `true` | `false` to always `keep:1` even when tail < 5 k tokens |
 | `continueAfterThresholdCompact` | `true` | `false` to stop after auto-compaction instead of invisible-continue |
 | `debug` | `false` | `true` to dump `/tmp/omp-vcc-debug.json` per compaction |
-
-Resolution order for the file path: `$OMP_VCC_CONFIG_PATH` > `$PI_VCC_CONFIG_PATH` > `$OMP_DIR`/`$PI_CODING_AGENT_DIR` > `~/.omp/omp-vcc/config.json`. Legacy `~/.pi/agent/pi-vcc-config.json` is migrated once.
+| `compactionSummaryMode` | `append` | `rewrite` for legacy complete-summary replacement; invalid append chains already fail closed |
+| `retainedToolOutputMaxTokens` | `20000` | `0` disables provider-visible tool-output omission |
+| `showPreCompactionMessage` | `true` | `false` to suppress display-only dropped assistant output |
+| `recallResponseMaxChars` | `48000` | `0` makes model recall responses unbounded |
+| `nativeMemory` | `true` | `false` to skip the public host-memory query |
+| `debugLog` | `false` | `true` for bounded rotating redacted JSONL metrics |
 
 See [`configuration.md`](configuration.md) for full flag semantics and the optional one-file core patch for a native `/settings` → Context → Compaction dropdown.
 
@@ -316,7 +325,7 @@ flowchart LR
 
 ### Optional native dropdown (`vcc` in methodOrder)
 
-Without a patch `/settings` shows `omp-vcc` as a separate **plugin section** `@zhulinchng/omp-vcc` (5 toggles) and `override` drives interception — no core edit needed. If you want `VCC` as a first-class entry in `/settings → Context → General → Compaction method order`, apply the one-file patch from `configuration.md:243` (`packages/coding-agent/src/session/compaction-methods.ts:11` add `{value:"vcc",...}` + `STRATEGY_BY["vcc"]="context-full"` + `DEFAULT` put `vcc` first, `isCompactionMethod = Object.hasOwn` at `60`). Then set `methodOrder = ["vcc","remote","snapcompact","handoff","shake","soft"]` and `override:false` so the walk treats `vcc` as the preferred `context-full` candidate whose impl is still the extension hook. See [`configuration.md#optional-native-strategy-patch`](configuration.md#optional-native-strategy-patch) for the full diff.
+Without a patch `/settings` shows `omp-vcc` as a separate **plugin section** `@zhulinchng/omp-vcc` (12 settings) and `override` drives interception — no core edit needed. If you want `VCC` as a first-class entry in `/settings → Context → General → Compaction method order`, apply the one-file patch from `configuration.md:243` (`packages/coding-agent/src/session/compaction-methods.ts:11` add `{value:"vcc",...}` + `STRATEGY_BY["vcc"]="context-full"` + `DEFAULT` put `vcc` first, `isCompactionMethod = Object.hasOwn` at `60`). Then set `methodOrder = ["vcc","remote","snapcompact","handoff","shake","soft"]` and `override:false` so the walk treats `vcc` as the preferred `context-full` candidate whose impl is still the extension hook. See [`configuration.md#optional-native-dropdown`](configuration.md#optional-native-dropdown).
 
 ```sh
 # verify where auto will go without switching TUI
@@ -374,7 +383,7 @@ Re-install: `omp plugin link .` (dev) or `omp plugin install omp-vcc` / `omp plu
 | `/omp-vcc` says `unknown command` | Extension not loaded | `omp -e @zhulinchng/omp-vcc` or check `extensions: ["./extensions/main.ts"]` in `package.json` |
 | Auto compaction still calls LLM | `overrideDefaultCompaction:false` | `omp config set plugins."@zhulinchng/omp-vcc".overrideDefaultCompaction true` or edit `config.json` |
 | Toast `no_live_messages` canceled | Session too small / sent `keep` too large | Use `keep:0` or add more turns |
-| Config change ignored | File not reloaded / wrong path | Check `OMP_VCC_CONFIG_PATH` env; `cat ~/.omp/omp-vcc/config.json`; restart TUI — manifest overlay needs `ctx.settings` |
+| Config change ignored | Wrong path or host settings bridge unavailable | Check `OMP_VCC_CONFIG_PATH`, `cat ~/.omp/omp-vcc/config.json`, and `omp plugin list`; current host overlay is read through the public plugin-settings bridge |
 | `/tmp/omp-vcc-debug.json` missing | `debug:false` | `omp config set plugins."@zhulinchng/omp-vcc".debug true` then compact again |
 | `bun test` fails with import errors | Ran with `node` | Use `bun test` and `bun run smoke` (`allowImportingTsExtensions`) |
 | `types` errors | Vendored core is `// @ts-nocheck` | `bunx tsc --noEmit` should be 0; check `types.d.ts` shim |

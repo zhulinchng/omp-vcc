@@ -6,11 +6,11 @@ Comprehensive reference for the `omp-vcc` test corpus: unit, integration, sessio
 
 ```sh
 bunx tsc --noEmit          # typecheck — 0 errors, vendored core // @ts-nocheck, skipLibCheck
-bun test                   # 925 tests, 68 files, 3013 expects, 0 fail  (~12s)
-bun test tests/e2e --timeout 120000   # 124 E2E only
-bun test tests/before-compact.test.ts # single suite
-bun run smoke              # 16 checks: 3 hooks + 6 commands (omp-vcc/pi-vcc/vcc-recall/pi-vcc-recall/vcc-stats/vcc-config, no alias) + 2 tools + dedup + schema
-bun run e2e                # isolated OMP_DIR, omp plugin link, probe, then 124 E2E + artifacts/e2e-debug/
+bun test                   # 967 tests, 72 files, 3163 expects, 0 fail  (~11s)
+bun test tests/e2e --timeout 120000   # E2E suite
+bun test tests/audit-regressions.test.ts # adversarial host/recall regressions
+bun run smoke              # extension + pipeline smoke checks
+bun run e2e                # isolated OMP_DIR, plugin link, probe, E2E + artifacts/e2e-debug/
 bun run e2e:direct         # alias for bun test tests/e2e
 ```
 
@@ -145,6 +145,8 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 | `extract-migrate-gaps.test.ts` | `extract/commits.ts` quoting/hash-pairing/skips/dedup/window + `formatCommits`; `migrate-stale.ts` tmp-HOME fixtures (no-lock, historic removal, deps guard, dup keeper, orphans, scope-dir cleanup); `skill-collapse.ts` dup/unclosed/stray forms; `extractPreferences` caps/rejections + goal dedup |
 | `dispatch-gaps.test.ts` | `extensions/main.ts` factory dispatch: `vcc_recall` execute (entry-ref/drill-down lineage guards + bypass, touched, expand valid/invalid, page range, scope:all, recent) + `/omp-vcc`/`/pi-vcc`/`/vcc-recall`/`/pi-vcc-recall` handlers |
 | `core-residual-gaps.test.ts` | residual branches: `content.ts` clip/surrogate/snippet, `summarize.ts` rejoin/parseHead, `search-entries.ts` quantifier/budget, `settings.ts` legacy migration, `tool-args.ts`, `brief.ts`, `format-recall.ts`, `hook.ts` preview/diagnostic/chain-shake, factory recall tool schema + lineage guard + scope:all recent, factory `/pi-vcc-recall` recent paths |
+| `parity-features.test.ts` | streamed loader/global IDs, bounded model recall, file/CJK search, native memory, append context projection, invalid config precedence |
+| `compaction-chain.test.ts` / `tool-output-budget.test.ts` | v3 chain validation/projection and consumed-vs-pending tool-output omission with image/raw-session invariants |
 | `thinking.test.ts` (7) | thinking end-to-end: normalize keeps `thinking` blocks, brief elides, `renderMessage` `[thinking]` role, recall finds thinking-only terms |
 | `entry-ref.test.ts` (10) | `drill-down.ts` `parseEntryRef`/`expandEntry` bare `#N`/`#N:full`/`#N:offset[:limit]`, `Lines X-Y (of Z)` windows, recall-tool `#N` dispatch, `formatRecallOutput` hint footer |
 | `sanitize.test.ts` | already listed |
@@ -230,9 +232,9 @@ Support:
 | `DEFAULT_SETTINGS` 5 booleans | `vccEnabled true`, `override true`, `smartKeep true`, `continue true`, `debug false` |
 | `scaffoldSettings` no-clobber | absent → creates with defaults, second call with `debug true` preserved |
 | XDG priority | `OMP_VCC_CONFIG_PATH` custom wins, then `PI_VCC_CONFIG_PATH` fallback, still respects `OMP` > `PI` |
-| `loadSettings(ctx)` overlay | file `debug false` + `ctx.settings.get("plugins.@zhulinchng/omp-vcc.debug") true` → `true`; `plugins.omp-vcc.debug` variation; no overlay → `false` |
+| `loadSettings(ctx)` overlay | file settings plus legacy `ctx.settings`/`ctx.config` bridge; current host also reads public plugin settings | `true`/`false` propagation and provenance covered |
 | `debug` toggle dual write | `debug false` → no `/tmp/omp-vcc-debug.json`, `true` → both `omp-vcc` + `pi-vcc` exist `usedOwnCut true` |
-| `package.json` manifest | `omp.extensions ["./extensions/main.ts"]`, `pi.extensions`, no `commands` (extension-only, avoids duplicate `/omp-vcc`), `omp.settings` 6 keys, `files ["extensions","skills","scripts","types.d.ts"]` |
+| `package.json` manifest | `omp.extensions ["./extensions/main.ts"]`, `pi.extensions`, no `commands` (extension-only, avoids duplicate `/omp-vcc`), twelve settings in both manifests, enum schemas use `values` |
 | per-flag semantics | file `vccEnabled true override false smartKeep false continue false debug false` propagates |
 
 ### `recall.e2e.test.ts` (13)

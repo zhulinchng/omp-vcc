@@ -1,26 +1,33 @@
 // @ts-nocheck
 export type RecallScope = "lineage" | "all";
-export type RecallMode = "hybrid" | "touched";
+export type RecallMode = "hybrid" | "touched" | "file";
 
 const SCOPE_RE = /\bscope:(lineage|all)\b/i;
 
-const VALID_MODES = new Set(["hybrid", "touched"]);
+const VALID_MODES: Record<string, true> = { hybrid: true, touched: true, file: true };
 
 export const normalizeRecallScope = (scope?: unknown): RecallScope =>
   typeof scope === "string" && scope.toLowerCase() === "all" ? "all" : "lineage";
 
 /**
- * Normalize a mode param to a supported recall mode. Without OM integration,
- * only "touched" adds behavior beyond the default hybrid search — "file"-only
- * search is not implemented in pi-vcc, so it is not exposed.
- *
- * Ported from pi-blackhole (https://github.com/k0valik/pi-blackhole, MIT) by
- * k0valik — a pi-vcc derivative.
+ * Normalize a mode param to a supported recall mode. `file` searches only
+ * content-bearing file tool-call arguments and excludes shell output.
  */
 export const normalizeRecallMode = (mode?: unknown): RecallMode =>
-  typeof mode === "string" && VALID_MODES.has(mode.toLowerCase())
+  typeof mode === "string" && VALID_MODES[mode.toLowerCase()]
     ? (mode.toLowerCase() as RecallMode)
     : "hybrid";
+
+const MODE_RE = /\bmode:(hybrid|touched|file)\b/i;
+
+/** Parse and remove a command/tool mode selector without changing query text. */
+export const parseRecallMode = (text: string): { mode?: RecallMode; text: string } => {
+  const match = text.match(MODE_RE);
+  return {
+    mode: match?.[1] ? normalizeRecallMode(match[1]) : undefined,
+    text: text.replace(MODE_RE, "").replace(/\s+/g, " ").trim(),
+  };
+};
 
 export const parseRecallScope = (text: string): { scope: RecallScope; text: string } => {
   const match = text.match(SCOPE_RE);

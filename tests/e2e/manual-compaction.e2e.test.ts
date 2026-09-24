@@ -87,7 +87,7 @@ describe("manual compaction E2E — execution and results", () => {
     expect(hasSection).toBe(true);
     expect(result.compaction.firstKeptEntryId).toBeTruthy();
     expect(result.compaction.details).toBeDefined();
-    expect(result.compaction.details.version).toBe(2);
+    expect(result.compaction.details.version).toBe(3);
     expect(result.compaction.details.compactor).toBe("omp-vcc");
     expect(result.compaction.details.savings).toBeDefined();
     const stats = result.compaction.details.savings; // not CompactionStats but details.savings also has similar fields; check lastStats for keptUserTurns

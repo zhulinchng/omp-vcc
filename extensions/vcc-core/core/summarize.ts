@@ -12,6 +12,7 @@ export interface CompileInput {
   messages: Message[];
   previousSummary?: string;
   fileOps?: FileOps;
+  sourceIndices?: Array<number | undefined>;
 }
 
 export interface RankedCompileInput extends CompileInput {
@@ -236,11 +237,12 @@ const mergePrevious = (prev: string, fresh: string, options: { preserveFreshBrie
 interface CompileWithBriefBlocksOptions {
   briefBlocksFor?: (blocks: ReturnType<typeof normalize>) => ReturnType<typeof normalize>;
   capFreshBrief?: boolean;
+  includeRecallNote?: boolean;
   preserveFreshBriefOnMerge?: boolean;
 }
 
 const compileWithBriefBlocks = (input: CompileInput, options: CompileWithBriefBlocksOptions = {}): string => {
-  const blocks = filterNoise(normalize(input.messages));
+  const blocks = filterNoise(normalize(input.messages, input.sourceIndices));
   const briefBlocks = options.briefBlocksFor?.(blocks);
   const data = buildSections({ blocks, briefBlocks, fileOps: input.fileOps });
   const fresh = formatSummary(data, { capBriefTranscript: options.capFreshBrief ?? true });
@@ -251,7 +253,7 @@ const compileWithBriefBlocks = (input: CompileInput, options: CompileWithBriefBl
     : undefined;
   const merged = prev ? mergePrevious(prev, fresh, { preserveFreshBrief: options.preserveFreshBriefOnMerge }) : fresh;
   if (!merged) return "";
-  return wrapLongLines(merged) + SEPARATOR + RECALL_NOTE;
+  return wrapLongLines(merged) + (options.includeRecallNote === false ? "" : SEPARATOR + RECALL_NOTE);
 };
 
 export const compile = (input: CompileInput): string =>
@@ -279,3 +281,7 @@ const stripRecallNote = (text: string): string => {
   if (!match || match.index < 0) return text;
   return text.slice(0, match.index).replace(/\s*(?:\n\n---\n\n)?\s*$/, "").trimEnd();
 };
+
+/** Compile only the fresh selected window; prior summary and recall note are excluded. */
+export const compileSegment = (input: CompileInput): string =>
+  compileWithBriefBlocks({ ...input, previousSummary: undefined }, { includeRecallNote: false });

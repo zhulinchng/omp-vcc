@@ -94,14 +94,30 @@ export const formatRecallOutput = (
 
   const lines = entries.map((e) => {
     const fileSuffix = e.files?.length ? ` files:[${e.files.join(", ")}]` : "";
+    const fileDetails = e.fileMatches?.length
+      ? `\n${e.fileMatches
+          .map((m) => {
+            const header = `  ${m.path} (${m.toolName}, ${m.lineCount} lines)`;
+            if (!m.snippet) return header;
+            const snippet = m.snippet
+              .split("\n")
+              .map((line) => `    ${line}`)
+              .join("\n");
+            return `${header}\n${snippet}`;
+          })
+          .join("\n")}`
+      : "";
     const body = query && e.snippet ? e.snippet : e.summary;
-    return `#${e.index} [${e.role}]${fileSuffix} ${body}`;
+    const separator = fileDetails ? "\n" : " ";
+    return `#${e.index} [${e.role}]${fileSuffix}${fileDetails}${separator}${body}`;
   });
 
   const body = `${header}\n\n${lines.join("\n\n")}`;
   // Every hit ref resolves: #N expands the full entry (see expandEntry in
   // drill-down.ts). Surface the hint when results are capped or clipped.
-  const clipped = entries.some((e) => e.snippet?.includes("...("));
+  const clipped = entries.some(
+    (e) => e.snippet?.includes("...(") || e.fileMatches?.some((m) => m.snippet.includes("...(")),
+  );
   if (opts?.truncated || clipped) {
     return `${body}\n\n--- Use #N for full entry text ---`;
   }

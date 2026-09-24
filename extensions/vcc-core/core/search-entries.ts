@@ -3,6 +3,14 @@ import type { Message } from "@oh-my-pi/pi-ai";
 import type { RenderedEntry } from "./render-entries";
 import { textOf, thinkingOf, isContentBearing, extractToolCallText, extractToolCallArgsText, clip } from "./content";
 import { scoreToProbability, estimateLikelihoodParams } from "./bayesian-probability.ts";
+import type { RecallMode } from "./recall-scope";
+
+export interface FileMatch {
+  path: string;
+  toolName: string;
+  lineCount: number;
+  snippet: string;
+}
 
 export interface SearchHit extends RenderedEntry {
   /** Context snippet around the first matched term (only when query provided) */
@@ -11,6 +19,8 @@ export interface SearchHit extends RenderedEntry {
   matchCount?: number;
   /** Calibrated P(relevance) from the Bayesian transform (BM25 path only) */
   probability?: number;
+  /** Matching content-bearing file calls, present in file-only mode. */
+  fileMatches?: FileMatch[];
 }
 
 /**
@@ -121,9 +131,60 @@ const startBudget = (): (() => void) => {
   };
 };
 
-/** Detect if the query looks like a single regex pattern (contains regex metacharacters). */
+/** Detect an operator-bearing regex pattern. Dots are intentionally excluded:
+ * ordinary dotted filenames remain literal, while patterns containing other
+ * regex operators (or a standalone dot) still use the regex path. */
 const looksLikeRegex = (query: string): boolean =>
-  /[|*+?{}()[\]\\^$.]/.test(query);
+  /[|*+?{}()[\]\\^$]/.test(query) || query === ".";
+
+const CJK_RE = /[\u1100-\u11ff\u3040-\u30ff\u3100-\u312f\u31a0-\u31bf\u3400-\u9fff\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff\uf900-\ufaff\ufe30-\ufe4f\uff01-\uff60\uffe0-\uffe6\u{20000}-\u{2ffff}]/u;
+const segmenter = typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
+  ? new Intl.Segmenter(undefined, { granularity: "word" })
+  : null;
+
+const fallbackCjkSegments = (word: string): string[] => {
+  const segments: string[] = [];
+  let current = "";
+  for (const char of word) {
+    if (CJK_RE.test(char)) {
+      if (current) segments.push(current);
+      current = char;
+    } else current += char;
+  }
+  if (current) segments.push(current);
+  return segments;
+};
+
+const queryTerms = (query: string): string[] => {
+  const words = query.trim().split(/\s+/).filter(Boolean);
+  const terms: string[] = [];
+  for (const word of words) {
+    if (CJK_RE.test(word) && !looksLikeRegex(word)) {
+      if (segmenter) {
+        for (const part of segmenter.segment(word)) {
+          if (part.isWordLike) terms.push(part.segment);
+        }
+      } else terms.push(...fallbackCjkSegments(word));
+    } else terms.push(word);
+  }
+  return terms;
+};
+
+const scriptWordCount = (text: string): number => {
+  if (segmenter) {
+    let count = 0;
+    for (const part of segmenter.segment(text)) if (part.isWordLike) count++;
+    return count;
+  }
+  let count = 0;
+  for (const token of text.split(/\s+/)) {
+    if (!token) continue;
+    let cjk = 0;
+    for (const char of token) if (CJK_RE.test(char)) cjk++;
+    count += Math.max(1, cjk || token.length);
+  }
+  return count;
+};
 
 /** Build a regex for snippet highlighting — matches first available term. */
 const snippetRegex = (sources: string[]): RegExp =>
@@ -144,9 +205,8 @@ const STOPWORDS = new Set([
   "this", "what", "which", "who", "whom", "these", "those",
 ]);
 
-/** Remove stopwords, keep meaningful terms. */
 const filterStopwords = (terms: string[]): string[] => {
-  const meaningful = terms.filter((t) => !STOPWORDS.has(t.toLowerCase()) && t.length > 1);
+  const meaningful = terms.filter((t) => !STOPWORDS.has(t.toLowerCase()) && (t.length > 1 || CJK_RE.test(t)));
   // If all terms were stopwords, return original (don't lose everything)
   return meaningful.length > 0 ? meaningful : terms;
 };
@@ -162,7 +222,7 @@ interface CompiledTerm {
 
 const compileTerms = (terms: string[]): CompiledTerm[] =>
   terms.map((t) => {
-    const re = safeRegex(t);
+    const re = looksLikeRegex(t) ? safeRegex(t) : new RegExp(escapeRegex(t), "i");
     return { term: t, re, freqRe: new RegExp(re.source, "gi") };
   });
 
@@ -212,9 +272,6 @@ const buildBM25Context = (docs: string[], compiled: CompiledTerm[], wordLens: nu
   return { n, avgDl: totalLen / Math.max(n, 1), df };
 };
 
-/** BM25 score for a single doc against query terms, plus the calibration
- *  inputs the Bayesian posterior needs. `dl` is the doc's word count,
- *  measured once by the caller alongside `wordLens` — no re-splitting. */
 const bm25Score = (doc: string, compiled: CompiledTerm[], ctx: BM25Context, dl: number): { score: number; tf: number; distinctTerms: number; docLenRatio: number } => {
   let score = 0;
   let totalTf = 0;
@@ -227,7 +284,6 @@ const bm25Score = (doc: string, compiled: CompiledTerm[], ctx: BM25Context, dl: 
     seenTerms.add(c.term.toLowerCase());
 
     const docFreq = ctx.df.get(c.term) ?? 0;
-    // IDF: log((N - df + 0.5) / (df + 0.5) + 1)
     const idf = Math.log((ctx.n - docFreq + 0.5) / (docFreq + 0.5) + 1);
     const tfNorm = (termTf * (BM25_K + 1)) / (termTf + BM25_K * (1 - BM25_B + BM25_B * dl / ctx.avgDl));
     score += idf * tfNorm;
@@ -240,9 +296,12 @@ const bm25Score = (doc: string, compiled: CompiledTerm[], ctx: BM25Context, dl: 
 const lineSnippet = (text: string, regex: RegExp, contextLines = 2): string | undefined => {
   const lines = text.split("\n");
   let matchIdx = -1;
+  let matchedLine: { index: number; length: number } | undefined;
   for (let i = 0; i < lines.length; i++) {
-    if (regex.test(lines[i])) {
+    const match = lines[i].match(regex);
+    if (match?.index !== undefined) {
       matchIdx = i;
+      matchedLine = { index: match.index, length: match[0].length };
       break;
     }
   }
@@ -250,14 +309,119 @@ const lineSnippet = (text: string, regex: RegExp, contextLines = 2): string | un
 
   const start = Math.max(0, matchIdx - contextLines);
   const end = Math.min(lines.length, matchIdx + contextLines + 1);
-  const slice = lines.slice(start, end);
-
   const parts: string[] = [];
   if (start > 0) parts.push(`...(${start} lines above)`);
-  parts.push(...slice);
+  for (let i = start; i < end; i++) {
+    parts.push(clipLineAroundMatch(lines[i], i === matchIdx ? matchedLine : undefined));
+  }
   if (end < lines.length) parts.push(`...(${lines.length - end} lines below)`);
   return parts.join("\n");
 };
+
+const LINE_SNIPPET_MAX_CHARS = 2_000;
+
+/** Clip an overlong line while keeping the first match near the center. */
+const clipLineAroundMatch = (
+  line: string,
+  match?: { index: number; length: number },
+): string => {
+  if (line.length <= LINE_SNIPPET_MAX_CHARS) return line;
+  const markerBudget = 64;
+  const contentBudget = LINE_SNIPPET_MAX_CHARS - markerBudget;
+  const matchIndex = match?.index ?? 0;
+  const matchLength = match?.length ?? 0;
+  const retainedMatch = Math.min(matchLength, contentBudget);
+  const contextBudget = Math.max(1, Math.floor((contentBudget - retainedMatch) / 2));
+  let start = Math.max(0, matchIndex - contextBudget);
+  let end = Math.min(line.length, start + contentBudget);
+  if (end < start + contentBudget) start = Math.max(0, end - contentBudget);
+
+  // Keep UTF-16 slice boundaries on code-point boundaries.
+  if (start > 0 && start < line.length) {
+    const code = line.charCodeAt(start);
+    if (code >= 0xdc00 && code <= 0xdfff) start++;
+  }
+  if (end > start && end < line.length) {
+    const code = line.charCodeAt(end - 1);
+    if (code >= 0xd800 && code <= 0xdbff) end--;
+  }
+
+  const before = start;
+  const after = line.length - end;
+  const beforeMarker = before > 0 ? `...(${before} chars before)` : "";
+  const afterMarker = after > 0 ? `...(${after} chars after)` : "";
+  return `${beforeMarker}${line.slice(start, end)}${afterMarker}`;
+};
+
+const filePathFromArgs = (args: Record<string, unknown>): string | undefined =>
+  ["path", "filePath", "file_path", "file"]
+    .map((key) => args[key])
+    .find((value): value is string => typeof value === "string");
+
+/** Path plus content-bearing fields for one file tool call. */
+const fileToolPartText = (part: Record<string, unknown>): { path?: string; text: string } => {
+  const args = part.arguments as Record<string, unknown>;
+  if (!isContentBearing(args)) return {};
+  const path = filePathFromArgs(args);
+  const content = extractToolCallText(args);
+  return { path, text: [path, content].filter(Boolean).join("\n") };
+};
+
+/**
+ * Extract only content-bearing file tool-call arguments for mode:file.
+ * Shell execution and ordinary prose are intentionally not indexed.
+ */
+const fileToolText = (msg: Message): string => {
+  if (msg?.role === "bashExecution" || !Array.isArray(msg?.content)) return "";
+  const pieces: string[] = [];
+  for (const part of msg.content as Record<string, unknown>[]) {
+    if (!part || part.type !== "toolCall") continue;
+    if (String(part.name ?? "").toLowerCase() === "bashexecution") continue;
+    const { text } = fileToolPartText(part);
+    if (text) pieces.push(text);
+  }
+  return clip(pieces.join("\n"), TOOL_ARGS_BUDGET);
+};
+
+const fileMatchesFor = (msg: Message, regex: RegExp): FileMatch[] => {
+  if (msg?.role === "bashExecution" || !Array.isArray(msg?.content)) return [];
+  const matches: FileMatch[] = [];
+  for (const part of msg.content as Record<string, unknown>[]) {
+    if (!part || part.type !== "toolCall") continue;
+    if (String(part.name ?? "").toLowerCase() === "bashexecution") continue;
+    const args = part.arguments as Record<string, unknown>;
+    if (!isContentBearing(args)) continue;
+    const { path, text: pathAndContent } = fileToolPartText(part);
+    if (!path || !pathAndContent || !regex.test(pathAndContent)) continue;
+    const text = extractToolCallText(args);
+    const matchingLines = [path, ...text.split("\n")]
+      .filter((line) => line.trim().length > 0 && regex.test(line));
+    matches.push({
+      path,
+      toolName: String(part.name ?? ""),
+      lineCount: matchingLines.length,
+      snippet: clip(lineSnippet(pathAndContent, regex, 1) ?? path, 2_000),
+    });
+  }
+  return matches;
+};
+
+const fileMatchesWithoutQuery = (msg: Message): FileMatch[] => {
+  if (msg?.role === "bashExecution" || !Array.isArray(msg?.content)) return [];
+  const matches: FileMatch[] = [];
+  for (const part of msg.content as Record<string, unknown>[]) {
+    if (!part || part.type !== "toolCall") continue;
+    if (String(part.name ?? "").toLowerCase() === "bashexecution") continue;
+    const { path, text } = fileToolPartText(part);
+    if (!path || !text) continue;
+    const content = extractToolCallText(part.arguments as Record<string, unknown>);
+    const lineCount = content.split("\n").filter((line) => line.trim().length > 0).length;
+    matches.push({ path, toolName: String(part.name ?? ""), lineCount, snippet: clip(text, 2_000) });
+  }
+  return matches;
+};
+
+const fileText = fileToolText;
 
 /**
  * Aggregate character budget for ALL toolCall arguments appended to one
@@ -455,6 +619,7 @@ const SEARCH_RESULT_CAP = 50;
 export interface SearchTuning {
   probabilityFloor?: number;
   cap?: number;
+  mode?: RecallMode;
 }
 
 /** Drop scored hits that are BOTH below the absolute posterior `floor` AND
@@ -506,24 +671,25 @@ export const searchEntriesDetailed = (
   query?: string,
   tuning?: SearchTuning,
 ): SearchResult => {
-  if (!query?.trim()) return { hits: entries, totalBeforeCap: entries.length, truncated: false };
-
   const probabilityFloor = tuning?.probabilityFloor ?? BAYESIAN_PROBABILITY_FLOOR;
   const cap = tuning?.cap ?? SEARCH_RESULT_CAP;
+  const mode = tuning?.mode ?? "hybrid";
+  if (!query?.trim()) {
+    if (mode !== "file") return { hits: entries, totalBeforeCap: entries.length, truncated: false };
+    const hits: SearchHit[] = [];
+    for (let i = 0; i < entries.length; i++) {
+      const message = messages[i];
+      const fileMatches = fileMatchesWithoutQuery(message);
+      if (fileMatches.length > 0) hits.push({ ...entries[i], fileMatches });
+    }
+    return capHits(hits, cap);
+  }
   const rawQuery = query.trim();
   const checkBudget = startBudget();
 
   // If the query looks like a single regex pattern (contains metacharacters),
-  // treat the whole thing as one pattern — don't split into terms.
-  //
-  // The detection is deliberately loose, so ordinary prose trips it: a trailing
-  // "?" or "." turns the whole sentence into one pattern that must match
-  // verbatim. On real sessions that path returned nothing 47.5% of the time
-  // versus 1.1% for term search. Mode detection must never silently lose
-  // results, so an empty regex result falls through to term search below.
-  //
-  // No posterior-gate filtering here: regex matches are boolean (matched or
-  // not), there's no probability to threshold. Only the hard cap applies.
+  // treat the whole thing as one pattern — don't split into terms. Dotted
+  // filenames are excluded from operator detection and stay literal.
   if (looksLikeRegex(rawQuery)) {
     const regex = safeRegex(rawQuery);
     const hits: SearchHit[] = [];
@@ -531,38 +697,36 @@ export const searchEntriesDetailed = (
       checkBudget();
       const e = entries[i];
       const msg = messages[i];
-      const text = msg ? fullText(msg) : e.summary;
+      const text = msg ? (mode === "file" ? fileText(msg) : fullText(msg)) : (mode === "file" ? "" : e.summary);
       const filePart = e.files?.join(" ") ?? "";
-      const hay = `${e.role} ${text} ${filePart}`;
+      const hay = mode === "file" ? text : `${e.role} ${text} ${filePart}`;
       if (regex.test(hay)) {
         const snip = lineSnippet(text, regex);
-        hits.push({ ...e, snippet: snip, matchCount: 1 });
+        const fileMatches = mode === "file" && msg ? fileMatchesFor(msg, regex) : undefined;
+        hits.push({ ...e, snippet: snip, matchCount: 1, ...(fileMatches?.length ? { fileMatches } : {}) });
       }
     }
     if (hits.length > 0) return capHits(hits, cap);
   }
 
   // Natural language / multi-word query: BM25 scoring
-  const rawTerms = rawQuery.split(/\s+/);
+  const rawTerms = queryTerms(rawQuery);
   const terms = filterStopwords(rawTerms);
   const compiled = compileTerms(terms);
   const snipRe = snippetRegex(compiled.map((c) => c.re.source));
 
-  // Build all docs for BM25 context. Each message's searchable text is
-  // extracted once here (`texts`) and reused for snippets below; word
-  // counts (`wordLens`) are measured once for both context and scoring.
   const docs: string[] = [];
   const texts: string[] = [];
   const wordLens: number[] = [];
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
     const msg = messages[i];
-    const text = msg ? fullText(msg) : e.summary;
+    const text = msg ? (mode === "file" ? fileText(msg) : fullText(msg)) : (mode === "file" ? "" : e.summary);
     const filePart = e.files?.join(" ") ?? "";
-    const hay = `${e.role} ${text} ${filePart}`;
+    const hay = mode === "file" ? text : `${e.role} ${text} ${filePart}`;
     docs.push(hay);
     texts.push(text);
-    wordLens.push(hay.split(/\s+/).length);
+    wordLens.push(scriptWordCount(hay));
   }
 
   const ctx = buildBM25Context(docs, compiled, wordLens, checkBudget);
@@ -576,8 +740,9 @@ export const searchEntriesDetailed = (
     if (mc === 0) continue;
     const { score, tf, distinctTerms, docLenRatio } = bm25Score(hay, compiled, ctx, wordLens[i]);
     const snip = lineSnippet(texts[i], snipRe);
+    const fileMatches = mode === "file" && messages[i] ? fileMatchesFor(messages[i], snipRe) : undefined;
     scored.push({
-      hit: { ...e, snippet: snip, matchCount: mc },
+      hit: { ...e, snippet: snip, matchCount: mc, ...(fileMatches?.length ? { fileMatches } : {}) },
       score,
       tf,
       distinctTerms,

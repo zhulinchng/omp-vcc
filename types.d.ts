@@ -13,7 +13,15 @@ declare module "@oh-my-pi/pi-coding-agent" {
       getSessionFile(): string | undefined;
       getBranch(fromId?: string): any[];
       getEntries(): any[];
+      getSessionId?(): string | undefined;
     };
+    model?: { contextWindow?: number; id?: string };
+    memory?: {
+      search(query: string, options?: { limit?: number; signal?: { aborted: boolean } }): Promise<unknown> | unknown;
+    };
+    setTimeout?: (callback: () => void, delay: number) => unknown;
+    clearTimer?: (timer: unknown) => void;
+    getSystemPrompt?: () => unknown;
     compact(instructionsOrOptions?: string | any): Promise<void> | void;
     sendMessage?: any;
     sendUserMessage?: any;

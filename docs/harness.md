@@ -27,7 +27,7 @@ With default file `~/.omp/omp-vcc/config.json` (`overrideDefaultCompaction:true`
 flowchart LR
   Host["oh-my-pi host\nSessionMaintenance\n+ SessionEntries JSONL"] -->|events| Hooks["omp-vcc hooks\nsession_before_compact\nsession_compact / context\nbefore_agent_start"]
   Hooks -->|returns| Decision{"handled?\n{compaction} / {cancel}\nvs void"}
-  Decision -->|handled| VUI["V_ui via compileRanked\n5 sections + TF-IDF brief\nsummary + details v2"]
+  Decision -->|handled| VUI["V_ui via compileRanked/compileSegment\n5 sections + TF-IDF brief\nsummary + details v2/v3"]
   Decision -->|void| Core["core remote LLM\nSessionMaintenance\n(unchanged)"]
   VUI --> Host
   Host -->|next turn context| Filter["context filter\nstrip omp-vcc-auto-continue"]
@@ -47,15 +47,15 @@ Each row: **what is registered** → **reason** → **verified**.
 | # | What is added | Why it exists | Verified |
 |---|---|---|---|
 | 2.1 | **Extension entry** `extensions/main.ts` default export `(pi: ExtensionAPI) => void` ; `scaffoldSettings()` on load | Host auto-discovers `omp.extensions` path from `package.json` and calls factory — no host code edit needed to load the plugin. `type:module` + `allowImportingTsExtensions` means no build step. | → `package.json:32-36` `omp.extensions`, `extensions/main.ts:49-51` `export default function(pi: ExtensionAPI)`, `extensions/vcc-core/core/settings.ts:118-151` `scaffoldSettings()` |
-| 2.2 | **Tool `vcc_recall`** `pi.registerTool({ name:"vcc_recall", approval:"read", parameters: pi.zod.object({ query?, expand?, page?, scope?, mode? }) })` | Exposes `V_adapt(b,ρ)` (§2.1 `match_lines(b,ρ)` regex → TF-IDF OR fallback, preserves skeleton + role tags) to the agent *before* it claims context is lost. Document-oriented temporal default + index-oriented `mode:"touched"` same data transposed. | → `extensions/main.ts:56-159` full handler (drill-down `#N:path` → `mode:touched` → `expand` → regex/TF-IDF), `extensions/vcc-core/hook.ts:1079-1152` identical shim for tests |
-| 2.3 | **Tool `vcc_stats`** `registerVccStatsTool(pi)` → `pi.registerTool({ name:"vcc_stats", approval:"read", parameters:{history?:boolean} })` | Surfaces token savings without reading `/tmp/omp-vcc-debug.json` or parsing `details.savings` manually. Schema degrades to `{}` when `pi.zod.boolean` missing (older host) — still registers. | → `extensions/main.ts:161` `registerVccStatsToolHook(pi)`, `hook.ts:1233-1263` `registerVccStatsTool`, `hook.ts:1234-1239` fallback |
-| 2.4 | **Commands** `/omp-vcc [keep:N] [focus]` (primary, compact only), `/pi-vcc` (alias), `/vcc-recall` + `/pi-vcc-recall`, `/vcc-stats` (single), `/vcc-config` (single) | User-facing manual compaction (`keep:N` + free-text focus) and recall without code. `/omp-vcc` compacts with single-line toast only; detailed savings via `/vcc-stats`. `/vcc-config` shows the effective config with per-key source (`file` / `host overlay` / `default`). No `commands/*.md` file shims — extension-only to avoid duplicate `/omp-vcc`. | → `extensions/main.ts:164-210` `omp-vcc` (compact only, toast) + `213-258` `pi-vcc` alias, `259-303` `vcc-recall` + `305-342` `pi-vcc-recall`, `344` `registerVccStatsCommandHook`, `346` `registerVccConfigCommandHook`, `hook.ts:1265-1292`, `package.json:32` `files` no `commands` |
-| 2.5 | **Skill** `skills/omp-vcc/SKILL.md` | Teaches the agent the VCC progressive-disclosure workflow (`V_ui → V_adapt(query) → V_full[s:e]`) via skill discovery (`/skill omp-vcc`), so recall is used proactively. | → `skills/omp-vcc/SKILL.md` |
-| 2.6 | **Settings file** `~/.omp/omp-vcc/config.json` via `scaffoldSettings()` | Persisted toggles without touching host `settings-schema.ts` global schema. XDG-aware resolution; migrates legacy `~/.pi/agent/pi-vcc-config.json` once (copies values, never clobbers existing file). | → `extensions/vcc-core/core/settings.ts:9-24` path fn + `26-77` `DEFAULT_SETTINGS` + `118-151` `scaffoldSettings()` |
-| 2.7 | **Manifest settings** 6 booleans `vccEnabled, overrideDefaultCompaction, smartKeepTail, continueAfterThresholdCompact, debug, chainShakeHint` | Appear in `/settings` under plugin section ` @zhulinchng/omp-vcc` and via `omp config set plugins."@zhulinchng/omp-vcc".*` — plugin-scoped per `packages/coding-agent/src/discovery/loader.ts:125` `omp > pi` precedence, not global `compaction.*`. Dual `omp`+`pi` blocks for `pi` backward compat. | → `package.json:41-73` `omp.settings` + `75-114` `pi.settings` (identical), `extensions/vcc-core/core/settings.ts:26-77` `PiVccSettings` interface |
-| 2.8 | **Compaction details `version:2` + `details.savings`** `{ tokensBefore, summaryChars, summaryTokensEst, keptTokensEst, tokensAfterEst, tokensSavedEst, savedPercentEst, compactor:"omp-vcc" }` in `PiVccCompactionDetails` | Host persists `compaction` `SessionEntry.details` verbatim to JSONL, so savings survive branch reuse / session reload and are rehydrated via `preparation.previousSummary`. `version:1` readers simply ignore unknown `savings`. | → `extensions/vcc-core/details.ts:4-20` `PiVccCompactionDetails`, `hook.ts:980-997` `details` construction + `1001-1008` return |
-| 2.9 | **Per-pi history store** `perPi: WeakMap<api, {lastStats, statsHistory}>` + `perPiKeys: Set` + `getPerPi`/`setLastStats` capped 50 | When the same ESM singleton is shared between main session and subagents/forks (rebound factories), module-global `lastStats/globalHistory` would cross-pollute. Per-pi store isolates. `Set` needed because `WeakMap` cannot be enumerated for `clearCompactionHistoryForTests`. | → `hook.ts:84-114` declarations + `178-226` accessors + `228-252` `clearCompactionHistoryForTests` + `254-274` `formatStatsTable` reads |
-| 2.10 | **Debug snapshot** `/tmp/omp-vcc-debug.json` (and legacy `/tmp/pi-vcc-debug.json`) via `dbg()` | Offline audit without TUI: `{ usedOwnCut, budgetCut, compaction:{reason,willRetry}, messagesToSummarize, firstKeptEntryId, tokensBefore, tokenEstimate{mode, charsPerToken}, summaryLength, sections, savings, cutWindow, authoritativeSavings }`. Written only when `debug:true`. | → `hook.ts:360-364` `dbg()` + `954-978` before-compact payload + `1042-1048` authoritative enrich payload |
+| 2.2 | **Tool `vcc_recall`** with `mode:'touched'|'file'`, CJK-aware ranking, and bounded model responses | Exposes `V_adapt` over the raw session while keeping human commands uncapped at the total-response layer. File mode searches only content-bearing tool arguments; omitted provider output remains raw-JSONL recallable. | → `extensions/main.ts`, `core/search-entries.ts`, `core/recall-budget.ts` |
+| 2.3 | **Tool `vcc_stats`** `registerVccStatsTool(pi)` → `pi.registerTool({ name:"vcc_stats", approval:"read", parameters:{history?:boolean} })` | Surfaces token savings without reading debug files or parsing details manually. Schema degrades to `{}` when `pi.zod.boolean` is missing. | → `extensions/main.ts`, `hook.ts` |
+| 2.4 | **Commands** `/omp-vcc [keep:N] [focus]`, `/pi-vcc`, `/vcc-recall` + `/pi-vcc-recall`, `/vcc-stats`, `/vcc-config` | Manual compaction, parity recall, savings, and effective settings remain extension-only registrations. | → `extensions/main.ts` |
+| 2.5 | **Skill** `skills/omp-vcc/SKILL.md` | Teaches progressive disclosure `V_ui → V_adapt(query) → V_full[s:e]`. | → `skills/omp-vcc/SKILL.md` |
+| 2.6 | **Settings file** `~/.omp/omp-vcc/config.json` via `scaffoldSettings()` | Persists six legacy toggles plus append summaries, retained-output budget, display continuity, recall budget, native memory, and redacted metrics. Invalid primary JSON blocks fallback and uses defaults. | → `core/settings.ts` |
+| 2.7 | **Manifest settings** twelve plugin-scoped keys in both `omp.settings` and `pi.settings` | `/settings` and host overlays remain live; no global `compaction.*` patch is required. | → `package.json`, `core/settings.ts` |
+| 2.8 | **Compaction details** rewrite v2 and append v3 | v3 persists immutable segment coverage, trailing summary, source counts, and retained-output projection; malformed/legacy chains fail closed to v2. | → `details.ts`, `core/compaction-chain.ts`, `core/tool-output-budget.ts` |
+| 2.9 | **Per-pi state and managed timers** `WeakMap` history, generation/session ID, host-managed timer fallback | Isolates stats and prevents stale continuation, stats, or chain-shake callbacks from crossing sessions. | → `hook.ts` |
+| 2.10 | **Debug and metrics** `/tmp/omp-vcc-debug.json` plus optional rotating `debug-metrics.jsonl` | `debug` keeps detailed snapshots; `debugLog` records redacted bounded events and never affects compaction. | → `hook.ts` |
 
 ---
 
@@ -67,7 +67,7 @@ Each row: **what is registered** → **reason** → **verified**.
 
 - **Host hook**: `pi.on("session_before_compact", (event: { branchEntries, customInstructions, preparation: CompactionPreparation, ... }, ctx) => SessionBeforeCompactResult | void )` → `types.ts:1248-1251` + `docs/compaction.md:370-381` `session_before_compact` can `{cancel:true}` or `{compaction: CompactionResult{summary, shortSummary?, firstKeptEntryId, tokensBefore, details?, preserveData?}}`. Host's `CompactionPreparation` already bundles `firstKeptEntryId + messagesToSummarize + turnPrefixMessages + tokensBefore + previousSummary + previousPreserveData + fileOps` (`docs/compaction.md:186-205` cut-point rules: honors last `/clear` `reset_boundary` over last compaction, never cuts at `toolResult`, valid cuts `user|assistant|bashExecution|hookMessage|branchSummary|compactionSummary` + `custom_message`/`branch_summary`, metadata pulled backward; `packages/snapcompact/src/snapcompact.ts:633` `CompactionPreparation` type). Event `customInstructions` carries only public user focus; plan-mode `internalGuidance` travels separate `CompactOptions.internalGuidance` channel never shown to hook/`session.compacting` (`docs/compaction.md:381` issue #4359). Returning `{compaction:{ summary, details, tokensBefore, firstKeptEntryId }}` commits with `fromExtension:true`; `void` defers to host walk; `{cancel:true}` aborts (host may `fallbackToCore` on overflow — see `hook.ts:817`).
 - **What omp-vcc does**:
-  1. `loadSettings(ctx)` → overlay `ctx.settings.get("plugins.@zhulinchng/omp-vcc.*")` over file — freshest toggle wins per compaction. → `core/settings.ts:80-110` `loadSettings(ctx)`
+  1. `loadSettingsWithPluginOverlay(ctx)` reads the file and public plugin-settings store (with legacy `ctx.settings`/`ctx.config` compatibility) so `/settings` changes take effect this compaction. → `core/settings.ts`
   2. `if (!settings.vccEnabled) return void;` — master switch.
   3. `parseCompactionInstructions(customInstructions)` → `isPiVcc = customInstructions === "__omp_vcc__" || "__pi_vcc__" || sentinel+space` + `keep:N` + `followUpPrompt`. Legacy `__pi_vcc__` kept for back-compat.
   4. `if (!isPiVcc && !settings.overrideDefaultCompaction) return void;` — `true` default intercepts **all** reasons (`threshold`/`overflow`/`incomplete`/`midTurn`/`idle`/`manual`); `false` only handles explicit `/omp-vcc`.
@@ -76,7 +76,7 @@ Each row: **what is registered** → **reason** → **verified**.
   7. `buildOwnCut(branchEntries, effectiveKeep, keepUserTurnsExplicit)` — mirrors host boundary logic: collects live messages via `firstKeptEntryId` + orphan recovery (`""` sentinel or missing id) + `/clear` `reset_boundary` precedence (`docs/compaction.md:190-192` + `hook.ts:445-467`), enforces `>2` live, cuts at `userIndices[totalUserTurns - keep]`, `keep:0` → `compactAll` sentinel `firstKeptEntryId=""`. Explicit keep covering all turns keeps the tail (default path still compacts all); empty summary with no previous summary → `{cancel:true}` + notify. Unlike host `findCutPoint` it snaps off `toolResult` later in tail rescue.
   8. `applyTailBudget(cut, {maxTokens, factor 2.5, cpt})` — rescue **only** default path: `compactAll→no_anchor` or `tail>max*2.5→oversized_tail`, token-scan + snap off `toolResult` (`hook.ts:568-571` never cut at `toolResult` — same rule as `docs/compaction.md:202`).
   9. `compileRanked` → `normalize`/`sanitize`/`filterNoise`/`buildSections` (5 extractors `Goal|Files|Commits|Preferences|Outstanding` → `docs/compaction.md:268-297` file-ops tag `<files>` vs snapcompact `FILES` section) → `selectRankedBriefBlocks` (TF-IDF) → `formatSummary` + `capBrief` (120 lines) under size-relative budget `1100*cpt → 2000*cpt` ceiling. **Bypasses** host's 4-stage summary consultation (V2 streaming `compaction_trigger` → V1 `/responses/compact` → custom `remoteEndpoint` → local `completeSimple` with `SUMMARIZATION_SYSTEM_PROMPT` `docs/compaction.md:253-262`).
-  10. Compute `summaryChars→summaryTokensEst→tokensAfterEst/savedEst/percent` → `setLastStats(pi, stats)` (50-capped, timestamped) → build `PiVccCompactionDetails{ version:2, savings }` → return `{ compaction }`; own-cut failure → `{cancel:true}` except overflow `willRetry||heuristic>50k` falls through to host walk (`hook.ts:817` + `docs/compaction.md:112` handoff skipped for overflow).
+  10. Compute `summaryChars→summaryTokensEst→tokensAfterEst/savedEst/percent` → `setLastStats(pi, stats)` (50-capped, timestamped) → build rewrite v2 or append v3 details (with optional reason/willRetry/savings compatibility) → return `{ compaction }`; own-cut failure → `{cancel:true}` except overflow `willRetry||heuristic>50k` falls through to host walk (`hook.ts:817` + `docs/compaction.md:112` handoff skipped for overflow). Public `auto_compaction_start/end` events identify host-owned continuation; the extension does not schedule a second host continuation.
 - **Reason**: replaces nonlocal `SessionMaintenance` dispatch (which would walk `methodOrder` to `remote`/`soft` LLM or `snapcompact` bitmap or `handoff`/`shake` — see `docs/compaction.md:104-151`) with deterministic local `V_ui` reusing already-in-memory `branchEntries`; cancellation is explicit when nothing to compact (pruning/`pruneToolOutputs` + `dropUseless` already ran before threshold check → `docs/compaction.md:159-184`).
 - **Disabled behavior**: `vccEnabled:false` → always `void` → host handles everything; `overrideDefaultCompaction:false` + no sentinel → `void` for `threshold`/`overflow`/`incomplete`/`midTurn`/`idle`/`/compact` (host walks `remote→snapcompact→handoff→shake→soft` per `docs/compaction.md:428` / `compaction-methods.ts:43`), sentinel compactions still handled.
 
@@ -94,7 +94,7 @@ flowchart TB
   OK -->|no| CANCEL{"overflow willRetry\nor heuristic tokensBefore>50k?"}
   CANCEL -->|yes| FWD
   CANCEL -->|no| CANCELED["{cancel:true}\n+ notify warning"]
-  OK -->|yes| RANK["calibrate cpt 2–6\n→ compileRanked\n→ savings math\n→ details v2"]
+  OK -->|yes| RANK["calibrate cpt 2–6\n→ compileRanked/compileSegment\n→ append/rebase decision\n→ savings math\n→ details v2/v3"]
   RANK --> RET["{compaction:{summary,\ndetails, firstKeptEntryId}}"]
 
   classDef decision fill:#fff8e1,stroke:#f57f17
@@ -149,18 +149,18 @@ sequenceDiagram
 
 ### 3.5 Settings overlay — live manifest merge
 
-- **What omp-vcc does**: `loadSettings(ctx?)` reads the file at XDG priority `$OMP_VCC_CONFIG_PATH` → `$PI_VCC_CONFIG_PATH` → `$OMP_DIR|$PI_CODING_AGENT_DIR|~/.omp` `omp-vcc/config.json` (and legacy fallback read) then overlays `ctx.settings.get("plugins.@zhulinchng/omp-vcc.vccEnabled")` etc and `ctx.config.get` so `/settings` toggles take effect **this** compaction without restart. File remains source of truth after TUI restart. `scaffoldSettings()` fills missing keys with `DEFAULT_SETTINGS` without clobbering existing values.
-- **Reason**: manifests (`package.json:omp.settings`) are the `/settings` UI surface; the file is the durable truth. Overlay gives immediate effect for `overrideDefaultCompaction`/`debug` etc while preserving the host's extension-settings contract (`packages/coding-agent/src/extensibility/extensions/types.ts` + `loader.ts:125` `omp > pi` precedence).
-- **Verified**: → `core/settings.ts:9-17` path fn + `19-24` legacy fallback + `69-110` `loadSettings(ctx)` overlay + `118-151` `scaffoldSettings()`.
+- **What omp-vcc does**: `loadSettingsWithPluginOverlay(ctx?)` reads the file at XDG priority `$OMP_VCC_CONFIG_PATH` → `$PI_VCC_CONFIG_PATH` → `$OMP_DIR|$PI_CODING_AGENT_DIR|~/.omp` `omp-vcc/config.json` (and legacy fallback read), then overlays the public oh-my-pi plugin settings store and legacy `ctx.settings`/`ctx.config` bridges so `/settings` changes take effect this compaction. File remains the durable truth. `scaffoldSettings()` fills missing keys with `DEFAULT_SETTINGS` without clobbering existing values.
+- **Reason**: manifests (`package.json:omp.settings`) are the `/settings` UI surface; the file is the durable truth. The public plugin-settings bridge provides immediate effect while preserving dual-host compatibility.
+- **Verified**: → `core/settings.ts` path/fallback resolution, normalized merge, public loader bridge, and non-destructive scaffolding.
 
 ```mermaid
 flowchart TB
-  FILE["file\n~/.omp/omp-vcc/config.json\n(empty → DEFAULT_SETTINGS)\n+ legacy migration once"] --> MERGE["loadSettings(ctx)\nread file"]
-  CTX["ctx.settings.get plugins.@zhulinchng/omp-vcc.*\nctx.config.get (host runtime)"] --> MERGE
+  FILE["file\n~/.omp/omp-vcc/config.json\n(empty → DEFAULT_SETTINGS)\n+ legacy migration once"] --> MERGE["loadSettingsWithPluginOverlay(ctx)\nread file → public host overlay"]
+  CTX["public plugin settings\ngetPluginSettings('omp-vcc', ctx.cwd)\nlegacy ctx.settings/config"] --> MERGE
   ENV["$OMP_VCC_CONFIG_PATH\n$PI_VCC_CONFIG_PATH legacy\n$OMP_DIR / $PI_CODING_AGENT_DIR"] -. "XDG priority" .-> FILE
   MERGE --> EFFECTIVE["merged PiVccSettings\nvccEnabled etc"]
   EFFECTIVE --> HOOK["per-compaction read\nin session_before_compact"]
-  EFFECTIVE --> UI["/settings\nplugin section @zhulinchng/omp-vcc\n5 toggles live"]
+  EFFECTIVE --> UI["/settings UI\nplugin section @zhulinchng/omp-vcc\n12 settings live"]
 
   classDef file fill:#e8f5e9,stroke:#2e7d32
   class FILE,EFFECTIVE file
@@ -227,7 +227,7 @@ sequenceDiagram
   Host->>Hook: vcc_recall {query, scope, page}<br/>→ searchEntriesDetailed → formatRecall
 ```
 
-**Counts** at this checkout: 3 event handlers (`context`, `before_agent_start`, dual `session_*`), 2 tools (`vcc_recall`, `vcc_stats`), 6 command registrations (`omp-vcc`+`pi-vcc` legacy, `vcc-recall`+`pi-vcc-recall` legacy, `vcc-stats` single, `vcc-config` single) — `extensions/main.ts:164-348` and `hook.ts:708-1362`. No file-based `commands/*.md` — extension-only to avoid duplicate `/omp-vcc`.
+**Counts** at this checkout: 8 lifecycle registrations (`context`, `before_agent_start`, four session-generation events, dual `session_*`), 2 tools (`vcc_recall`, `vcc_stats`), 6 command registrations (`omp-vcc`+`pi-vcc` legacy, `vcc-recall`+`pi-vcc-recall` legacy, `vcc-stats` single, `vcc-config` single). No file-based `commands/*.md` — extension-only to avoid duplicate `/omp-vcc`.
 
 ### 5.2 Compaction dispatch — when omp-vcc owns vs defers
 
@@ -351,7 +351,7 @@ Every compaction, even manual `/omp-vcc`, produces the same four audit trails; e
 flowchart LR
   PREP["preparation.tokensBefore"] --> CALC["keptChars→keptTokensEst\nsummary→summaryChars→summaryTokensEst"]
   CALC --> EST["tokensAfterEst\n+ savedEst/percent"]
-  EST --> DETAILS["details.savings v2<br/>compactor:omp-vcc / version:2<br/>→ compaction SessionEntry<br/>(persisted JSONL, branch-reusable)"]
+  EST --> DETAILS["details v2 rewrite / v3 append<br/>compactor:omp-vcc<br/>→ compaction SessionEntry<br/>(persisted JSONL, branch-reusable)"]
   EST --> TOAST["session_compact toast\nformatCompactionStats\n90.0k→22.0k (76% saved, ~68.0k) ·<br/>kept 1/5 turns, ~2.1k tok<br/>+ divider ── compacted · 90K→22K · ctrl+o ──"]
   EST --> TABLE["formatStatsTable\n| # | Before → After | Saved | Kept | Summarized | When |\n50-capped, — for saved0/timestamp null"]
   EST --> DEBUG["/tmp/omp-vcc-debug.json + legacy<br/>usedOwnCut, budgetCut, sections,\nsavings{...}, tokenEstimate{cpt}"]
@@ -421,7 +421,7 @@ sequenceDiagram
   Note over Maint: preparation built<br/>(prepareCompaction → cut point)
   Maint->>Hook: emit session_before_compact<br/>{branchEntries, preparation, customInstructions}
   alt hook returns {compaction}
-    Hook-->>Maint: {compaction:{summary, details v2, firstKeptEntryId}}
+    Hook-->>Maint: {compaction:{summary, details v2/v3, firstKeptEntryId}}
     Note over Maint: hook wins — native method SKIPPED<br/>fromExtension:true, no LLM, deterministic
     Maint->>Host: commit hookCompaction<br/>insert CompactionEntry
   else hook returns void
@@ -480,7 +480,7 @@ The host's `CompactionMethod` is a **closed enum** (`compaction-methods.ts:10-49
 
 No patch (recommended — the plugin works without it):
 
-- `/settings` shows a **plugin section** `@zhulinchng/omp-vcc` with the 5 toggles (`vccEnabled` etc) — verified at `docs/configuration.md:4-18` `omp.settings` manifest.
+- `/settings` shows a **plugin section** `@zhulinchng/omp-vcc` with 12 settings (legacy toggles plus append/recall/memory/metrics controls) — verified at `docs/configuration.md:3-24`.
 - `overrideDefaultCompaction:true` intercepts all auto compactions via the hook regardless of `methodOrder` — no dropdown entry needed.
 - Manual `/omp-vcc` always works (sentinel path bypasses the flag → `hook.ts:733`).
 - To let native methods run for auto, set `overrideDefaultCompaction:false` → host walks `methodOrder` as configured.
@@ -508,7 +508,7 @@ With the patch: set `compaction.methodOrder = ["vcc","remote",...]` in `/setting
 ```mermaid
 flowchart TB
   subgraph WithoutPatch["Without patch (default, recommended)"]
-    A1["/settings: plugin section @zhulinchng/omp-vcc\n5 toggles (vccEnabled etc)"] --> B1["override:true → hook preempts all auto\nregardless of methodOrder"]
+    A1["/settings: plugin section @zhulinchng/omp-vcc\n12 settings"] --> B1["override:true → hook preempts all auto\nregardless of methodOrder"]
     B1 --> C1["threshold/overflow → omp-vcc V_ui\nno LLM, deterministic"]
     A1 --> B2["override:false → hook only on sentinel\n/omp-vcc"]
     B2 --> C2["threshold → host walks methodOrder\n(remote/snapcompact/handoff/shake/soft)"]
@@ -572,14 +572,14 @@ Re-run any row with the listed `read`/`grep` before trusting the claim. No claim
 |---|---|---|---|
 | 8.1 | Extension discovery is `omp.extensions=["./extensions/main.ts"]` factory `(pi: ExtensionAPI)=>void`, zero build | `read package.json:32-36` + `read extensions/main.ts:49` | holds |
 | 2.1 | Factory calls `scaffoldSettings()` then `registerBeforeCompactHook(pi)` + tools + commands | `read extensions/main.ts:50-52,161,344` | `registerBeforeCompactHook` at `hook.ts:708`, `scaffoldSettings` at `core/settings.ts:118` |
-| 2.2 | `vcc_recall` registers `approval:"read"` with `pi.zod.object{ query?, expand?, page?, scope?, mode? }` and handles drill-down→touched→expand→search | `read extensions/main.ts:56-159` + `grep -R "registerTool" extensions/main.ts` | 2 tools (`vcc_recall` + `vcc_stats` hook) |
+| 2.2 | `vcc_recall` registers `approval:"read"` with query/expand/page/scope/mode and handles drill-down, touched/file modes, bounded model responses, expand, and search | `read extensions/main.ts` + `core/recall-budget.ts` + `core/search-entries.ts` | model tool cap, human command boundary, CJK/file behavior |
 | 2.3 | `vcc_stats` falls back when `zod.boolean` missing | `read hook.ts:1233-1246` `hasBoolean` guard → `schema={}` | covered by `tests/compaction-stats-gaps` schema-fallback case |
 | 2.4 | 6 command surfaces (`omp-vcc`, `pi-vcc` alias, `vcc-recall`, `pi-vcc-recall`, `vcc-stats` single, `vcc-config` single — `/omp-vcc` compact only, toast) | `read extensions/main.ts:164-348` + `read package.json:32-36` | 6 `pi.registerCommand` sites, `/omp-vcc` compacts + toast only; detail via `/vcc-stats` `formatLastStatsDetail`; config via `/vcc-config` `formatVccConfigCard` |
 | 2.6 | Config path priority `$OMP_VCC_CONFIG_PATH > $PI_VCC_CONFIG_PATH > $OMP_DIR/$PI_CODING_AGENT_DIR > ~/.omp/omp-vcc/config.json` + legacy migration | `read core/settings.ts:9-24` + `19-24` fallback + `139-146` migration | holds; `grep -R "PI_VCC_CONFIG_PATH" extensions/vcc-core/core/settings.ts` → 2 |
-| 2.7 | Dual manifests `omp.settings` + `pi.settings` (5 booleans, identical) | `read package.json:41-67,69-104` | `omp.settings` keys `vccEnabled/overrideDefaultCompaction/smartKeepTail/continueAfterThresholdCompact/debug` |
-| 2.8 | `details.version:2` additive `details.savings{...}` persisted verbatim | `read extensions/vcc-core/details.ts:4-20` + `read hook.ts:980-1008` | `version:2`, 7-field `savings`, `compactor:"omp-vcc"` |
+| 2.7 | Dual manifests expose twelve plugin settings, including append/recall/memory/metrics controls | `read package.json:37-176` | `omp.settings` and `pi.settings` remain identical |
+| 2.8 | `details.version:2` rewrite or `version:3` append with chain coverage and retained-output projection | `read extensions/vcc-core/details.ts` + `core/compaction-chain.ts` | malformed/legacy chains fail closed to rewrite |
 | 2.9 | Per-pi isolation `WeakMap+Set`, 50-capped, `clearCompactionHistoryForTests` clears both | `read hook.ts:84-98,99-114,228-252,254-274` | `perPi WeakMap`, `perPiKeys Set`, both capped `.shift()` |
-| 2.10 | `dbg()` writes both `/tmp/omp-vcc-debug.json` + legacy when `debug:true` | `read hook.ts:360-364` + `954-978,1042-1048` | two `writeFileSync` calls guarded by `if (!settings.debug) return` |
+| 2.10 | `dbg()` writes debug snapshots; `debugLog` writes bounded rotating redacted JSONL | `read hook.ts` debug helpers | metrics failures never affect compaction |
 | 3.1 | `session_before_compact` intercept gate `!vccEnabled→void`, `!isPiVcc && !overrideDefaultCompaction→void`, sentinel `__omp_vcc__||__pi_vcc__` | `read hook.ts:322-352` `parseCompactionInstructions` + `723-733` gate | `isVccSentinel` checks both sentinels |
 | 3.1 | `buildOwnCut` invariants: `firstKeptEntryId` lineage + orphan `""` recovery + `reset_boundary` precedence + `>2` guard + `compactAll=""` | `read hook.ts:433-498` `collectLiveMessages` + `500-546` `buildOwnCut` | `reset_boundary` honored `445-467`, orphan `474,478-485`, sentinel `513-514` |
 | 3.1 | Smart-keep `5k→25k` boosts default `keep:1` only when `explicit:false && smartKeepTail && tail(1)≤5k`; explicit never boosted | `read hook.ts:618-701` `resolveSmartKeepUserTurns` + `620-621` `MIN/MAX` | loop `690-694` grows while `tokens≤max`; `676-678` early exit on explicit |

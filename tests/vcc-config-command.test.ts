@@ -7,7 +7,7 @@ import { registerVccConfigCommand, formatVccConfigCard } from "../extensions/vcc
 import { DEFAULT_SETTINGS, getSettingsPath, loadSettingsWithSources } from "../extensions/vcc-core/core/settings";
 
 const ALL_KEYS = Object.keys(DEFAULT_SETTINGS);
-const onOff = (v) => (v ? "on" : "off");
+const onOff = (v) => typeof v === "number" ? String(v) : typeof v === "string" ? v : v ? "on" : "off";
 
 let tmp;
 let savedOmp;
@@ -111,7 +111,7 @@ describe("vcc-config card: file states", () => {
     expect(m.content).toBe(expected);
     expect(m.content).toContain(`**omp-vcc config** (\`${process.env.OMP_VCC_CONFIG_PATH}\`)`);
     expect(notes.length).toBe(1);
-    expect(notes[0].msg).toMatch(/vcc_config: 6 keys from /);
+    expect(notes[0].msg).toMatch(/vcc_config: 12 keys from /);
     expect(notes[0].level).toBe("info");
   });
 
@@ -155,6 +155,12 @@ describe("vcc-config card: file states", () => {
       continueAfterThresholdCompact: false,
       debug: true,
       chainShakeHint: true,
+      compactionSummaryMode: "rewrite",
+      retainedToolOutputMaxTokens: 1234,
+      showPreCompactionMessage: false,
+      recallResponseMaxChars: 1234,
+      nativeMemory: false,
+      debugLog: true,
     };
     writeFileSync(cfg, JSON.stringify(fixture));
     process.env.OMP_VCC_CONFIG_PATH = cfg;

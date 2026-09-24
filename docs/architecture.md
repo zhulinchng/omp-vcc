@@ -67,8 +67,9 @@ sequenceDiagram
 ## Implementation pipeline (omp-vcc)
 
 ```
-Calibrate → Smart keep → Build cut → Normalize (IR) → Filter noise → Build sections → Brief transcript (V_ui) → Format → Merge → Growth guard
-```
+Calibrate → Smart keep → Build cut (global source IDs) → Normalize (IR) → Filter noise → Build sections → Brief transcript (V_ui) → Format → Merge → Append/rebase decision → Growth guard
+
+The append path persists immutable v3 segments plus a complete host fallback/trailing summary. The `context` hook projects those segments only when exactly one current fallback summary matches; malformed chains remain v2 rewrite summaries. Tool output omission is provider-visible only and remains recallable in the raw session JSONL.
 
 ```mermaid
 flowchart LR
@@ -82,8 +83,8 @@ flowchart LR
   H --> I["Format\nformat.ts\nbracketed + RECALL_NOTE"]
   I --> J["Merge\nsummarize.ts\nsticky dedup, volatile replace\nroll, capBrief 120 lines"]
   J --> JG["Growth guard\nnetNew vs prefix chars\ncancel unless savings > max(512, 25%)\noverflow defers to host"]
-  JG --> K["Output\n{summary, details,\nfirstKeptEntryId, tokensBefore}"]
-  K --> L["Savings\nkeptChars→keptTokensEst\nsummaryChars→summaryTokensEst\ntokensAfterEst→savedEst/percent\n+ authoritative enrich"]
+  JG --> K["Output\n{summary, details v2/v3,\nfirstKeptEntryId, tokensBefore}"]
+  K --> L["Savings\nscript-aware retained-tail estimate\nsummary estimate + authoritative enrich"]
 
   classDef stage fill:#fff3e0,stroke:#ef6c00
   classDef guard fill:#ffebee,stroke:#c62828
@@ -109,12 +110,12 @@ Mapped from VCC compiler stages (§2.3) and pi-vcc 20-file core:
 
 ```
 vcc-core/
-  hook.ts                — registerBeforeCompactHook (context filter, before_agent_start, session_before_compact with buildOwnCut/smartKeep/budget/compileRanked + savings, session_compact toast + invisible-continue + authoritative enrich, vcc_stats history/table)
+  hook.ts                — lifecycle orchestration, global cut IDs, append/tool-output/native-memory integration, context projection, display notification, managed timers
   core/
-    brief.ts, rank.ts, build-sections.ts, format.ts, summarize.ts, token-estimate.ts, normalize.ts, filter-noise.ts, content.ts, sanitize.ts, tool-args.ts, report.ts, line-age.ts, load-messages.ts, render-entries.ts, search-entries.ts, format-recall.ts, drill-down.ts, recall-scope.ts, settings.ts, skill-collapse.ts
+    brief.ts, rank.ts, build-sections.ts, format.ts, summarize.ts, token-estimate.ts, normalize.ts, filter-noise.ts, content.ts, sanitize.ts, tool-args.ts, report.ts, line-age.ts, load-messages.ts, session-lines.ts, global-indices.ts, render-entries.ts, search-entries.ts, recall-budget.ts, format-recall.ts, drill-down.ts, recall-scope.ts, compaction-chain.ts, tool-output-budget.ts, settings.ts, skill-collapse.ts
   extract/
     commits.ts, files.ts, goals.ts, preferences.ts
-  types.ts, details.ts (version 2 + savings), sections.ts
+  types.ts, details.ts (rewrite v2 + append v3), sections.ts
 ```
 
 Host pipeline that omp-vcc bypasses is detailed in [harness.md §5.2.1](harness.md) (prune → useless → threshold → prepareCompaction → walk methodOrder) and pinned host docs [omp-compaction.md](omp-compaction.md)/[omp-snapcompact.md](omp-snapcompact.md) @18781d8295.
@@ -152,9 +153,9 @@ flowchart TB
 1. `scaffoldSettings()` → `~/.omp/omp-vcc/config.json` (XDG-aware, migrates `~/.pi/agent/pi-vcc-config.json`)
 2. `pi.on("context", filter omp/pi auto-continue marker)` strips `customType === "omp-vcc-auto-continue" || "pi-vcc-auto-continue"` (matches pi-vcc's `on('context')` filter)
 3. `pi.on("before_agent_start", clearPendingAutoContinue)`
-4. `pi.on("session_before_compact", handler)` → `parseCompactionInstructions` (accepts both `__pi_vcc__` and `__omp_vcc__` sentinels), `buildOwnCut`, `resolveSmartKeepUserTurns`, `applyTailBudget`, `calibrateCharsPerToken`, `compileRanked` with size-relative budget, growth guard (net-new vs prefix chars; cancel or defer to host on material growth), computes `summaryChars → summaryTokensEst`, `keptChars → keptTokensEst`, `tokensAfterEst/savedEst/percent`, writes `details.savings` (`version:2`) + `dbg.savings` + `setLastStats` (per-pi `WeakMap`+`perPiKeys` + global, 50-capped, `timestamp`), returns `{compaction: {summary, details, tokensBefore, firstKeptEntryId}}` or `{cancel:true}` (overflow/willRetry fallback vs cancel). Reuses `convertToLlm` shim (host `session/messages` or identity).
+4. `pi.on("session_before_compact", handler)` → `parseCompactionInstructions` (accepts both `__pi_vcc__` and `__omp_vcc__` sentinels), `buildOwnCut` with selected IDs, `resolveSmartKeepUserTurns`, `applyTailBudget`, `calibrateCharsPerToken`, `compileRanked`/`compileSegment`, optional bounded native-memory search, append/rebase policy, retained-output projection, and growth guard (net-new vs prefix chars; cancel or defer to host on material growth). Returns v2 rewrite or v3 append details and records savings.
 5. `pi.on("session_compact", ...)` enriches `lastStats` with authoritative `compactionEntry.tokensAfter/tokensBefore → saved/percent` *before* `isPiVccLast/willRetry` early returns, then schedules toast (`formatCompactionStats` with `90k→22k (76% saved)` prefix, budgetCut aware, `999→500` vs `1.0k`) and `triggerInvisibleContinue` (`customType:"omp-vcc-auto-continue"` display:false triggerTurn:followUp) filtered in (2); `dbg.authoritativeSavings` when `debug:true`.
-6. `pi.registerTool("vcc_recall", ...)` via `pi.zod` (rho: regex→OR, lineage `active` vs `all`, pagination 5, `mode:'touched'`, `expand`, `parseDrillDown`).
+6. `pi.registerTool("vcc_recall", ...)` via `pi.zod` (regex→OR, lineage `active` vs `all`, pagination 5, `mode:'touched'|'file'`, bounded model responses, `expand`, `parseDrillDown`).
 7. `pi.registerTool("vcc_stats", {history?:boolean})` (approval read, `perPi`+global history table via `formatStatsTable`/`formatLastStatsDetail`) + `pi.registerCommand("vcc-stats")` single (no `omp-vcc-stats` duplicate) + `pi.registerCommand("vcc-config")` single (effective config card via `loadSettingsWithSources` + `formatVccConfigCard`, args ignored, never throws).
 8. `pi.registerCommand("omp-vcc")` / `"pi-vcc"` (compact only, toast single line; detailed savings via `/vcc-stats`) and `"vcc-recall"` / `"pi-vcc-recall"` — extension-only; no `commands/*.md` file slash commands (removed to avoid duplicate `/omp-vcc`).
 

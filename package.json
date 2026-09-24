@@ -64,6 +64,41 @@
         "type": "boolean",
         "default": false,
         "description": "Eager post-VCC shake chain (host rescue is automatic; this forces a second shake even when VCC created headroom)"
+      },
+      "compactionSummaryMode": {
+        "type": "enum",
+        "values": ["rewrite", "append"],
+        "default": "append",
+        "description": "Use append-only compaction segments with a complete host fallback summary"
+      },
+      "retainedToolOutputMaxTokens": {
+        "type": "number",
+        "min": 0,
+        "max": 200000,
+        "default": 20000,
+        "description": "Retained provider-visible tool-output tokens; 0 disables projection"
+      },
+      "showPreCompactionMessage": {
+        "type": "boolean",
+        "default": true,
+        "description": "Show the newest dropped assistant output after compaction"
+      },
+      "recallResponseMaxChars": {
+        "type": "number",
+        "min": 0,
+        "max": 2000000,
+        "default": 48000,
+        "description": "Maximum model-facing recall response characters; 0 disables the cap"
+      },
+      "nativeMemory": {
+        "type": "boolean",
+        "default": true,
+        "description": "Query oh-my-pi's public native memory backend during compaction"
+      },
+      "debugLog": {
+        "type": "boolean",
+        "default": false,
+        "description": "Write bounded rotating compaction metrics JSONL"
       }
     }
   },
@@ -102,6 +137,41 @@
         "type": "boolean",
         "default": false,
         "description": "Eager post-VCC shake chain (host rescue is automatic; this forces a second shake even when VCC created headroom)"
+      },
+      "compactionSummaryMode": {
+        "type": "enum",
+        "values": ["rewrite", "append"],
+        "default": "append",
+        "description": "Use append-only compaction segments with a complete host fallback summary"
+      },
+      "retainedToolOutputMaxTokens": {
+        "type": "number",
+        "min": 0,
+        "max": 200000,
+        "default": 20000,
+        "description": "Retained provider-visible tool-output tokens; 0 disables projection"
+      },
+      "showPreCompactionMessage": {
+        "type": "boolean",
+        "default": true,
+        "description": "Show the newest dropped assistant output after compaction"
+      },
+      "recallResponseMaxChars": {
+        "type": "number",
+        "min": 0,
+        "max": 2000000,
+        "default": 48000,
+        "description": "Maximum model-facing recall response characters; 0 disables the cap"
+      },
+      "nativeMemory": {
+        "type": "boolean",
+        "default": true,
+        "description": "Query oh-my-pi's public native memory backend during compaction"
+      },
+      "debugLog": {
+        "type": "boolean",
+        "default": false,
+        "description": "Write bounded rotating compaction metrics JSONL"
       }
     }
   },

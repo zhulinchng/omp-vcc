@@ -6,7 +6,7 @@
 
 Compaction and branch summaries are the two mechanisms that keep long sessions usable without losing prior work context.
 
-> **omp-vcc interplay**: When `omp-vcc` is active (`override:true` default → `extensions/vcc-core/hook.ts:723-733`), this host LLM-compaction walk is preempted by the extension's `session_before_compact` hook (`compileRanked` → `V_ui`). The host path remains the fallback when `hook` returns `void`/`cancel` (`fallbackToCore` heuristic `tokensBefore>50k` → `session-maintenance.ts:817`). For the full combination matrix (VCC then snapcompact/shake, additive vs sequential) see [setup: Combining](setup.md#combining-omp-vcc-with-shake-and-snapcompact) and [harness §8.7](harness.md#87-combining-vcc-with-shake-and-snapcompact---truth-table-and-fallback-walk).
+> **omp-vcc interplay**: When `omp-vcc` is active (`override:true` default → `extensions/vcc-core/hook.ts`), this host LLM-compaction walk is preempted by the extension's `session_before_compact` hook (`compileRanked`/`compileSegment` → `V_ui`). With the approved `compactionSummaryMode:"append"` default, the host still receives a complete fallback summary while the extension persists immutable v3 segments and a mutable trailing summary; malformed/legacy chains fail closed to rewrite details. The host path remains the fallback when `hook` returns `void`/`cancel` (`fallbackToCore` heuristic `tokensBefore>50k` → `session-maintenance.ts:817`). For the full combination matrix (VCC then snapcompact/shake, additive vs sequential) see [setup: Combining](setup.md).
 
 - **Compaction** rewrites old history into a summary on the current branch.
 - **Branch summary** captures abandoned branch context during `/tree` navigation.
@@ -14,6 +14,7 @@ Compaction and branch summaries are the two mechanisms that keep long sessions u
 Both are persisted as session entries and converted back into user-context messages when rebuilding LLM input.
 
 ## Key implementation files
+
 - `packages/agent/src/compaction/compaction.ts` (context-full summarization and handoff generation)
 - `packages/snapcompact/src/snapcompact.ts` (snapcompact strategy: history archived as dense bitmap images)
 - `packages/agent/src/compaction/branch-summarization.ts`

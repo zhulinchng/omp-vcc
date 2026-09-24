@@ -560,7 +560,7 @@ describe("gap: details version and hook before edge (tokensBefore undefined)", (
     const res = await pi["session_before_compact"](ev, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
     // tokensBefore undefined should be treated as 0, still produce details with savings 0
     expect(res.compaction.details.savings.tokensBefore).toBe(0);
-    expect(res.compaction.details.version).toBe(2);
+    expect(res.compaction.details.version).toBe(3);
     expect(res.compaction.details.compactor).toBe("omp-vcc");
     expect(getLastCompactionStats()!.tokensBefore).toBe(0);
     expect(getLastCompactionStats()!.tokensSavedEst).toBe(0);
@@ -647,7 +647,7 @@ describe("gap: pi session_compact guards (reason/willRetry/isPiVccLast)", () => 
 
   test("pi manual event enriches authoritative savings even when isPiVccLast", async () => {
     const { sent, notified, stats } = await runCompactFlow(
-      { overrideDefaultCompaction: true, smartKeepTail: false, debug: false },
+      { overrideDefaultCompaction: true, smartKeepTail: false, debug: false, showPreCompactionMessage: false },
       { type: "session_before_compact", customInstructions: `${OMP_VCC_COMPACT_INSTRUCTION} keep:1`, branchEntries: sixTurns(), preparation: prep, reason: "manual", willRetry: false, signal: new AbortController().signal },
       { type: "session_compact", fromExtension: true, reason: "manual", willRetry: false, compactionEntry: { id: "c1", tokensBefore: 100000, tokensAfter: 25000 } },
     );

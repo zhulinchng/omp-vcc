@@ -1,11 +1,30 @@
 // @ts-nocheck
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { createRequire } from "node:module";
-import { writeFileSync } from "fs";
-import { compileRanked } from "./core/summarize";
+import { appendFileSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
+import { compileRanked, compileSegment } from "./core/summarize";
+import { buildGlobalIndex, type PersistedSessionEntry } from "./core/global-indices";
+import { scanSessionEntries } from "./core/session-lines";
+import {
+  buildAppendOnlyDetails,
+  collectActiveSegments,
+  compactionThresholds,
+  coverageForMessages,
+  decideAppendMode,
+  estimateChainTokens,
+  isPiVccAppendDetails,
+  projectAppendOnlyContext,
+} from "./core/compaction-chain";
+import {
+  applyRetainedToolOutputProjection,
+  buildRetainedToolOutputProjection,
+  type RetainedToolOutputProjection,
+} from "./core/tool-output-budget";
 import { buildPiVccCustomInstructions, parseKeepAndPrompt, PI_VCC_COMPACT_INSTRUCTION } from "./core/compact-args";
-import { loadSettings, loadSettingsWithSources, DEFAULT_SETTINGS, type PiVccSettings, type VccConfigView } from "./core/settings";
-import { calibrateCharsPerToken, estimateMessageContentChars, estimateMessageContentTokens, estimateTokensFromChars, collectUsageStats } from "./core/token-estimate";
+import { loadSettings, loadSettingsWithPluginOverlay, loadSettingsWithSourcesAsync, getSettingsPath, DEFAULT_SETTINGS, type PiVccSettings, type VccConfigView } from "./core/settings";
+import { calibrateCharsPerToken, estimateMessageContentChars, estimateScriptAwareTokens, estimateScriptAwareMessageContentTokens, collectUsageStats } from "./core/token-estimate";
+import { sanitize } from "./core/sanitize";
 import type { PiVccCompactionDetails } from "./details";
 import type { CompactionReason } from "./types";
 
@@ -185,33 +204,60 @@ export const evaluateGrowthGuard = (prefixChars: number, netNewSummaryChars: num
 let lastStats: CompactionStats | null = null;
 let lastCompactWasPiVcc = false;
 let pendingFollowUpPrompt: string | null = null;
-let pendingAutoContinueTimer: any = null;
+let pendingAutoContinueTimer: unknown = null;
 let globalHistory: CompactionStats[] = [];
-// Per-pi state to avoid cross-session pollution when multiple sessions share the
-// same ESM module singleton (e.g. main + subagents). Module globals remain as
-// fallback for host-free tests that call getLastCompactionStats() without a pi.
-const perPi = new WeakMap<any, { lastStats: CompactionStats | null; lastCompactWasPiVcc: boolean; pendingFollowUpPrompt: string | null; pendingAutoContinueTimer: any; statsHistory: CompactionStats[] }>();
-// Track strong refs for test helper clearCompactionHistoryForTests: WeakMap keys
-// cannot be enumerated, so keep a Set for test-only cleanup.
+
+interface PerPiState {
+  lastStats: CompactionStats | null;
+  lastCompactWasPiVcc: boolean;
+  pendingFollowUpPrompt: string | null;
+  pendingAutoContinueTimer: unknown;
+  statsHistory: CompactionStats[];
+  generation: number;
+  sessionId?: string;
+  timers: Set<unknown>;
+  pendingDisplay?: { text: string; sourceEntryId?: string; truncated: boolean };
+  autoCompaction?: { generation: number; sessionId?: string; reason: string; action: string; willRetry: boolean };
+  pendingCompactionFingerprint?: string;
+  pendingPreviousStats?: CompactionStats | null;
+  pendingStatsHistoryLength?: number;
+  lastSettings?: PiVccSettings;
+}
+
+const perPi = new WeakMap<any, PerPiState>();
 const perPiKeys = new Set<any>();
-// Guard eager chainShakeHint to avoid recursion: tracks pis currently chaining.
 const pendingChainShake = new WeakSet<object>();
-const getPerPi = (pi: any) => {
+const getPerPi = (pi: any): PerPiState | null => {
   if (!pi || typeof pi !== "object") return null;
-  let s = perPi.get(pi);
-  if (!s) { s = { lastStats: null, lastCompactWasPiVcc: false, pendingFollowUpPrompt: null, pendingAutoContinueTimer: null, statsHistory: [] }; perPi.set(pi, s); perPiKeys.add(pi); }
-  if (!s.statsHistory) s.statsHistory = [];
-  return s;
+  let state = perPi.get(pi);
+  if (!state) {
+    state = {
+      lastStats: null,
+      lastCompactWasPiVcc: false,
+      pendingFollowUpPrompt: null,
+      pendingAutoContinueTimer: null,
+      statsHistory: [],
+      generation: 0,
+      timers: new Set<unknown>(),
+      pendingDisplay: undefined,
+    };
+    perPi.set(pi, state);
+    perPiKeys.add(pi);
+  }
+  if (!state.statsHistory) state.statsHistory = [];
+  if (!state.timers) state.timers = new Set<unknown>();
+  if (!state.pendingDisplay) state.pendingDisplay = undefined;
+  return state;
 };
 const setLastStats = (pi: any, v: CompactionStats | null) => {
   if (v && v.timestamp == null) v.timestamp = Date.now();
   lastStats = v;
-  const s = getPerPi(pi);
-  if (s) {
-    s.lastStats = v;
+  const state = getPerPi(pi);
+  if (state) {
+    state.lastStats = v;
     if (v) {
-      s.statsHistory.push(v);
-      if (s.statsHistory.length > 50) s.statsHistory.shift();
+      state.statsHistory.push(v);
+      if (state.statsHistory.length > 50) state.statsHistory.shift();
     }
   }
   if (v) {
@@ -219,26 +265,103 @@ const setLastStats = (pi: any, v: CompactionStats | null) => {
     if (globalHistory.length > 50) globalHistory.shift();
   }
 };
-const setLastCompactWasPiVcc = (pi: any, v: boolean) => { lastCompactWasPiVcc = v; const s = getPerPi(pi); if (s) s.lastCompactWasPiVcc = v; };
-const setPendingFollowUpPrompt = (pi: any, v: string | null) => { pendingFollowUpPrompt = v; const s = getPerPi(pi); if (s) s.pendingFollowUpPrompt = v; };
-const getPendingFollowUpPrompt = (pi: any) => { const s = getPerPi(pi); return s ? s.pendingFollowUpPrompt : pendingFollowUpPrompt; };
-const clearPendingAutoContinueForPi = (pi: any) => {
-  const s = getPerPi(pi);
-  clearTimeout(s ? s.pendingAutoContinueTimer as any : pendingAutoContinueTimer as any);
-  clearTimeout(pendingAutoContinueTimer as any);
-  pendingAutoContinueTimer = null;
-  if (s) s.pendingAutoContinueTimer = null;
+const setLastCompactWasPiVcc = (pi: any, v: boolean) => {
+  lastCompactWasPiVcc = v;
+  const state = getPerPi(pi);
+  if (state) state.lastCompactWasPiVcc = v;
 };
-const scheduleAutoContinueForPi = (pi: any) => {
-  clearPendingAutoContinueForPi(pi);
-  const s = getPerPi(pi);
-  const timer: any = setTimeout(() => {
+const setPendingFollowUpPrompt = (pi: any, v: string | null) => {
+  pendingFollowUpPrompt = v;
+  const state = getPerPi(pi);
+  if (state) state.pendingFollowUpPrompt = v;
+};
+const getPendingFollowUpPrompt = (pi: any) => {
+  const state = getPerPi(pi);
+  return state ? state.pendingFollowUpPrompt : pendingFollowUpPrompt;
+};
+const sessionIdOf = (ctx: any): string | undefined => {
+  try {
+    const id = ctx?.sessionManager?.getSessionId?.();
+    return typeof id === "string" ? id : undefined;
+  } catch {
+    return undefined;
+  }
+};
+const isCurrentGeneration = (pi: any, ctx: any, generation: number, sessionId: string | undefined): boolean => {
+  const state = getPerPi(pi);
+  if (!state || state.generation !== generation) return false;
+  return (state.sessionId ?? sessionIdOf(ctx)) === sessionId;
+};
+const clearTimerHandle = (ctx: any, timer: unknown): void => {
+  if (timer == null) return;
+  try {
+    if (typeof ctx?.clearTimer === "function") ctx.clearTimer(timer);
+    else clearTimeout(timer as Parameters<typeof clearTimeout>[0]);
+  } catch {}
+};
+const scheduleManaged = (
+  pi: any,
+  ctx: any,
+  callback: () => void,
+  delay: number,
+  kind: string,
+): unknown => {
+  const state = getPerPi(pi);
+  const generation = state?.generation ?? 0;
+  const sessionId = state?.sessionId ?? sessionIdOf(ctx);
+  let handle: unknown;
+  const guarded = () => {
+    if (state) state.timers.delete(handle);
+    if (state && (state.generation !== generation || state.sessionId !== sessionId)) {
+      logMetrics(loadSettings(ctx), { event: "stale-callback", kind, generation, sessionId });
+      return;
+    }
+    try { callback(); } catch (error) { throw error; }
+  };
+  handle = typeof ctx?.setTimeout === "function" ? ctx.setTimeout(guarded, delay) : setTimeout(guarded, delay);
+  state?.timers.add(handle);
+  return handle;
+};
+const advanceSessionGeneration = (pi: any, ctx: any): void => {
+  const state = getPerPi(pi);
+  if (!state) return;
+  for (const timer of state.timers) clearTimerHandle(ctx, timer);
+  state.timers.clear();
+  state.generation++;
+  state.sessionId = sessionIdOf(ctx);
+  state.lastStats = null;
+  state.pendingCompactionFingerprint = undefined;
+  state.pendingPreviousStats = undefined;
+  state.pendingStatsHistoryLength = undefined;
+  state.lastSettings = undefined;
+  state.pendingAutoContinueTimer = null;
+  state.statsHistory = [];
+  state.pendingDisplay = undefined;
+  state.autoCompaction = undefined;
+  pendingFollowUpPrompt = null;
+  pendingAutoContinueTimer = null;
+  lastCompactWasPiVcc = false;
+  pendingChainShake.delete(pi);
+};
+const clearPendingAutoContinueForPi = (pi: any, ctx?: any): void => {
+  const state = getPerPi(pi);
+  const timer = state ? state.pendingAutoContinueTimer : pendingAutoContinueTimer;
+  clearTimerHandle(ctx, timer);
+  if (state) {
+    state.timers.delete(timer);
+    state.pendingAutoContinueTimer = null;
+  } else {
     pendingAutoContinueTimer = null;
-    if (s) s.pendingAutoContinueTimer = null;
+  }
+};
+const scheduleAutoContinueForPi = (pi: any, ctx?: any): void => {
+  clearPendingAutoContinueForPi(pi, ctx);
+  const state = getPerPi(pi);
+  const timer = scheduleManaged(pi, ctx, () => {
+    if (state) state.pendingAutoContinueTimer = null;
     try { triggerInvisibleContinue(pi); } catch {}
-  }, 0);
-  pendingAutoContinueTimer = timer;
-  if (s) s.pendingAutoContinueTimer = timer;
+  }, 0, "auto-continue");
+  if (state) state.pendingAutoContinueTimer = timer;
 };
 // the LLM context with a user-visible continue prompt. triggerInvisibleContinue
 // sends a custom message marked with a dedicated customType (content:[],
@@ -323,22 +446,19 @@ export const clearCompactionHistoryForTests = () => {
   lastStats = null;
   lastCompactWasPiVcc = false;
   pendingFollowUpPrompt = null;
-  clearTimeout(pendingAutoContinueTimer as any);
+  clearTimerHandle(undefined, pendingAutoContinueTimer);
   pendingAutoContinueTimer = null;
   for (const pi of perPiKeys) {
-    const s = perPi.get(pi);
-    if (s) {
-      s.statsHistory = [];
-      s.lastStats = null;
-      s.lastCompactWasPiVcc = false;
-      s.pendingFollowUpPrompt = null;
-      clearTimeout(s.pendingAutoContinueTimer as any);
-      s.pendingAutoContinueTimer = null;
+    const state = perPi.get(pi);
+    if (state) {
+      for (const timer of state.timers) clearTimerHandle(undefined, timer);
+      state.timers.clear();
+      state.statsHistory = [];
+      state.lastStats = null;
+      state.lastCompactWasPiVcc = false;
+      state.pendingFollowUpPrompt = null;
+      state.pendingAutoContinueTimer = null;
     }
-    // Remove strong ref so pi can be GC'd and WeakMap entry cleared; fresh
-    // getPerPi(pi) will recreate if this pi is reused, but tests create fresh
-    // pi objects each time, so clearing prevents unbounded Set growth across
-    // the 377-test suite.
     perPi.delete(pi);
   }
   perPiKeys.clear();
@@ -400,17 +520,189 @@ const readCompactionEventContext = (event: unknown): { reason?: CompactionReason
     : undefined;
   return { reason, willRetry: raw.willRetry === true };
 };
-
-export const scheduleCompactionStatsNotify = (ctx: any, stats: CompactionStats) => {
-  setTimeout(() => {
-    try {
-      ctx?.ui?.notify?.(
-        formatCompactionStats(stats),
-        "info",
-      );
-    } catch {}
-  }, 500);
+const resolveGlobalIndex = (ctx: any): Map<string, number> | undefined => {
+  try {
+    const manager = ctx?.sessionManager;
+    if (typeof manager?.getEntries === "function") {
+      const entries = manager.getEntries();
+      if (Array.isArray(entries)) return buildGlobalIndex(entries as PersistedSessionEntry[]).indexById;
+    }
+    const sessionFile = typeof manager?.getSessionFile === "function" ? manager.getSessionFile() : undefined;
+    if (typeof sessionFile !== "string") return undefined;
+    const entries: PersistedSessionEntry[] = [];
+    const scan = scanSessionEntries(sessionFile, (entry) => entries.push(entry as PersistedSessionEntry));
+    if (scan.missing) return undefined;
+    return buildGlobalIndex(entries).indexById;
+  } catch {
+    return undefined;
+  }
 };
+
+const trustedFullContextTokens = (branchEntries: any[], preparation: any, ctx: any): number | undefined => {
+  let boundary = -1;
+  for (let i = branchEntries.length - 1; i >= 0; i--) {
+    if (branchEntries[i]?.type === "compaction" || branchEntries[i]?.type === "reset_boundary") {
+      boundary = i;
+      break;
+    }
+  }
+  for (let i = branchEntries.length - 1; i > boundary; i--) {
+    const entry = branchEntries[i];
+    const message = entry?.type === "message" ? entry.message : undefined;
+    if (message?.role !== "assistant" || message.stopReason === "error" || message.stopReason === "aborted") continue;
+    const usage = message.usage;
+    if (!usage || typeof usage !== "object") continue;
+    const expectedModel = ctx?.model?.id;
+    const actualModel = typeof message.model === "string" ? message.model : undefined;
+    if (expectedModel && actualModel && expectedModel !== actualModel) continue;
+    const authoritative = typeof preparation?.tokensBefore === "number" && preparation.tokensBefore > 0
+      ? preparation.tokensBefore
+      : typeof usage.contextTokens === "number" && Number.isFinite(usage.contextTokens) && usage.contextTokens > 0
+        ? usage.contextTokens
+        : undefined;
+    if (authoritative === undefined) continue;
+    let postAnchor = 0;
+    for (let j = i + 1; j < branchEntries.length; j++) {
+      const post = branchEntries[j];
+      if (post?.type !== "message") continue;
+      postAnchor += estimateScriptAwareMessageContentTokens(post.message?.content);
+    }
+    return Math.max(0, authoritative + postAnchor);
+  }
+  return undefined;
+};
+const sourceIndicesFor = (selectedIds: Array<string | undefined>, indexById?: Map<string, number>): Array<number | undefined> =>
+  selectedIds.map((id) => id && indexById ? indexById.get(id) : undefined);
+
+const convertSelectedMessages = (
+  selectedMessages: any[],
+  selectedIds: Array<string | undefined>,
+  sourceIndices: Array<number | undefined>,
+): { messages: any[]; sourceIndices: Array<number | undefined> } => {
+  const messages: any[] = [];
+  const aligned: Array<number | undefined> = [];
+  for (let i = 0; i < selectedMessages.length; i++) {
+    const converted = convertToLlm([selectedMessages[i]]);
+    for (const message of converted) {
+      messages.push(message);
+      aligned.push(sourceIndices[i]);
+    }
+  }
+  return { messages, sourceIndices: aligned };
+};
+export const __convertSelectedMessagesForTests = convertSelectedMessages;
+const nativeMemoryQuery = (branchEntries: any[]): string => {
+  for (let i = branchEntries.length - 1; i >= 0; i--) {
+    const entry = branchEntries[i];
+    const message = entry?.type === "message" ? entry.message : undefined;
+    if (message?.role !== "user") continue;
+    let text = "";
+    if (typeof message.content === "string") text = message.content;
+    else if (Array.isArray(message.content)) {
+      text = message.content
+        .filter((part: any) => part?.type === "text" && typeof part.text === "string")
+        .map((part: any) => part.text)
+        .join("\n");
+    }
+    if (text.trim()) return text.trim().slice(0, 2_000);
+  }
+  return "";
+};
+
+const nativeMemoryBlock = (ctx: any, event: any, branchEntries: any[], settings: PiVccSettings): string | Promise<string> => {
+  if (!settings.nativeMemory || !ctx?.memory || typeof ctx.memory.search !== "function") return "";
+  if (event?.signal?.aborted) return "";
+  const query = nativeMemoryQuery(branchEntries);
+  if (!query) return "";
+  const format = (result: any): string => {
+    const root = result as any;
+    const items = Array.isArray(result) ? result : Array.isArray(root?.items) ? root.items : Array.isArray(root?.results) ? root.results : [];
+    const seen = new Set<string>();
+    const lines: string[] = [];
+    for (const raw of items) {
+      if (lines.length >= 8) break;
+      const item = raw as any;
+      const content = typeof item?.content === "string" ? item.content : typeof item?.text === "string" ? item.text : "";
+      if (!content) continue;
+      const id = typeof item?.id === "string" ? item.id : undefined;
+      const source = typeof item?.source === "string" ? item.source : undefined;
+      const key = id ?? `${source ?? ""}\u0000${content}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const metadata = [id ? `id=${id}` : undefined, source ? `source=${source}` : undefined].filter(Boolean).join(" ");
+      lines.push(`- ${metadata ? `${metadata}: ` : ""}${content.slice(0, 500)}`);
+    }
+    if (lines.length === 0) return "";
+    return `[Host Memory]\n${lines.join("\n")}`.slice(0, 4_000);
+  };
+  const fail = (error: unknown): string => {
+    dbg(settings, { nativeMemory: "error", errorClass: error instanceof Error ? error.name : typeof error });
+    logMetrics(settings, { event: "native-memory", status: "error", errorClass: error instanceof Error ? error.name : typeof error });
+    return "";
+  };
+  try {
+    const result = ctx.memory.search(query, { limit: 8, signal: event.signal });
+    return result && typeof result.then === "function" ? Promise.resolve(result).then(format, fail) : format(result);
+  } catch (error) {
+    return fail(error);
+  }
+};
+
+const injectBeforeRecallNote = (summary: string, memoryBlock: string): string => {
+  if (!memoryBlock) return summary;
+  const marker = summary.lastIndexOf("\n\n---\n\n");
+  return marker >= 0 ? `${summary.slice(0, marker)}\n\n${memoryBlock}${summary.slice(marker)}` : `${summary}\n\n${memoryBlock}`;
+};
+
+const clipUtf8 = (text: string, maxBytes: number): { text: string; truncated: boolean } => {
+  let out = "";
+  let bytes = 0;
+  for (const character of text) {
+    const size = Buffer.byteLength(character, "utf8");
+    if (bytes + size > maxBytes) return { text: out, truncated: true };
+    out += character;
+    bytes += size;
+  }
+  return { text: out, truncated: false };
+};
+
+
+const capturePreCompactionDisplay = (pi: any, selectedMessages: any[], selectedIds: Array<string | undefined>): void => {
+  for (let i = selectedMessages.length - 1; i >= 0; i--) {
+    const message = selectedMessages[i];
+    if (message?.role !== "assistant") continue;
+    let text = "";
+    if (typeof message.content === "string") text = message.content;
+    else if (Array.isArray(message.content)) {
+      text = message.content
+        .filter((part: any) => part?.type === "text" && typeof part.text === "string")
+        .map((part: any) => part.text)
+        .join("\n");
+    }
+    text = sanitize(text).replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, "").replace(/[\u0080-\u009f]/g, "");
+    if (!text) continue;
+    const clipped = clipUtf8(text, 16 * 1024);
+    const state = getPerPi(pi);
+    if (state) state.pendingDisplay = { text: clipped.text, sourceEntryId: selectedIds[i], truncated: clipped.truncated };
+    return;
+  }
+};
+
+export function scheduleCompactionStatsNotify(pi: any, ctx: any, stats: CompactionStats): void;
+export function scheduleCompactionStatsNotify(ctx: any, stats: CompactionStats): void;
+export function scheduleCompactionStatsNotify(piOrCtx: any, ctxOrStats: any, maybeStats?: CompactionStats): void {
+  const hasManagedContext = maybeStats !== undefined;
+  const pi = hasManagedContext ? piOrCtx : undefined;
+  const ctx = hasManagedContext ? ctxOrStats : piOrCtx;
+  const stats: CompactionStats = maybeStats ?? ctxOrStats;
+  const notify = () => {
+    try {
+      ctx?.ui?.notify?.(formatCompactionStats(stats), "info");
+    } catch {}
+  };
+  if (hasManagedContext) scheduleManaged(pi, ctx, notify, 500, "stats");
+  else setTimeout(notify, 500);
+}
 
 const parseCompactionInstructions = (customInstructions?: string): {
   isPiVcc: boolean;
@@ -455,6 +747,22 @@ const dbg = (settings: PiVccSettings, data: Record<string, unknown>) => {
   try { writeFileSync("/tmp/omp-vcc-debug.json", JSON.stringify(data, null, 2)); } catch {}
   try { writeFileSync("/tmp/pi-vcc-debug.json", JSON.stringify(data, null, 2)); } catch {}
 };
+const METRICS_MAX_BYTES = 10 * 1024 * 1024;
+const logMetrics = (settings: PiVccSettings, data: Record<string, unknown>): void => {
+  if (!settings.debugLog) return;
+  try {
+    const path = join(dirname(getSettingsPath()), "debug-metrics.jsonl");
+    mkdirSync(dirname(path), { recursive: true });
+    const line = `${JSON.stringify({ timestamp: Date.now(), ...data })}\n`;
+    let size = 0;
+    try { size = statSync(path).size; } catch {}
+    if (size > 0 && size + Buffer.byteLength(line, "utf8") > METRICS_MAX_BYTES) {
+      try { rmSync(`${path}.1`, { force: true }); } catch {}
+      renameSync(path, `${path}.1`);
+    }
+    appendFileSync(path, line, "utf8");
+  } catch {}
+};
 
 const previewContent = (content: unknown): string => {
   if (typeof content === "string") return content.slice(0, 300);
@@ -498,6 +806,9 @@ interface EntryWithMessage {
   entry: { id: string; type: string };
   message: { role: string; content: unknown };
 }
+const selectedEntryId = (entry: { id?: unknown }): string | undefined =>
+  typeof entry.id === "string" && entry.id.length > 0 ? entry.id : undefined;
+
 
 // Convert a non-message entry that carries LLM-context text (custom_message /
 // branch_summary) into its agent-message form, mirroring pi-core's
@@ -541,6 +852,7 @@ export type OwnCutResult =
       requestedKeepUserTurns: number;
       keepFallbackToCompactAll: boolean;
       budgetCut?: BudgetCutKind;
+      selectedIds: Array<string | undefined>;
     }
   | { ok: false; reason: OwnCutCancelReason };
 
@@ -625,6 +937,7 @@ export function buildOwnCut(branchEntries: any[], keepUserTurns = 1, explicitKee
   const compactAll = (keepFallbackToCompactAll: boolean) => ({
     ok: true as const,
     messages: liveMessages.map((e) => e.message),
+    selectedIds: liveMessages.map((e) => selectedEntryId(e.entry)),
     firstKeptEntryId: "",
     compactAll: true,
     keptUserTurns: 0,
@@ -651,6 +964,7 @@ export function buildOwnCut(branchEntries: any[], keepUserTurns = 1, explicitKee
       return {
         ok: true,
         messages: liveMessages.slice(0, firstUserIdx).map((e) => e.message),
+        selectedIds: liveMessages.slice(0, firstUserIdx).map((e) => selectedEntryId(e.entry)),
         firstKeptEntryId: liveMessages[firstUserIdx].entry.id,
         compactAll: false,
         keptUserTurns: userIndices.length,
@@ -666,6 +980,7 @@ export function buildOwnCut(branchEntries: any[], keepUserTurns = 1, explicitKee
   return {
     ok: true,
     messages: liveMessages.slice(0, cutIdx).map((e) => e.message),
+    selectedIds: liveMessages.slice(0, cutIdx).map((e) => selectedEntryId(e.entry)),
     firstKeptEntryId: liveMessages[cutIdx].entry.id,
     compactAll: false,
     keptUserTurns: userIndices.length - targetUserIdx,
@@ -687,7 +1002,7 @@ export const findBudgetCutIndex = (
   let acc = 0;
   let crossed = -1;
   for (let i = live.length - 1; i >= 0; i--) {
-    acc += estimateMessageContentTokens(live[i].message.content, charsPerToken);
+    acc += estimateScriptAwareMessageContentTokens(live[i].message.content);
     if (acc >= maxTokens) {
       crossed = i;
       break;
@@ -714,6 +1029,7 @@ export const applyTailBudget = (
   const budgetResult = (idx: number, budgetCut: BudgetCutKind): OwnCutResult => ({
     ok: true,
     messages: live.slice(0, idx).map((m) => m.message),
+    selectedIds: live.slice(0, idx).map((m) => selectedEntryId(m.entry)),
     firstKeptEntryId: live[idx].entry.id,
     compactAll: false,
     keptUserTurns: live.slice(idx).filter((m) => m.message.role === "user").length,
@@ -737,7 +1053,7 @@ export const applyTailBudget = (
   const tailStart = cut.messages.length; // equals the cut index in the live window
   let tailTokens = 0;
   for (let i = tailStart; i < live.length; i++) {
-    tailTokens += estimateMessageContentTokens(live[i].message.content, opts.charsPerToken);
+    tailTokens += estimateScriptAwareMessageContentTokens(live[i].message.content);
   }
   if (tailTokens <= maxTokens * factor) return cut;
   const idx = findBudgetCutIndex(live, maxTokens, opts.charsPerToken);
@@ -790,11 +1106,10 @@ const tailTokensForKeep = (branchEntries: any[], keepUserTurns: number, charsPer
   const live = collectLiveMessages(branchEntries);
   const keptIdx = live.findIndex((e) => e.entry.id === cut.firstKeptEntryId);
   if (keptIdx < 0) return null;
-  const chars = live.slice(keptIdx).reduce(
-    (sum: number, e) => sum + estimateMessageContentChars(e.message?.content),
+  return live.slice(keptIdx).reduce(
+    (sum: number, e) => sum + estimateScriptAwareMessageContentTokens(e.message?.content),
     0,
   );
-  return estimateTokensFromChars(chars, charsPerToken);
 };
 
 /**
@@ -844,23 +1159,103 @@ const REASON_MESSAGES: Record<OwnCutCancelReason, string> = {
 export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
   // Filter our invisible-continue marker out of the LLM context payload so the
   // model just continues from the compaction summary (matched by customType ONLY).
-  pi.on("context", (event) => {
-    const messages = event.messages.filter((message) => {
+  pi.on("context", (event, ctx) => {
+    let messages = event.messages;
+    const filtered = event.messages.filter((message) => {
       if (message.role !== "custom") return true;
       return message.customType !== AUTO_CONTINUE_CUSTOM_TYPE && message.customType !== LEGACY_AUTO_CONTINUE_CUSTOM_TYPE;
     });
-    if (messages.length !== event.messages.length) return { messages };
+    if (filtered.length !== event.messages.length) messages = filtered;
+    let entries: any[] = [];
+    try {
+      const branch = ctx?.sessionManager?.getBranch?.();
+      if (Array.isArray(branch)) entries = branch;
+      else {
+        const value = ctx?.sessionManager?.getEntries?.();
+        if (Array.isArray(value)) entries = value;
+      }
+    } catch {}
+    const latest = [...entries].reverse().find((entry) => entry?.type === "compaction");
+    if (latest && typeof latest.summary === "string") {
+      if (isPiVccAppendDetails(latest.details)) {
+        const chain = collectActiveSegments(entries, { fallbackSummary: latest.summary });
+        if (chain) {
+          const projected = projectAppendOnlyContext({ messages, chain, fallbackSummary: latest.summary });
+          if (projected !== messages) messages = projected;
+        }
+      }
+      const projection: RetainedToolOutputProjection | undefined = latest.details?.retainedToolOutputProjection;
+      if (projection) {
+        const serializedByEntryId: Record<string, string> = {};
+        const omissionToolCallIds: Record<string, string> = {};
+        for (const entry of entries) {
+          if (entry?.type !== "message" || typeof entry.id !== "string") continue;
+          try { serializedByEntryId[entry.id] = JSON.stringify(entry.message); } catch {}
+          if (typeof entry.message?.toolCallId === "string") omissionToolCallIds[entry.id] = entry.message.toolCallId;
+        }
+        const projected = applyRetainedToolOutputProjection(messages, projection, { serializedByEntryId, omissionToolCallIds });
+        if (projected !== messages) messages = projected;
+      }
+    }
+    if (messages !== event.messages) return { messages };
   });
 
-  pi.on("before_agent_start", () => {
-    clearPendingAutoContinueForPi(pi);
+  for (const eventName of ["session_start", "session_switch", "session_branch", "session_shutdown"]) {
+    pi.on(eventName, (_event, ctx) => advanceSessionGeneration(pi, ctx));
+  }
+  pi.on("auto_compaction_start", (event, ctx) => {
+    const state = getPerPi(pi);
+    if (!state) return;
+    state.autoCompaction = {
+      generation: state.generation,
+      sessionId: state.sessionId ?? sessionIdOf(ctx),
+      reason: typeof (event as any)?.reason === "string" ? (event as any).reason : "unknown",
+      action: typeof (event as any)?.action === "string" ? (event as any).action : "unknown",
+      willRetry: false,
+    };
+  });
+  pi.on("auto_compaction_end", (event, ctx) => {
+    const state = getPerPi(pi);
+    if (!state) return;
+    const auto = state.autoCompaction;
+    state.autoCompaction = undefined;
+    logMetrics(loadSettings(ctx), {
+      event: "auto-compaction-end",
+      action: (event as any)?.action,
+      aborted: (event as any)?.aborted === true,
+      willRetry: (event as any)?.willRetry === true,
+      generation: auto?.generation,
+    });
+  });
+
+  pi.on("before_agent_start", (_event, ctx) => {
+    clearPendingAutoContinueForPi(pi, ctx);
   });
 
   pi.on("session_before_compact", (event, ctx) => {
-    const { preparation, branchEntries, customInstructions } = event;
-    const { reason, willRetry } = readCompactionEventContext(event);
-    const settings = loadSettings(ctx);
-    if (!settings.vccEnabled) return;
+    const attemptState = getPerPi(pi);
+    const attemptGeneration = attemptState?.generation ?? 0;
+    const attemptSessionId = sessionIdOf(ctx);
+    const attemptCurrent = (): boolean => !event?.signal?.aborted && isCurrentGeneration(pi, ctx, attemptGeneration, attemptSessionId);
+    const settingsResult = loadSettingsWithPluginOverlay(ctx);
+    const runBefore = (settings: PiVccSettings) => {
+      if (!attemptCurrent()) return;
+      if (attemptState) {
+        attemptState.pendingCompactionFingerprint = undefined;
+        attemptState.pendingPreviousStats = attemptState.lastStats;
+        attemptState.pendingStatsHistoryLength = attemptState.statsHistory.length;
+      }
+      if (attemptState) {
+        attemptState.pendingDisplay = undefined;
+        attemptState.lastSettings = settings;
+      }
+      const { preparation, branchEntries, customInstructions } = event;
+      const eventContext = readCompactionEventContext(event);
+      const auto = attemptState?.autoCompaction;
+      const autoReason = auto?.reason === "threshold" || auto?.reason === "overflow" || auto?.reason === "manual" ? auto.reason : undefined;
+      const reason = eventContext.reason ?? autoReason;
+      const willRetry = eventContext.willRetry || auto?.willRetry === true;
+      if (!settings.vccEnabled) return;
 
     // Always handle explicit /pi-vcc or /omp-vcc marker.
     // Otherwise, only handle when user opted in via settings.
@@ -886,6 +1281,9 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     // still handled (isPiVcc path falls through below).
     if (!isPiVcc && pendingChainShake.has(pi as unknown as object)) return;
     if (!isPiVcc && !settings.overrideDefaultCompaction) return;
+    const memoryResult = nativeMemoryBlock(ctx, event, branchEntries as any[], settings);
+    function runBody(memoryBlock: string) {
+      if (!attemptCurrent()) return;
 
     const calibrationCut = buildOwnCut(branchEntries as any[], 0);
     const calibrationMessageChars = calibrationCut.ok
@@ -1036,18 +1434,21 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     setPendingFollowUpPrompt(pi, followUpPrompt);
     const agentMessages = ownCut.messages;
     const firstKeptEntryId = ownCut.firstKeptEntryId;
-    const messages = convertToLlm(agentMessages);
+    const globalIndexById = resolveGlobalIndex(ctx);
+    const selectedSourceIndices = sourceIndicesFor(ownCut.selectedIds, globalIndexById);
+    const converted = convertSelectedMessages(agentMessages, ownCut.selectedIds, selectedSourceIndices);
+    const messages = converted.messages;
+    const sourceIndices = converted.sourceIndices;
 
-    // Count kept messages and estimate tokens
+    // Count kept messages and estimate tokens with the script-aware estimator.
     const keptIdx = (branchEntries as any[]).findIndex((e: any) => e.id === firstKeptEntryId);
     const keptEntries = keptIdx >= 0
       ? (branchEntries as any[]).slice(keptIdx).filter((e: any) => e.type === "message")
       : [];
-    const keptChars = keptEntries.reduce(
-      (sum: number, e: any) => sum + estimateMessageContentChars(e.message?.content),
+    const keptTokensEst = keptEntries.reduce(
+      (sum: number, entry: any) => sum + estimateScriptAwareMessageContentTokens(entry.message?.content),
       0,
     );
-    const keptTokensEst = estimateTokensFromChars(keptChars, tokenEstimate.charsPerToken);
     const config = settings;
 
     // Ranked compaction: keep the highest-signal blocks under a token budget
@@ -1069,8 +1470,9 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const RANKED_BRIEF_BUDGET_TOKENS = 1100;
     const RANKED_BRIEF_CEILING_TOKENS = 2000;
     const RANKED_BRIEF_TOKENS_PER_BLOCK = 15;
-    const summary = compileRanked({
+    let summary = compileRanked({
       messages,
+      sourceIndices,
       previousSummary: preparation.previousSummary,
       fileOps: {
         readFiles: [...preparation.fileOps.read],
@@ -1082,6 +1484,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         briefCharsPerBlock: Math.round(RANKED_BRIEF_TOKENS_PER_BLOCK * tokenEstimate.charsPerToken),
       },
     });
+    summary = injectBeforeRecallNote(summary, memoryBlock);
 
     // Keep-all cut with an empty prefix and no previous summary yields nothing
     // new to summarize. Never hand the host an empty summary — cancel and keep
@@ -1117,8 +1520,11 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const guard = evaluateGrowthGuard(prefixChars, netNewSummaryChars);
     const { netGrowthChars, toleranceChars } = guard;
     if (guard.trip) {
-      const prefixTok = estimateTokensFromChars(prefixChars, tokenEstimate.charsPerToken);
-      const netNewTok = estimateTokensFromChars(netNewSummaryChars, tokenEstimate.charsPerToken);
+      const prefixTok = agentMessages.reduce(
+        (sum: number, message: any) => sum + estimateScriptAwareMessageContentTokens(message.content),
+        0,
+      );
+      const netNewTok = estimateScriptAwareTokens(String(Math.max(0, netNewSummaryChars)));
       dbg(settings, {
         growthGuard: true,
         cancelled: reason !== "overflow" && !willRetry,
@@ -1141,7 +1547,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     }
 
     const tokensBefore = typeof preparation.tokensBefore === "number" ? preparation.tokensBefore : 0;
-    const summaryTokensEst = estimateTokensFromChars(summaryChars, tokenEstimate.charsPerToken);
+    const summaryTokensEst = estimateScriptAwareTokens(summary);
     const tokensAfterEst = summaryTokensEst + keptTokensEst;
     const tokensSavedEst = tokensBefore > 0 ? Math.max(0, tokensBefore - tokensAfterEst) : 0;
     const savedPercentEst = tokensBefore > 0 && tokensSavedEst > 0 ? Math.round((tokensSavedEst / tokensBefore) * 100) : 0;
@@ -1178,6 +1584,8 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
           preview: e.type === "message" ? previewContent(e.message?.content) : undefined,
         }))
       : [];
+    const retainedCandidates = collectLiveMessages(branchEntries as any[]).map(({ entry, message }) => ({ id: entry.id, type: entry.type, message }));
+    const retainedProjection = buildRetainedToolOutputProjection(retainedCandidates, settings.retainedToolOutputMaxTokens, globalIndexById);
 
     const KNOWN_SECTIONS = new Set(["Session Goal", "Files And Changes", "Commits", "Outstanding Context", "User Preferences"]);
     const extractKnownSections = (text: string) =>
@@ -1208,13 +1616,100 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         savedPercentEst,
       },
     });
+    const appendMode = settings.compactionSummaryMode === "append";
+    const latestCompaction = [...branchEntries].reverse().find((entry: any) => entry?.type === "compaction");
+    const hasPriorCompaction = latestCompaction !== undefined;
+    const previousChain = appendMode && hasPriorCompaction && typeof preparation.previousSummary === "string"
+      ? collectActiveSegments(branchEntries, { fallbackSummary: preparation.previousSummary })
+      : null;
+    const legacyRewriteBase = isPiVcc && hasPriorCompaction
+      && (latestCompaction?.details?.compactor === "omp-vcc" || latestCompaction?.details?.compactor === "pi-vcc")
+      && latestCompaction?.details?.version === 2
+      && typeof preparation.previousSummary === "string"
+      && latestCompaction.summary === preparation.previousSummary;
+    const appendEligible = appendMode && (!hasPriorCompaction || previousChain !== null || legacyRewriteBase);
+    const freshSummary = appendEligible
+      ? compileSegment({
+          messages,
+          sourceIndices,
+          fileOps: {
+            readFiles: [...preparation.fileOps.read],
+            modifiedFiles: [...preparation.fileOps.written, ...preparation.fileOps.edited],
+          },
+        })
+      : "";
+    const appendCoverage = appendEligible
+      ? coverageForMessages({ selectedIds: ownCut.selectedIds, firstKeptEntryId, sourceMessageCount: agentMessages.length })
+      : null;
+    const contextWindow = typeof ctx?.model?.contextWindow === "number" && Number.isFinite(ctx.model.contextWindow) && ctx.model.contextWindow > 0
+      ? ctx.model.contextWindow
+      : undefined;
+    const reserveTokens = typeof preparation.settings?.reserveTokens === "number" ? preparation.settings.reserveTokens : undefined;
+    const chainTokens = (previousChain ? estimateChainTokens(previousChain) : 0) + estimateScriptAwareTokens(freshSummary);
+    const rebaseChainTokens = estimateScriptAwareTokens(summary);
+    const thresholds = compactionThresholds(contextWindow, reserveTokens);
+    const fullContextTokens = trustedFullContextTokens(branchEntries, preparation, ctx);
+    const pressure = chainTokens >= thresholds.chainThreshold
+      || (thresholds.contextThreshold !== undefined && fullContextTokens !== undefined && fullContextTokens >= thresholds.contextThreshold)
+      || (thresholds.capacity !== undefined && fullContextTokens !== undefined && fullContextTokens > thresholds.capacity);
+    const decision = decideAppendMode({
+      manual: isPiVcc,
+      overflow: reason === "overflow",
+      willRetry,
+      pressure,
+      chainTokens,
+      rebaseChainTokens,
+      contextWindow,
+      reserveTokens,
+      fullContextTokens,
+    });
+    const appendDetails = appendEligible && appendCoverage && freshSummary
+      ? buildAppendOnlyDetails({
+          segment: { summary: freshSummary, coverage: appendCoverage, tokensBefore },
+          chainStart: !previousChain || decision.mode === "rebase",
+          trailingSummary: summary,
+          sections: extractKnownSections(summary),
+          sourceMessageCount: agentMessages.length,
+          previousSummaryUsed: Boolean(previousChain) || legacyRewriteBase,
+          previous: decision.mode === "rebase" ? null : previousChain,
+          retainedToolOutputProjection: retainedProjection,
+        })
+      : null;
+    if (appendDetails) {
+      Object.assign(appendDetails, {
+        reason,
+        willRetry,
+        savings: {
+          tokensBefore,
+          summaryChars,
+          summaryTokensEst,
+          keptTokensEst,
+          tokensAfterEst,
+          tokensSavedEst,
+          savedPercentEst,
+        },
+      });
+    }
+    logMetrics(settings, {
+      event: "append-decision",
+      mode: decision.mode,
+      chainStart: !previousChain || decision.mode === "rebase",
+      pressure,
+      chainTokens,
+      rebaseChainTokens,
+      retainedTokens: retainedProjection?.retainedTokens ?? 0,
+      omittedTokens: retainedProjection?.omittedTokens ?? 0,
+      pendingCount: retainedProjection?.pendingCount ?? 0,
+    });
 
-    const details: PiVccCompactionDetails = {
+
+    const details = appendDetails ?? {
       compactor: "omp-vcc",
       version: 2,
       sections: extractKnownSections(summary),
       sourceMessageCount: agentMessages.length,
       previousSummaryUsed: Boolean(preparation.previousSummary),
+      retainedToolOutputProjection: retainedProjection,
       reason,
       willRetry,
       savings: {
@@ -1227,34 +1722,79 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         savedPercentEst,
       },
     };
+    capturePreCompactionDisplay(pi, agentMessages, ownCut.selectedIds);
 
     setLastCompactWasPiVcc(pi, isPiVcc);
 
-    return {
-      compaction: {
-        summary,
-        details,
-        tokensBefore: preparation.tokensBefore,
-        firstKeptEntryId,
-      },
+    const compaction = {
+      summary,
+      details,
+      tokensBefore: preparation.tokensBefore,
+      firstKeptEntryId,
     };
+    if (attemptState) {
+      attemptState.pendingCompactionFingerprint = JSON.stringify({
+        summary: compaction.summary,
+        firstKeptEntryId: compaction.firstKeptEntryId,
+        details: compaction.details,
+      });
+    }
+    return { compaction };
+    };
+    if (typeof memoryResult !== "string") return memoryResult.then((memoryBlock) => {
+      if (!attemptCurrent()) return;
+      return runBody(memoryBlock);
+    });
+    return runBody(memoryResult);
+    };
+    if (settingsResult && typeof (settingsResult as any).then === "function") {
+      return settingsResult.then((settings) => {
+        if (!attemptCurrent()) return;
+        return runBefore(settings);
+      });
+    }
+    return runBefore(settingsResult as PiVccSettings);
   });
   pi.on("session_compact", async (event, ctx) => {
-    const { reason, willRetry } = readCompactionEventContext(event);
-    if (!event.fromExtension) return;
-    const followUpPrompt = getPendingFollowUpPrompt(pi);
-    setPendingFollowUpPrompt(pi, null);
     const per = getPerPi(pi);
+    const generation = per?.generation ?? 0;
+    const sessionId = per?.sessionId ?? sessionIdOf(ctx);
+    const isCurrent = () => isCurrentGeneration(pi, ctx, generation, sessionId);
+    const settings = await loadSettingsWithPluginOverlay(ctx);
+    if (!isCurrent()) return;
+    const entry: any = (event as any).compactionEntry;
+    const committedFingerprint = entry
+      ? JSON.stringify({ summary: entry.summary, firstKeptEntryId: entry.firstKeptEntryId, details: entry.details })
+      : undefined;
+    const pendingFingerprint = per?.pendingCompactionFingerprint;
+    const legacyCompletionShape = !entry || (entry.summary === undefined && entry.details === undefined);
+    const ownsCompaction = event.fromExtension === true
+      && (!pendingFingerprint || committedFingerprint === pendingFingerprint || legacyCompletionShape);
+    const pendingDisplay = per?.pendingDisplay;
+    const followUpPrompt = getPendingFollowUpPrompt(pi);
+    if (per) {
+      if (!ownsCompaction && pendingFingerprint && per.pendingStatsHistoryLength !== undefined) {
+        per.statsHistory.length = per.pendingStatsHistoryLength;
+        per.lastStats = per.pendingPreviousStats;
+      }
+      per.pendingDisplay = undefined;
+      per.pendingCompactionFingerprint = undefined;
+      per.pendingPreviousStats = undefined;
+      per.pendingStatsHistoryLength = undefined;
+    }
+    setPendingFollowUpPrompt(pi, null);
+    if (!ownsCompaction) return;
+    if (pendingDisplay && settings.showPreCompactionMessage) {
+      try { ctx?.ui?.notify?.(`[Previous output — display only]\n${pendingDisplay.text}`, "info"); } catch {}
+    }
     const stats = per ? per.lastStats : lastStats;
     if (!stats) return;
-    // Enrich with authoritative tokensAfter from host if available (even for pi-vcc manual, before early return)
-    const entry: any = (event as any).compactionEntry;
     if (entry && typeof entry.tokensAfter === "number" && typeof entry.tokensBefore === "number") {
       const before = entry.tokensBefore;
       const after = entry.tokensAfter;
       const saved = Math.max(0, before - after);
       const percent = before > 0 && saved > 0 ? Math.round((saved / before) * 100) : 0;
-      if (per && per.lastStats) {
+      if (per?.lastStats) {
         per.lastStats.tokensAfter = after;
         per.lastStats.tokensSaved = saved;
         per.lastStats.savedPercent = percent;
@@ -1271,9 +1811,8 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       (stats as any).savedPercent = percent;
       (stats as any).tokensBefore = before;
       try {
-        const cfg = loadSettings(ctx);
-        if (cfg.debug) {
-          dbg(cfg, {
+        if (settings.debug) {
+          dbg(settings, {
             authoritativeSavings: { tokensBefore: before, tokensAfter: after, tokensSaved: saved, savedPercent: percent },
             eventEntry: { id: entry.id, tokensBefore: entry.tokensBefore, tokensAfter: entry.tokensAfter },
           });
@@ -1281,52 +1820,54 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       } catch {}
     }
     const isPiVccLast = per ? per.lastCompactWasPiVcc : lastCompactWasPiVcc;
-    if (isPiVccLast) return; // /pi-vcc handles its own toast via onComplete
-    if (willRetry) return;
-    // omp's SessionCompactEvent is {compactionEntry, fromExtension} only
-    // (shared-events.ts:84-89); reason/willRetry are always undefined/false
-    // under real omp runs. Treat undefined as auto (threshold/overflow) when
-    // the compaction was sizable, otherwise manual /compact should not auto-continue.
+    if (isPiVccLast) {
+      if (per) per.lastCompactWasPiVcc = false;
+      else lastCompactWasPiVcc = false;
+      return;
+    }
+    const auto = per?.autoCompaction;
+    const hostOwnsContinuation = auto?.generation === generation && (auto.sessionId ?? sessionIdOf(ctx)) === sessionId;
+    const eventContext = readCompactionEventContext(event);
+    const autoReason = auto?.reason === "threshold" || auto?.reason === "overflow" ? auto.reason : undefined;
+    const reason = eventContext.reason ?? autoReason;
+    const willRetry = eventContext.willRetry || auto?.willRetry === true;
     const isLargeCompaction = (stats.summarized > 10) || (stats.kept > 5) || (stats.keptTokensEst > 2000);
-    const shouldContinueAfterAutoCompact = (reason === "threshold" || reason === "overflow" || (reason == null && isLargeCompaction)) && loadSettings(ctx).continueAfterThresholdCompact;
-    scheduleCompactionStatsNotify(ctx, stats);
-    // Eager post-VCC shake chain (chainShakeHint, omp only). {mode:"shake"}
-    // is the omp native spelling; the before handler above yields while
-    // pendingChainShake is set so the host actually runs shake instead of
-    // VCC swallowing the modeless call. pi's CompactOptions has no mode key
-    // (the call would trigger a spurious default compaction), so pi never
-    // chains — host rescue remains the only shake path there.
+    const shouldContinueAfterAutoCompact = !hostOwnsContinuation
+      && (reason === "threshold" || reason === "overflow" || (reason == null && isLargeCompaction))
+      && settings.continueAfterThresholdCompact;
+    if (willRetry) return;
+    scheduleCompactionStatsNotify(pi, ctx, stats);
+    if (hostOwnsContinuation) return;
     try {
-      const cfgChain = loadSettings(ctx);
       const ctxMaybe = ctx as unknown as Record<string, unknown>;
       const compactFn = ctxMaybe["compact"];
       const promptOf = ctxMaybe["getSystemPrompt"] as ((this: unknown) => unknown) | undefined;
-      // Form is detected off the live ctx so bundled runtimes (no module
-      // scope) still decide correctly.
       const chainForm = getCompactForm(() => promptOf?.call(ctx));
-      if (cfgChain.chainShakeHint && chainForm === "string" && typeof compactFn === "function" && !pendingChainShake.has(pi as unknown as object) && !willRetry && !isPiVccLast) {
+      if (settings.chainShakeHint && chainForm === "string" && typeof compactFn === "function" && !pendingChainShake.has(pi as unknown as object) && !willRetry) {
         pendingChainShake.add(pi as unknown as object);
-        const maybePromise = (compactFn as unknown as (o: unknown) => Promise<void>).call(ctx, { mode: "shake" } as unknown);
-        const asPromise = maybePromise as unknown as Promise<void> | void;
-        if (asPromise && typeof (asPromise as unknown as Promise<void>).catch === "function") {
-          (asPromise as unknown as Promise<void>).catch(() => {}).finally(() => {
-            setTimeout(() => { try { pendingChainShake.delete(pi as unknown as object); } catch {} }, 2000);
-          });
-        } else {
-          setTimeout(() => { try { pendingChainShake.delete(pi as unknown as object); } catch {} }, 2000);
-        }
+        const startShake = () => {
+          try {
+            const maybePromise = (compactFn as unknown as (o: unknown) => Promise<void>).call(ctx, { mode: "shake" } as unknown);
+            const asPromise = maybePromise as unknown as Promise<void> | void;
+            if (asPromise && typeof (asPromise as unknown as Promise<void>).catch === "function") {
+              (asPromise as unknown as Promise<void>).catch(() => { pendingChainShake.delete(pi as unknown as object); });
+            }
+          } catch {
+            pendingChainShake.delete(pi as unknown as object);
+          }
+        };
+        if (typeof ctx?.setTimeout === "function") scheduleManaged(pi, ctx, startShake, 5, "chain-shake-start");
+        else startShake();
+        scheduleManaged(pi, ctx, () => { try { pendingChainShake.delete(pi as unknown as object); } catch {} }, 2000, "chain-shake-cleanup");
       }
     } catch {}
     if (followUpPrompt) {
-      // Fire-and-forget: pi's sendUserMessage returns void, omp's returns a
-      // promise — never await either, but swallow async rejections so a
-      // failed redelivery cannot surface as an unhandled rejection.
       try {
         const sent = (pi as any).sendUserMessage?.(followUpPrompt) as Promise<void> | undefined;
         if (sent && typeof sent.catch === "function") sent.catch(() => {});
       } catch {}
     } else if (shouldContinueAfterAutoCompact) {
-      scheduleAutoContinueForPi(pi);
+      scheduleAutoContinueForPi(pi, ctx);
     }
   });
 };
@@ -1405,16 +1946,18 @@ export const formatVccConfigCard = (view: VccConfigView): string => {
       : view.readPath === view.path
         ? `Source: file ${view.readPath}`
         : `Source: fallback file ${view.readPath}`;
-  const lines = (Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]).map(
-    (k) => `- ${k}: ${view.values[k] ? "on" : "off"} (${view.sources[k] === "overlay" ? "host overlay" : view.sources[k]})`,
-  );
+  const lines = (Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]).map((key) => {
+    const value = view.values[key];
+    const display = typeof value === "number" ? String(value) : typeof value === "string" ? value : value ? "on" : "off";
+    return `- ${key}: ${display} (${view.sources[key] === "overlay" ? "host overlay" : view.sources[key]})`;
+  });
   return [header, status, ...lines].join("\n");
 };
 
 export const registerVccConfigCommand = (pi: any) => {
   const handler = async (_args: string, ctx: any) => {
     // args deliberately ignored — always show the effective config
-    const view = loadSettingsWithSources(ctx);
+    const view = await loadSettingsWithSourcesAsync(ctx);
     const output = formatVccConfigCard(view);
     const piAny = pi as unknown as { sendMessage?: (msg: unknown, opts?: unknown) => void };
     try { piAny.sendMessage?.({ customType: "vcc-config", content: output, display: true }, { triggerTurn: false }); } catch {}

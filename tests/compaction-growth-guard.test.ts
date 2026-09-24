@@ -121,12 +121,9 @@ describe("compaction growth guard", () => {
     expect(getLastCompactionStats(pi)).toBeNull();
   });
 
-  test("kept-tail estimate uses the dense prior on dense tails", async () => {
-    // Same session shape as the report (~47.3k tok read at cpt=4): the dense
-    // tail sample now selects the dense prior (3), so the kept tail reads
-    // ~63k — closer to the host's ~80k+ truth (measured ~2.1 cpt on cl100k).
-    // Estimation still cannot see growth alone, which is why the guard
-    // compares chars, not estimated tokens.
+  test("kept-tail estimate uses the shared script-aware estimator", async () => {
+    // The approved estimator counts dense Latin content at one token per four
+    // characters; the growth guard remains character-based and calibration-free.
     const { pi, invokeBefore } = createMockPi();
     registerBeforeCompactHook(pi);
     await invokeBefore(makeEvent([...mediumPrefix(), giantTail()]));
@@ -134,8 +131,8 @@ describe("compaction growth guard", () => {
     expect(stats?.summarized).toBe(2);
     expect(stats?.keptUserTurns).toBe(1);
     expect(stats?.totalUserTurns).toBe(1);
-    expect(stats?.keptTokensEst).toBeGreaterThan(55000);
-    expect(stats?.keptTokensEst).toBeLessThan(70000);
+    expect(stats?.keptTokensEst).toBeGreaterThan(45000);
+    expect(stats?.keptTokensEst).toBeLessThan(55000);
   });
 
   test("compressive prefix proceeds", async () => {

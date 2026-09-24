@@ -434,7 +434,7 @@ describe("registerBeforeCompactHook: compact-all path", () => {
   });
 
   test("session_compact overflow retry does not send follow-up prompt", async () => {
-    setConfig({ debug: false, overrideDefaultCompaction: true });
+    setConfig({ debug: false, overrideDefaultCompaction: true, showPreCompactionMessage: false });
     const { pi, invokeBefore, invokeCompact, userMessages, customMessages, notifyCalls } = createMockPi();
     registerBeforeCompactHook(pi);
 
