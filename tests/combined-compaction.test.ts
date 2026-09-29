@@ -350,136 +350,40 @@ describe("combined-compaction: edge cases preserved", () => {
   });
 });
 
-describe("combined-compaction: chainShakeHint eager chain", () => {
+describe("combined-compaction: no eager post-VCC compaction", () => {
   beforeEach(() => clearCompactionHistoryForTests());
 
-  test("chainShakeHint false does NOT call ctx.compact after VCC", async () => {
-    setConfig({ overrideDefaultCompaction: true, vccEnabled: true, chainShakeHint: false, continueAfterThresholdCompact: false });
-    const beforeCalls: any[] = [];
-    let compactCalls = 0;
-    const pi: any = {
-      on: (name: string, h: any) => {
-        if (name === "session_before_compact") beforeCalls.push(h);
-        if (name === "session_compact") {
-          // capture handler to invoke later
-          (pi as any)._compactHandler = h;
-        }
-      },
-      sendMessage: () => {},
-      sendUserMessage: () => {},
-    };
+  test("session_compact never calls ctx.compact after a VCC compaction", async () => {
+    // The host exposes no shake mode (COMPACT_MODES = soft|remote|snapcompact),
+    // so an eager ctx.compact({mode:"shake"}) would silently run the configured
+    // methodOrder (a second, possibly billed, native compaction). The hook must
+    // not call compact at all; tail elision comes from
+    // retainedToolOutputMaxTokens plus the host's own dead-end rescue.
+    setConfig({ overrideDefaultCompaction: true, vccEnabled: true, continueAfterThresholdCompact: false });
+    const pi: any = { on: (n: string, h: any) => { (pi as any)[n] = h; }, sendMessage: () => {}, sendUserMessage: () => {} };
     registerBeforeCompactHook(pi);
-    const beforeHandler = beforeCalls[0];
-    const entries = buildSession(5);
-    // threshold proxy (no sentinel) so isPiVcc false -> chain not suppressed by isPiVccLast
-    const event = makeEvent(entries, undefined, {}, 90000);
-    // provide ctx without compact to invoke before
-    const result = await beforeHandler(event, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
-    expect(result.compaction).toBeDefined();
-    // now simulate session_compact with chainShakeHint false
-    const compactHandler = (pi as any)._compactHandler;
+    const beforeHandler = (pi as any)["session_before_compact"];
+    const compactHandler = (pi as any)["session_compact"];
+    const seeded: any = await beforeHandler(makeEvent(buildSession(6), undefined, {}, 90000), {
+      settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} },
+    });
+    expect(seeded.compaction).toBeDefined();
+    let compactCalls = 0;
     const ctx: any = {
       settings: { get: () => undefined },
       config: { get: () => undefined },
       ui: { notify: () => {} },
+      getSystemPrompt: () => ["prompt"],
       compact: () => { compactCalls++; return Promise.resolve(); },
     };
-    // need to set perPi lastStats via the before handler's side effect (it set lastStats)
-    // invoke compact handler with fromExtension true
-    await compactHandler({ fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 20000 } }, ctx);
-    // wait a tick for any async chain — integration test deliberately uses real timer
-    await new Promise((r) => setTimeout(r, 20));
+    await compactHandler({ fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 21000 } }, ctx);
+    await compactHandler({ fromExtension: true, compactionEntry: { id: "c2", tokensBefore: 90000, tokensAfter: 21000 } }, ctx);
+    await new Promise((r) => setTimeout(r, 30));
     expect(compactCalls).toBe(0);
   });
 
-  test("chainShakeHint true calls ctx.compact({mode:shake}) once and guards recursion", async () => {
-    setConfig({ overrideDefaultCompaction: true, vccEnabled: true, chainShakeHint: true, continueAfterThresholdCompact: false });
-    const pi: any = { on: (n: string, h: any) => { (pi as any)[n] = h; }, sendMessage: () => {}, sendUserMessage: () => {} };
-    registerBeforeCompactHook(pi);
-    const beforeHandler = (pi as any)["session_before_compact"];
-    const compactHandler = (pi as any)["session_compact"];
-    const entries = buildSession(6);
-    const event = makeEvent(entries, undefined, {}, 90000);
-    const ctxBefore: any = { settings: { get: (k: string) => (k.includes("chainShakeHint") ? true : undefined) }, config: { get: () => undefined }, ui: { notify: () => {} } };
-    // For loadSettings to see chainShakeHint true, file config true is enough (we set it), so ctx overlay not needed but we pass chain true anyway
-    const result = await beforeHandler(event, ctxBefore);
-    expect(result.compaction).toBeDefined();
-
-    let compactCalls = 0;
-    let compactArg: any = null;
-    const ctxAfter: any = {
-      settings: { get: (k: string) => (k.includes("chainShakeHint") ? true : undefined) },
-      config: { get: () => undefined },
-      ui: { notify: () => {} },
-      compact: (arg: any) => { compactCalls++; compactArg = arg; return Promise.resolve(); },
-    };
-    await compactHandler({ fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 21000 } }, ctxAfter);
-    // integration test: deliberately uses real timer (20ms) to await async chain — deterministic control not applicable
-    await new Promise((r) => setTimeout(r, 50));
-    expect(compactCalls).toBe(1);
-    expect(compactArg).toEqual({ mode: "shake" });
-
-    // second call while pendingChainShake still set should be guarded (no second call within 2s)
-    compactCalls = 0;
-    await compactHandler({ fromExtension: true, compactionEntry: { id: "c2", tokensBefore: 90000, tokensAfter: 21000 } }, ctxAfter);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(compactCalls).toBe(0);
-  });
-
-  test("chain shake rejection is swallowed without failing the handler", async () => {
-    setConfig({ overrideDefaultCompaction: true, vccEnabled: true, chainShakeHint: true, continueAfterThresholdCompact: false });
-    const pi: any = { on: (n: string, h: any) => { (pi as any)[n] = h; }, sendMessage: () => {}, sendUserMessage: () => {} };
-    registerBeforeCompactHook(pi);
-    const beforeHandler = (pi as any)["session_before_compact"];
-    const compactHandler = (pi as any)["session_compact"];
-    const entries = buildSession(6);
-    const event = makeEvent(entries, undefined, {}, 90000);
-    const ctxBefore: any = { settings: { get: (k: string) => (k.includes("chainShakeHint") ? true : undefined) }, config: { get: () => undefined }, ui: { notify: () => {} } };
-    const result = await beforeHandler(event, ctxBefore);
-    expect(result.compaction).toBeDefined();
-    let compactCalls = 0;
-    const ctxAfter: any = {
-      settings: { get: (k: string) => (k.includes("chainShakeHint") ? true : undefined) },
-      config: { get: () => undefined },
-      ui: { notify: () => {} },
-      compact: () => { compactCalls++; return Promise.reject(new Error("shake down")); },
-    };
-    await compactHandler({ fromExtension: true, compactionEntry: { id: "c9", tokensBefore: 90000, tokensAfter: 21000 } }, ctxAfter);
-    await new Promise((r) => setTimeout(r, 20));
-    // The shake was attempted and its rejection absorbed by .catch: resolved
-    // without throwing (an unhandled rejection would fail the file).
-    expect(compactCalls).toBe(1);
-  });
-
-  test("chain does NOT trigger when fromExtension false or willRetry true or isPiVccLast", async () => {
-    setConfig({ overrideDefaultCompaction: true, vccEnabled: true, chainShakeHint: true });
-    const pi: any = { on: (n: string, h: any) => { (pi as any)[n] = h; }, sendMessage: () => {}, sendUserMessage: () => {} };
-    registerBeforeCompactHook(pi);
-    const beforeHandler = (pi as any)["session_before_compact"];
-    const compactHandler = (pi as any)["session_compact"];
-    const entries = buildSession(6);
-    await beforeHandler(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, {}, 90000), { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
-    let calls = 0;
-    const ctx: any = { settings: { get: (k: string) => (k.includes("chainShakeHint") ? true : undefined) }, config: { get: () => undefined }, ui: { notify: () => {} }, compact: () => { calls++; return Promise.resolve(); } };
-    // fromExtension false -> no chain
-    await compactHandler({ fromExtension: false, compactionEntry: { tokensBefore: 90000, tokensAfter: 20000 } }, ctx);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(calls).toBe(0);
-    // willRetry true simulated via event with compactionEntry? hook reads readCompactionEventContext(event) for willRetry; our mock event lacks it, but we pass via event property
-    // The handler reads event via readCompactionEventContext which looks at event.reason/event.willRetry or similar; we can pass willRetry via event top-level
-    await compactHandler({ fromExtension: true, willRetry: true, compactionEntry: { tokensBefore: 90000, tokensAfter: 20000 } } as any, ctx);
-    await new Promise((r) => setTimeout(r, 20));
-    // isPiVccLast path: need to trigger a pi-vcc compaction first to set lastCompactWasPiVcc
-    // Instead we test that after a pi-vcc style sentinel, chain is suppressed via isPiVccLast check
-    // Our earlier VCC was via OMP_VCC, not pi-vcc with onComplete toast path, so isPiVccLast false; to make it true we do a pi-vcc invocation
-    await beforeHandler(makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION, {}, 90000), { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
-    await compactHandler({ fromExtension: true, compactionEntry: { tokensBefore: 90000, tokensAfter: 20000 } }, ctx);
-    await new Promise((r) => setTimeout(r, 20));
-    // This call should be suppressed because isPiVccLast true
-    expect(calls).toBe(0);
-  });
-  test("before handler yields a modeless compaction while a chain shake is in flight", async () => {
-    setConfig({ overrideDefaultCompaction: true, vccEnabled: true, chainShakeHint: true, continueAfterThresholdCompact: false });
+  test("a modeless compaction is still handled by VCC (no in-flight-chain yield)", async () => {
+    setConfig({ overrideDefaultCompaction: true, vccEnabled: true, continueAfterThresholdCompact: false });
     const pi: any = { on: (n: string, h: any) => { (pi as any)[n] = h; }, sendMessage: () => {}, sendUserMessage: () => {} };
     registerBeforeCompactHook(pi);
     const beforeHandler = (pi as any)["session_before_compact"];
@@ -487,88 +391,8 @@ describe("combined-compaction: chainShakeHint eager chain", () => {
     const plainCtx: any = { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } };
     const seeded: any = await beforeHandler(makeEvent(buildSession(6), undefined, {}, 90000), plainCtx);
     expect(seeded?.compaction).toBeDefined();
-    // Fire the chain: pendingChainShake is now set for this pi.
-    const ctxAfter: any = { ...plainCtx, compact: () => Promise.resolve() };
-    await compactHandler({ fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 21000 } }, ctxAfter);
-    // A modeless host compaction arriving mid-flight must fall through so the
-    // host actually runs shake instead of VCC swallowing it into a second pass.
-    expect(await beforeHandler(makeEvent(buildSession(6), undefined, {}, 90000), plainCtx)).toBeUndefined();
-    // Sentinel compactions still win even mid-flight.
-    const sentinel: any = await beforeHandler(makeEvent(buildSession(6), OMP_VCC_COMPACT_INSTRUCTION, {}, 90000), plainCtx);
-    expect(sentinel?.compaction).toBeDefined();
-  });
-
-  test("chain never fires on pi host (CompactOptions has no mode key)", async () => {
-    setConfig({ overrideDefaultCompaction: true, vccEnabled: true, chainShakeHint: true, continueAfterThresholdCompact: false });
-    __setHostKindForTests("pi");
-    try {
-      const pi: any = { on: (n: string, h: any) => { (pi as any)[n] = h; }, sendMessage: () => {}, sendUserMessage: () => {} };
-      registerBeforeCompactHook(pi);
-      const beforeHandler = (pi as any)["session_before_compact"];
-      const compactHandler = (pi as any)["session_compact"];
-      const plainCtx: any = { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } };
-      const seeded: any = await beforeHandler(makeEvent(buildSession(6), undefined, {}, 90000), plainCtx);
-      expect(seeded?.compaction).toBeDefined();
-      let calls = 0;
-      const ctxAfter: any = { ...plainCtx, compact: () => { calls++; return undefined; } };
-      await compactHandler({ fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 21000 } }, ctxAfter);
-      await new Promise((r) => setTimeout(r, 20));
-      expect(calls).toBe(0);
-    } finally {
-      __setHostKindForTests(null);
-    }
-  });
-
-  test("chain follows the live ctx shape when no override is set", async () => {
-    setConfig({ overrideDefaultCompaction: true, vccEnabled: true, chainShakeHint: true, continueAfterThresholdCompact: false });
-    __setHostKindForTests(null);
-    const plainCtx: any = { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } };
-    const freshPi = () => {
-      const pi: any = { on: (n: string, h: any) => { (pi as any)[n] = h; }, sendMessage: () => {}, sendUserMessage: () => {} };
-      registerBeforeCompactHook(pi);
-      return pi;
-    };
-    // omp-shaped ctx (array prompt): chain fires even with no module scope.
-    // Fresh pi per half: pendingChainShake is keyed by pi, so the second half
-    // pins the shape gate rather than the recursion guard.
-    const piOmp = freshPi();
-    const seededOmp: any = await (piOmp as any)["session_before_compact"](makeEvent(buildSession(6), undefined, {}, 90000), plainCtx);
-    expect(seededOmp?.compaction).toBeDefined();
-    let ompCalls = 0;
-    const ompCtx: any = { ...plainCtx, getSystemPrompt: () => ["prompt"], compact: () => { ompCalls++; return Promise.resolve(); } };
-    await (piOmp as any)["session_compact"]({ fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 21000 } }, ompCtx);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(ompCalls).toBe(1);
-    // pi-shaped ctx (string prompt): no chain — CompactOptions has no mode key.
-    const piPi = freshPi();
-    const seededPi: any = await (piPi as any)["session_before_compact"](makeEvent(buildSession(6), undefined, {}, 90000), plainCtx);
-    expect(seededPi?.compaction).toBeDefined();
-    let piCalls = 0;
-    const piCtx: any = { ...plainCtx, getSystemPrompt: () => "prompt", compact: () => { piCalls++; return undefined; } };
-    await (piPi as any)["session_compact"]({ fromExtension: true, compactionEntry: { id: "c2", tokensBefore: 90000, tokensAfter: 21000 } }, piCtx);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(piCalls).toBe(0);
-  });
-});
-
-describe("combined-compaction: settings chainShakeHint defaults and overlay", () => {
-  test("DEFAULT_SETTINGS chainShakeHint false", () => {
-    expect(DEFAULT_SETTINGS.chainShakeHint).toBe(false);
-  });
-
-  test("scaffold fills missing chainShakeHint without clobbering", async () => {
-    // write file without chainShakeHint
-    writeFileSync(CONFIG_PATH, JSON.stringify({ vccEnabled: false }));
-    // loadSettings overlay should still return merged with default for missing key
-    const loaded = loadSettings(undefined);
-    expect(loaded.chainShakeHint).toBe(false);
-    expect(loaded.vccEnabled).toBe(false);
-  });
-
-  test("ctx overlay for chainShakeHint true", () => {
-    writeFileSync(CONFIG_PATH, JSON.stringify({ chainShakeHint: false }));
-    const ctx: any = { settings: { get: (k: string) => (k.includes("chainShakeHint") ? true : undefined) } };
-    const loaded = loadSettings(ctx);
-    expect(loaded.chainShakeHint).toBe(true);
+    await compactHandler({ fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 21000 } }, plainCtx);
+    const again: any = await beforeHandler(makeEvent(buildSession(6), undefined, {}, 90000), plainCtx);
+    expect(again?.compaction).toBeDefined();
   });
 });

@@ -119,7 +119,7 @@ function makeHookPi(chainHint: boolean) {
 }
 const setCfg = (extra: any = {}) => writeFileSync(
   CONFIG_PATH,
-  JSON.stringify({ vccEnabled: true, overrideDefaultCompaction: true, smartKeepTail: false, debug: false, continueAfterThresholdCompact: false, chainShakeHint: false, ...extra }),
+  JSON.stringify({ vccEnabled: true, overrideDefaultCompaction: true, smartKeepTail: false, debug: false, continueAfterThresholdCompact: false, ...extra }),
 );
 
 beforeAll(() => {
@@ -390,44 +390,20 @@ describe("user interaction: session_compact cancel and chain edges", () => {
     expect(h.userMessages).toHaveLength(0);
   });
 
-  test("chainShake compact rejection is swallowed after one attempt", async () => {
-    // Seed via the threshold proxy (no sentinel): sentinel compactions set
-    // lastCompactWasPiVcc, which ends session_compact before the chain block.
-    setCfg({ chainShakeHint: true });
+  test("session_compact does not chain a follow-up compaction", async () => {
+    // No host shake mode exists, so the hook must not call ctx.compact after a
+    // VCC compaction (it would run the configured methodOrder instead).
+    setCfg();
     const h = makeHookPi(true);
     const r: any = await h.before(beforeEvent(fourMsgs(), undefined));
     expect(r?.compaction).toBeDefined();
-    let shakeCalls = 0;
-    await h.compact(
-      { type: "session_compact", fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 20000 } },
-      { ...h.ctx, compact: () => { shakeCalls++; return Promise.reject(new Error("shake down")); } },
-    );
-    await new Promise((r2) => setTimeout(r2, 20));
-    expect(shakeCalls).toBe(1);
-  });
-
-  test("chainShake sync-throwing compact is swallowed", async () => {
-    setCfg({ chainShakeHint: true });
-    const h = makeHookPi(true);
-    await h.before(beforeEvent(fourMsgs(), undefined));
-    let shakeCalls = 0;
-    await h.compact(
-      { type: "session_compact", fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 20000 } },
-      { ...h.ctx, compact: () => { shakeCalls++; throw new Error("sync down"); } },
-    );
-    expect(shakeCalls).toBe(1);
-  });
-
-  test("double session_compact chains shake only once (pending guard)", async () => {
-    setCfg({ chainShakeHint: true });
-    const h = makeHookPi(true);
-    await h.before(beforeEvent(fourMsgs(), undefined));
-    let shakeCalls = 0;
+    let compactCalls = 0;
     const evt = { type: "session_compact", fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 20000 } };
-    const ctx = { ...h.ctx, compact: () => { shakeCalls++; return Promise.resolve(); } };
+    const ctx = { ...h.ctx, getSystemPrompt: () => ["prompt"], compact: () => { compactCalls++; return Promise.resolve(); } };
     await h.compact(evt, ctx);
     await h.compact(evt, ctx);
-    expect(shakeCalls).toBe(1);
+    await new Promise((r2) => setTimeout(r2, 20));
+    expect(compactCalls).toBe(0);
   });
 
   test("session_compact delivers the pending follow-up prompt", async () => {

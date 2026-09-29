@@ -47,8 +47,7 @@ File `~/.omp/omp-vcc/config.json` — XDG: `$OMP_VCC_CONFIG_PATH` > `$PI_VCC_CON
   "overrideDefaultCompaction": true,
   "smartKeepTail": true,
   "continueAfterThresholdCompact": true,
-  "debug": false,
-  "chainShakeHint": false
+  "debug": false
 }
 ```
 
@@ -59,7 +58,6 @@ File `~/.omp/omp-vcc/config.json` — XDG: `$OMP_VCC_CONFIG_PATH` > `$PI_VCC_CON
 | `smartKeepTail` | `true` | Grow `keep:1` when tail <5k (cap 25k). Explicit `keep:N` never boosted. |
 | `continueAfterThresholdCompact` | `true` | Invisible-continue (`omp-vcc-auto-continue`) after threshold compact. |
 | `debug` | `false` | Write `/tmp/omp-vcc-debug.json` per compaction. |
-| `chainShakeHint` | `false` | Eager post-VCC `shake` chain. Host rescue already auto-shakes on dead-end; this forces it. |
 
 Toggle live: `omp config set plugins."@zhulinchng/omp-vcc".debug true` or `/settings` → `@zhulinchng/omp-vcc`. File is source of truth; `ctx.settings` overlays at runtime. `/vcc-config` shows the merged result — use it to confirm a toggle took effect.
 
@@ -84,7 +82,7 @@ VCC summarizes **history**; `shake` elides `artifact://` blocks in **kept tail**
 | `/omp-vcc keep:2` | Always VCC (sentinel `__omp_vcc__`) | VCC |
 | `/omp-vcc` then `/compact snapcompact` | Sequential | VCC entry, then snapcompact entry |
 
-Additive VCC+shake is automatic. Eager chain: `chainShakeHint:true`. Explicit mode (`snapcompact`/`shake`/`soft`/…) bypasses VCC even when `override:true` (`hook.ts:733`). Full table: [`docs/setup.md`](docs/setup.md) + [`docs/harness.md §8`](docs/harness.md#8-working-with-existing-compaction-strategies).
+Additive VCC+shake is automatic: the host's dead-end rescue runs `shake elide` when VCC made no headroom, and the retained-tool-output budget (`retainedToolOutputMaxTokens`) elides consumed tail output deterministically. Explicit mode (`snapcompact`/`shake`/`soft`/…) bypasses VCC even when `override:true` (`hook.ts:733`). Full table: [`docs/setup.md`](docs/setup.md) + [`docs/harness.md §8`](docs/harness.md#8-working-with-existing-compaction-strategies).
 
 ## Development
 

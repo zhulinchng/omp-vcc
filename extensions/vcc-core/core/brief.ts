@@ -291,8 +291,12 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
         if (text) {
           const ref = b.sourceIndex != null ? ` (#${b.sourceIndex})` : "";
           pushText("[user]", text, ref);
+          // Only a rendered line may set the section state: assigning it after
+          // a skipped push makes the NEXT header-equal block append into the
+          // preceding section and mislabel it (e.g. assistant → empty bash →
+          // user put the user turn under [assistant]).
+          lastHeader = "[user]";
         }
-        lastHeader = "[user]";
         break;
       }
       case "bash": {
@@ -300,8 +304,8 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
         const ref = b.sourceIndex != null ? ` (#${b.sourceIndex})` : "";
         if (cmd) {
           push("[user]", `$ ${cmd}${ref}`);
+          lastHeader = "[user]";
         }
-        lastHeader = "[user]";
         break;
       }
       case "assistant": {
@@ -328,8 +332,8 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
         if (text) {
           const ref = b.sourceIndex != null ? ` (#${b.sourceIndex})` : "";
           pushText("[custom]", text, ref);
+          lastHeader = "[custom]";
         }
-        lastHeader = "[custom]";
         break;
       }
       case "tool_call": {

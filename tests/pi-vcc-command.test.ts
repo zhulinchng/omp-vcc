@@ -35,7 +35,7 @@ beforeAll(() => {
   origPi = process.env.PI_VCC_CONFIG_PATH;
   process.env.OMP_VCC_CONFIG_PATH = CONFIG_PATH;
   process.env.PI_VCC_CONFIG_PATH = CONFIG_PATH;
-  writeFileSync(CONFIG_PATH, JSON.stringify({ vccEnabled: true, overrideDefaultCompaction: true, smartKeepTail: false, debug: false, continueAfterThresholdCompact: false, chainShakeHint: false }));
+  writeFileSync(CONFIG_PATH, JSON.stringify({ vccEnabled: true, overrideDefaultCompaction: true, smartKeepTail: false, debug: false, continueAfterThresholdCompact: false }));
   __setHostKindForTests("pi");
 });
 afterAll(() => {

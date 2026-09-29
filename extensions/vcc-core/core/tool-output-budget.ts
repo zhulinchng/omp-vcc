@@ -68,6 +68,10 @@ export const buildRetainedToolOutputProjection = (
   retainedToolOutputMaxTokens: number,
   globalIndexById?: ReadonlyMap<string, number>,
 ): RetainedToolOutputProjection => {
+  // Boundary = the newest assistant turn that COMPLETED. Outputs before it were
+  // consumed in finished turns; everything after (including an errored/aborted
+  // turn's own tool output, which a retry still needs) stays visible — the
+  // omission loop below never visits the post-boundary window.
   let lastAssistant = -1;
   let pendingCount = 0;
   for (let i = entries.length - 1; i >= 0; i--) {
@@ -130,6 +134,16 @@ const directMessageId = (message: UnknownRecord): string | undefined => {
   return undefined;
 };
 
+const isTextPart = (part: unknown): part is { type: "text"; text: string } => {
+  if (!part || typeof part !== "object") return false;
+  if (!("type" in part) || part.type !== "text") return false;
+  return "text" in part && typeof part.text === "string";
+};
+
+/** Elide the output text: the FIRST text part carries the marker and the
+ *  remaining text parts are dropped (they hold the same elided output, so
+ *  repeating the marker per part would just re-inflate the payload). Non-text
+ *  parts (images) are preserved in place. */
 const replaceText = (message: UnknownRecord, marker: string): UnknownRecord => {
   if (message.role === "bashExecution") {
     if (typeof message.output !== "string") return message;
@@ -137,15 +151,15 @@ const replaceText = (message: UnknownRecord, marker: string): UnknownRecord => {
   }
   if (typeof message.content === "string") return { ...message, content: marker };
   if (!Array.isArray(message.content)) return message;
-  let changed = false;
-  const content = message.content.map((part: unknown) => {
-    if (part !== null && typeof part === "object" && "type" in part && part.type === "text" && "text" in part && typeof part.text === "string") {
-      changed = true;
-      return { ...part, text: marker };
-    }
-    return part;
-  });
-  return changed ? { ...message, content } : message;
+  let replaced = false;
+  const content: unknown[] = [];
+  for (const part of message.content) {
+    if (!isTextPart(part)) { content.push(part); continue; }
+    if (replaced) continue;
+    replaced = true;
+    content.push({ ...part, text: marker });
+  }
+  return replaced ? { ...message, content } : message;
 };
 
 const findProjectionTarget = (
@@ -159,7 +173,8 @@ const findProjectionTarget = (
     if (id === omission.entryId) direct.push(i);
   }
   if (direct.length === 1) return direct[0];
-  if (direct.length > 1) return -1;
+  // Ambiguous direct match does not disqualify the omission: fall through so
+  // the toolCallId / serialized strategies can still resolve it uniquely.
 
   const toolCallId = metadata.omissionToolCallIds?.[omission.entryId];
   if (typeof toolCallId === "string" && toolCallId.length > 0) {
@@ -182,7 +197,11 @@ const findProjectionTarget = (
   return bySerialized.length === 1 ? bySerialized[0] : -1;
 };
 
-/** Replay a persisted projection without mutating any host/session object. */
+/** Replay a persisted projection without mutating any host/session object.
+ *  An omission whose target is no longer in the payload (typically because the
+ *  compaction that persisted the projection summarized that entry away) is
+ *  skipped rather than aborting the replay, so the remaining outputs still fit
+ *  the budget. The input array is returned by identity when nothing changed. */
 export const applyRetainedToolOutputProjection = (
   messages: UnknownRecord[],
   projection: RetainedToolOutputProjection,
@@ -190,13 +209,15 @@ export const applyRetainedToolOutputProjection = (
 ): UnknownRecord[] => {
   if (!Array.isArray(messages) || !projection || projection.version !== 1 || !Array.isArray(projection.omissions)) return messages;
   const next = messages.slice();
+  let changed = false;
   for (const omission of projection.omissions) {
     if (typeof omission?.entryId !== "string" || typeof omission?.marker !== "string") return messages;
     const target = findProjectionTarget(omission, messages, options);
-    if (target < 0 || !isOutputMessage(messages[target])) return messages;
+    if (target < 0 || !isOutputMessage(messages[target])) continue;
     next[target] = replaceText(messages[target], omission.marker);
+    if (next[target] !== messages[target]) changed = true;
   }
-  return next;
+  return changed ? next : messages;
 };
 
 export interface ApplyToolOutputBudgetResult {

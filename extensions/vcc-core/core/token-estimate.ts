@@ -216,6 +216,9 @@ export interface UsageStats {
  * tool results, and bash executions count as input. Calibrates chars/token
  * against summed provider usage when present, heuristic fallback otherwise.
  */
+/** Char bound for each calibration sample (head and tail). */
+const SAMPLE_LIMIT = 8000;
+
 export const collectUsageStats = (messages: any[]): UsageStats => {
   // Bounded content samples for the calibration slice/tokens guards
   // (classification only needs a fraction of the text): head sample plus a
@@ -223,8 +226,10 @@ export const collectUsageStats = (messages: any[]): UsageStats => {
   const head = { text: "" };
   const tail = { text: "" };
   const takeInto = (store: { text: string }, text: unknown) => {
-    if (store.text.length >= 8000 || typeof text !== "string" || !text) return;
-    store.text += (store.text ? "\n" : "") + text.slice(0, 8000 - store.text.length);
+    // Budget the separator too, so the sample never exceeds SAMPLE_LIMIT chars.
+    const remaining = SAMPLE_LIMIT - store.text.length - (store.text ? 1 : 0);
+    if (remaining <= 0 || typeof text !== "string" || !text) return;
+    store.text += (store.text ? "\n" : "") + text.slice(0, remaining);
   };
   const samplePartsInto = (store: { text: string }, content: unknown) => {
     if (typeof content === "string") takeInto(store, content);
@@ -284,7 +289,7 @@ export const collectUsageStats = (messages: any[]): UsageStats => {
   }
   // Tail sample in reverse: the last messages dominate kept-tail estimates.
   const list = messages ?? [];
-  for (let i = list.length - 1; i >= 0 && tail.text.length < 8000; i--) {
+  for (let i = list.length - 1; i >= 0 && tail.text.length < SAMPLE_LIMIT; i--) {
     sampleMessageInto(tail, list[i]);
   }
   const totalChars = inputChars + outputChars;

@@ -54,7 +54,6 @@ export interface CompactionDecisionInput {
 }
 
 export interface CompactionDecision {
-  chainStart: boolean;
   mode: "append" | "rebase";
   pressure: boolean;
   capacityPressure: boolean;
@@ -253,7 +252,9 @@ export const decideAppendMode = (input: CompactionDecisionInput): CompactionDeci
   else if (explicit && rebaseTokens !== undefined) mode = rebaseTokens < input.chainTokens ? "rebase" : "append";
   else if (pressure && saving !== undefined && saving >= thresholds.minimumSaving && (rebaseTokens === undefined || rebaseTokens < input.chainTokens)) mode = "rebase";
   const decision: CompactionDecision = {
-    chainStart: input.manual === true && mode === "rebase",
+    // `chainStart` is NOT part of the decision: it depends on whether a prior
+    // chain exists, which only the caller knows (a manual rebase and the first
+    // auto compaction both start a chain).
     mode,
     pressure,
     capacityPressure,

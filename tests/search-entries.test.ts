@@ -861,3 +861,25 @@ describe("search hoisting invariants", () => {
     expect(second.totalBeforeCap).toBe(first.totalBeforeCap);
   });
 });
+
+describe("literal and CJK query fallbacks", () => {
+  it("finds a literal backslash path that the regex reading misses", () => {
+    // `C:\temp\build.log` compiles as a valid regex (\t = TAB, \b = boundary),
+    // so safeRegex never fell back and the literal reported no matches.
+    const rows: RenderedEntry[] = [{ index: 0, role: "user", summary: "open C:\\temp\\build.log now" }];
+    const messages: Message[] = [{ role: "user", content: "open C:\\temp\\build.log now" } as any];
+    expect(searchEntriesDetailed(rows, messages, "C:\\temp\\build.log").hits).toHaveLength(1);
+  });
+
+  it("reports no matches when neither reading matches", () => {
+    const rows: RenderedEntry[] = [{ index: 0, role: "user", summary: "nothing here" }];
+    const messages: Message[] = [{ role: "user", content: "nothing here" } as any];
+    expect(searchEntriesDetailed(rows, messages, "C:\\temp\\build.log").hits).toHaveLength(0);
+  });
+
+  it("keeps a punctuation-only CJK query instead of dropping every term", () => {
+    const rows: RenderedEntry[] = [{ index: 0, role: "user", summary: "确定！" }];
+    const messages: Message[] = [{ role: "user", content: "确定！" } as any];
+    expect(searchEntriesDetailed(rows, messages, "！").hits).toHaveLength(1);
+  });
+});

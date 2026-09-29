@@ -277,3 +277,32 @@ describe("section-aware brief ranking prototype", () => {
     expect(flat.length).toBeLessThanOrEqual(4400);
   });
 });
+
+describe("dedup key includes tool arguments", () => {
+  const grep = (pattern: string, index: number): NormalizedBlock => ({
+    kind: "tool_call",
+    name: "Grep",
+    args: { pattern, path: "src" },
+    sourceIndex: index,
+  });
+
+  it("keeps distinct calls that share a tool name and path", () => {
+    // `tool:grep:src` alone collapsed two different searches into one, silently
+    // dropping a fact from the brief.
+    const selected = selectRankedBriefBlocks([grep("foo", 0), grep("bar", 1)], {
+      maxBlocks: 2,
+      preserveRecentBlocks: 1,
+      maxBriefChars: 10_000,
+    });
+    expect(selected).toHaveLength(2);
+  });
+
+  it("still collapses identical repeated calls", () => {
+    const selected = selectRankedBriefBlocks([grep("foo", 0), grep("foo", 1)], {
+      maxBlocks: 2,
+      preserveRecentBlocks: 1,
+      maxBriefChars: 10_000,
+    });
+    expect(selected).toHaveLength(1);
+  });
+});

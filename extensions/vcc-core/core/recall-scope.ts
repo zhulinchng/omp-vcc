@@ -19,20 +19,23 @@ export const normalizeRecallMode = (mode?: unknown): RecallMode =>
     : "hybrid";
 
 const MODE_RE = /\bmode:(hybrid|touched|file)\b/i;
+const MODE_RE_ALL = /\bmode:(hybrid|touched|file)\b/gi;
 
 /** Parse and remove a command/tool mode selector without changing query text. */
 export const parseRecallMode = (text: string): { mode?: RecallMode; text: string } => {
   const match = text.match(MODE_RE);
   return {
     mode: match?.[1] ? normalizeRecallMode(match[1]) : undefined,
-    text: text.replace(MODE_RE, "").replace(/\s+/g, " ").trim(),
+    text: text.replace(MODE_RE_ALL, "").replace(/\s+/g, " ").trim(),
   };
 };
+
+const SCOPE_RE_ALL = /\bscope:(lineage|all)\b/gi;
 
 export const parseRecallScope = (text: string): { scope: RecallScope; text: string } => {
   const match = text.match(SCOPE_RE);
   return {
     scope: normalizeRecallScope(match?.[1]),
-    text: text.replace(SCOPE_RE, "").replace(/\s+/g, " ").trim(),
+    text: text.replace(SCOPE_RE_ALL, "").replace(/\s+/g, " ").trim(),
   };
 };

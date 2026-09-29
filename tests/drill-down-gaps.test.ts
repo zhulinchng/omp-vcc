@@ -393,3 +393,35 @@ describe("drill-down gaps: expandEntry paging", () => {
     expect(out).toBe("#0 [user]\n\nshort and sweet");
   });
 });
+
+describe("drill-down gaps: paged continuation", () => {
+  it("treats a zero line limit as unspecified instead of an empty window", () => {
+    const file = makeSession([toolMsg("m0", "write", { path: "mid.ts", content: lines(50, "row") })]);
+    const out = expandEntryFile(file, 0, "mid.ts", false, 10, 0);
+    expect(out).toContain("Lines 11-40 (of 50)");
+    expect(out).not.toContain("beyond file length");
+  });
+
+  it("points the 50KB continuation at the first line not shown", () => {
+    // 4000 x ~30-byte lines ≈ 120 KB: the byte-clipped dump covers thousands of
+    // lines, so a fixed `:30` pointer would re-show content already displayed.
+    const content = Array.from({ length: 4000 }, (_, i) => `line-${i}-${"x".repeat(20)}`).join("\n");
+    const file = makeSession([toolMsg("m0", "write", { path: "big.ts", content })]);
+    const out = expandEntryFile(file, 0, "big.ts", true);
+    const match = out.match(/Use #0:big\.ts:(\d+) to continue/);
+    expect(match).not.toBeNull();
+    const offset = Number(match![1]);
+    expect(offset).toBeGreaterThan(30);
+    const next = expandEntryFile(file, 0, "big.ts", false, offset, 30);
+    expect(next).toContain(`Lines ${offset + 1}-`);
+    expect(next).not.toContain("beyond file length");
+  });
+});
+
+describe("drill-down gaps: single-line overflow", () => {
+  it("does not promise line paging when the first line alone exceeds the limit", () => {
+    const file = makeSession([toolMsg("m0", "write", { path: "one.ts", content: "x".repeat(80_000) })]);
+    const out = expandEntryFile(file, 0, "one.ts", true);
+    expect(out).toContain("line paging cannot advance");
+  });
+});

@@ -126,7 +126,7 @@ describe("append compaction chain", () => {
     const decision = decideAppendMode({ chainTokens: 40_000, rebaseChainTokens: 10_000, pressure: true });
     expect(decision.mode).toBe("append");
     expect(decision.fullContextTokens).toBeUndefined();
-    expect(decideAppendMode({ manual: true, chainTokens: 10, rebaseChainTokens: 20 }).chainStart).toBe(true);
+    expect(decideAppendMode({ manual: true, chainTokens: 10, rebaseChainTokens: 20 }).mode).toBe("rebase");
     expect(decideAppendMode({ overflow: true, chainTokens: 50, rebaseChainTokens: 20 }).mode).toBe("rebase");
   });
 });

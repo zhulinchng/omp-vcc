@@ -134,42 +134,19 @@ describe("combined-compaction E2E — usual sequential and additive", () => {
     delete process.env.OMP_VCC_CONFIG_PATH;
   });
 
-  test("chainShakeHint false: session_compact does not trigger second shake", async () => {
-    writeFileSync(isolated.configPath, JSON.stringify({ overrideDefaultCompaction: true, vccEnabled: true, chainShakeHint: false, continueAfterThresholdCompact: false }));
+  test("session_compact never triggers a second compaction", async () => {
+    writeFileSync(isolated.configPath, JSON.stringify({ overrideDefaultCompaction: true, vccEnabled: true, continueAfterThresholdCompact: false }));
     process.env.OMP_VCC_CONFIG_PATH = isolated.configPath;
     const { pi, ctx, getBefore, getCompact } = createMockPi();
     registerBeforeCompactHook(pi);
     const entries = buildSession({ turns: 6 });
     const r: any = await getBefore()(makeEvent(entries, undefined, 90000), ctx);
     expect(r.compaction).toBeDefined();
-    let shakeCalls = 0;
-    const chainCtx: any = { ...ctx, compact: () => { shakeCalls++; return Promise.resolve(); }, settings: { get: (k: string) => (k.includes("chainShakeHint") ? false : undefined) }, config: { get: () => undefined } };
+    let compactCalls = 0;
+    const chainCtx: any = { ...ctx, getSystemPrompt: () => ["prompt"], compact: () => { compactCalls++; return Promise.resolve(); } };
     await getCompact()({ fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 20000 } }, chainCtx);
     await new Promise((res) => setTimeout(res, 30));
-    expect(shakeCalls).toBe(0);
-    delete process.env.OMP_VCC_CONFIG_PATH;
-  });
-
-  test("chainShakeHint true: session_compact triggers shake via ctx.compact", async () => {
-    writeFileSync(isolated.configPath, JSON.stringify({ overrideDefaultCompaction: true, vccEnabled: true, chainShakeHint: true, continueAfterThresholdCompact: false }));
-    process.env.OMP_VCC_CONFIG_PATH = isolated.configPath;
-    const { pi, ctx, getBefore, getCompact } = createMockPi();
-    registerBeforeCompactHook(pi);
-    const entries = buildSession({ turns: 6 });
-    const r: any = await getBefore()(makeEvent(entries, undefined, 90000), ctx);
-    expect(r.compaction).toBeDefined();
-    let shakeCalls = 0;
-    let shakeArg: any = null;
-    const chainCtx: any = {
-      ...ctx,
-      compact: (arg: any) => { shakeCalls++; shakeArg = arg; return Promise.resolve(); },
-      settings: { get: (k: string) => (k.includes("chainShakeHint") ? true : undefined) },
-      config: { get: () => undefined },
-    };
-    await getCompact()({ fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 21000 } }, chainCtx);
-    await new Promise((res) => setTimeout(res, 40));
-    expect(shakeCalls).toBe(1);
-    expect(shakeArg).toEqual({ mode: "shake" });
+    expect(compactCalls).toBe(0);
     delete process.env.OMP_VCC_CONFIG_PATH;
   });
 

@@ -462,3 +462,31 @@ describe("dispatch gaps: /omp-vcc and /pi-vcc commands (main factory)", () => {
     expect(userSent).toContain("fix auth");
   });
 });
+
+describe("dispatch gaps: recall pagination and file-mode truncation", () => {
+  test("repeated page: selectors are all consumed, leaving a clean query", async () => {
+    const { dir, file, ids } = makeSession([umsg("m0", "alpha one"), umsg("m1", "beta two")]);
+    try {
+      const { commands, sent } = makePi();
+      const notify: any[] = [];
+      await commands.get("vcc-recall").handler("alpha page:1 page:2", cmdCtx(file, ids, notify));
+      const content = sent[0].msg.content as string;
+      expect(content).toContain('for "alpha"');
+      expect(content).not.toContain("page:");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("file-only mode reports a capped result set instead of hiding entries", async () => {
+    const entries = Array.from({ length: 60 }, (_, i) => toolMsg(`m${i}`, "Write", { path: `src/f${i}.ts`, content: `body ${i}` }));
+    const { dir, file, ids } = makeSession(entries);
+    try {
+      const { tool } = makePi();
+      const out = await toolText(tool, { mode: "file" }, toolCtx(file, ids));
+      expect(out).toContain("Showing 50 of 60 file entries.");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

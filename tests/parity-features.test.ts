@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { loadAllMessages } from "../extensions/vcc-core/core/load-messages";
 import { buildGlobalIndex } from "../extensions/vcc-core/core/global-indices";
+import { expandEntry } from "../extensions/vcc-core/core/drill-down";
 import { capRecallBlocks } from "../extensions/vcc-core/core/recall-budget";
 import { searchEntriesDetailed } from "../extensions/vcc-core/core/search-entries";
 import { loadSettings } from "../extensions/vcc-core/core/settings";
@@ -15,6 +16,30 @@ const message = (id: string, role: string, content: unknown) => ({ id, type: "me
 const rendered = (index: number, role: string, summary: string, files?: string[]) => ({ index, role, summary, ...(files ? { files } : {}) });
 
 describe("approved parity feature contracts", () => {
+  test("global indices use the recall tool's #N numbering", () => {
+    // A brief ref `(#N)` must resolve through `vcc_recall` unchanged, so the
+    // map positions have to be the same 0-based message positions
+    // `loadAllMessages`/`renderMessage` expose and `expandEntry` indexes.
+    const root = mkdtempSync(join(tmpdir(), "vcc-idx-"));
+    const file = join(root, "session.jsonl");
+    const entries = [
+      message("m0", "user", "zero"),
+      message("m1", "assistant", "one"),
+      message("m2", "user", "two"),
+      message("m3", "assistant", "three"),
+    ];
+    writeFileSync(file, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    const index = buildGlobalIndex(entries);
+    const loaded = loadAllMessages(file, false);
+    for (const [id, position] of index.indexById) {
+      expect(loaded.entryIds[position]).toBe(id);
+    }
+    const ref = index.indexById.get("m2")!;
+    expect(ref).toBe(2);
+    expect(expandEntry(file, ref, true)).toContain("two");
+    rmSync(root, { recursive: true, force: true });
+  });
+
   test("global indices fail closed on duplicate IDs and streamed loader preserves entry IDs", () => {
     const index = buildGlobalIndex([
       { type: "message", id: "a" },
@@ -25,7 +50,7 @@ describe("approved parity feature contracts", () => {
     ]);
     expect(index.messageCount).toBe(4);
     expect(index.indexById.has("a")).toBe(false);
-    expect(index.indexById.get("b")).toBe(4);
+    expect(index.indexById.get("b")).toBe(3);
 
     const root = mkdtempSync(join(tmpdir(), "vcc-stream-"));
     const file = join(root, "session.jsonl");

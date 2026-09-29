@@ -21,9 +21,11 @@
 /** Clamp floor/ceiling for probabilities (upstream EPSILON). */
 const EPSILON = 1e-10;
 
-/** Clamp `p` into [EPSILON, 1 - EPSILON]. */
+/** Clamp `p` into [EPSILON, 1 - EPSILON]. NaN cannot be clamped arithmetically
+ *  (Math.min/max propagate it), and an unscoreable document must not slip past
+ *  a `probability >= floor` gate, so it floors like an irrelevant hit. */
 export const clampProbability = (p: number): number =>
-  Math.max(EPSILON, Math.min(1.0 - EPSILON, p));
+  Number.isNaN(p) ? EPSILON : Math.max(EPSILON, Math.min(1.0 - EPSILON, p));
 
 /** Numerically stable sigmoid (upstream branch: avoids exp overflow). */
 export const sigmoid = (x: number): number => {

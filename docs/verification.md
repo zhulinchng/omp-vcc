@@ -63,7 +63,7 @@ flowchart TB
 | `real-sessions.test.ts` + `review-gaps.test.ts` | Copied large sessions (synthetic fallback) + `reset_boundary` supersession, ENOENT graceful, approval read, manifest overlay, fallback heuristic, per-pi WeakMap | 17 pass |
 | `compaction-stats.test.ts` | Toast savings prefix (budgetCut, zero, large, small, smart-keep), table/detail, history cap/copy, tool/command, details v2, authoritative refine, debug | 22 pass |
 | `compaction-stats-gaps.test.ts` | Edge gaps: percent 0, boundaries 999/1000, negative, empty table, budgetCut suffix, timestamp null, derived saved, smartKeep/budgetCut/willRetry, perPi isolation & clear, capping 50 global+perPi, timestamp, enrichment missing/after>before/willRetry, debug authoritativeSavings, tool schema fallback, `vcc-stats` `history`/`all` variants, `omp-vcc` compact only (toast single line, no inline `Last compaction`), tokensBefore undefined | 36 pass |
-| `combined-compaction.test.ts` + `combined-compaction.e2e.test.ts` | VCC+shake/snapcompact explicit-mode bypass, override gate, sequential VCC→VCC, edge orphan/reset/toolResult/applyTailBudget/calibrate, chainShakeHint eager chain (WeakSet guard), per-pi isolation, large brief cap, mixed recall→stats | 38 pass (26+12) |
+| `combined-compaction.test.ts` + `combined-compaction.e2e.test.ts` | VCC+shake/snapcompact explicit-mode bypass, override gate, sequential VCC→VCC, edge orphan/reset/toolResult/applyTailBudget/calibrate, no post-VCC chain compaction, per-pi isolation, large brief cap, mixed recall→stats | 33 pass (22+11) |
 
 Run single file:
 

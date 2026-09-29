@@ -61,10 +61,11 @@ flowchart TB
     E8["edge-cases 21\nexhaustive gaps: empty, keep>total\nexact 2.5× boundary, negative\nscaffold, ENOENT, queue-op\nDigits→, image 4800"]
     E9["mixed-sequential 12\nA→B→C chains: compact→recall→stats\ndebug overlay, vccEnabled toggle\noverride, touched, history cap"]
     E10["omp-integration 5\nreal omp spawn, doctor\nlist --json, isolation\ndebug with isolated env\nsequential mixed"]
-    E11["combined-compaction 12\nsequential VCC chains\nsnapcompact bypass, vision gate\nchainShakeHint ±, per-pi\norphan/snap/boundary, brief cap"]
+    E11["combined-compaction 11\nsequential VCC chains\nsnapcompact bypass, vision gate\nno post-VCC chain, per-pi\norphan/snap/boundary, brief cap"]
     E12["compaction-mix-matrix 13\ncommand matrix via handlers\n3-pass chain, VCC+snapcompact\nVCC+handoff/shake/soft/remote\nboundary interleaves"]
   end
-  Unit & Integration & Sessions & Savings --> ALL["bun test 414 pass"]
+  Unit & Integration & Sessions & Savings --> ALL["bun test 987 pass
+72 files"]
   E2E --> RUNNER["bun run e2e\nisolated OMP_DIR"]
   ALL & RUNNER --> CI["CI gates green"]
 ```
@@ -84,7 +85,7 @@ flowchart TB
 | `bun test tests/e2e --timeout 120000` | 124 E2E only | local E2E loop |
 | `bun test tests/before-compact.test.ts` | single suite | targeted |
 | `bun test --watch` | watch mode | dev |
-| `bun run smoke` | 13 checks: `session_before_compact`/`context`/`session_compact` hooks + `vcc_recall`/`vcc_stats` tools + `omp-vcc`/`pi-vcc`/`vcc-recall`/`pi-vcc-recall`/`vcc-stats`/`vcc-config` (single, no `omp-vcc-stats`) + dedup guards | CI third, `prepublishOnly` |
+| `bun run smoke` | 16 checks: `session_before_compact`/`context`/`session_compact` hooks + `vcc_recall`/`vcc_stats` tools + `omp-vcc`/`pi-vcc`/`vcc-recall`/`pi-vcc-recall`/`vcc-stats`/`vcc-config` (single, no `omp-vcc-stats`) + dedup guards | CI third, `prepublishOnly` |
 | `bun run e2e` | probe `omp --help`, `omp plugin link` in `mkdtempSync` `OMP_DIR`, then `bun test tests/e2e`, collect `artifacts/e2e-debug/` | separate CI job `e2e.yml`, not blocking publish |
 | `omp plugin doctor` | 6 ok 0 warnings | manual, also run inside `e2e.ts` |
 
@@ -119,14 +120,14 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 
 | File | Coverage |
 |---|---|
-| `brief.test.ts` (13.8KB) | `brief.ts` one-line summaries, `* Read "a.ts" (#4, result #5)` call+result pointers + repeat collapse, elided thinking, `compileBrief` |
+| `brief.test.ts` (13.8KB) | `brief.ts` section-header state stays with rendered lines (empty bash/user blocks cannot mislabel the next turn), one-line summaries, `* Read "a.ts" (#4, result #5)` call+result pointers + repeat collapse, elided thinking, `compileBrief` |
 | `build-sections.test.ts` | `build-sections.ts` 5 sections: `[Session Goal]` `[Files And Changes]` `[Commits]` `[Outstanding Context]` `[User Preferences]` + `---` `Brief transcript` |
 | `compile.test.ts` | `compile.ts` IR → output, `compileRanked` ranking glue, recall-note-once + body wrap + hard-break markers |
 | `compaction-gaps.test.ts` | over/under-compaction gaps: note dedup, tag anchoring, explicit keep-all, custom tails, file survival + grouped overflow, calibration guards, headerless brief merge, hard-break paths |
 | `content.test.ts` | `content.ts` `clip`, `clipSentence`, `textParts`, `textOf`, `isContentBearing` (`path` + `content`/`edits`/`oldText`), `extractToolCallText`, `snippet` |
-| `format.test.ts` | `format.ts` `capBrief` `BRIEF_MAX_LINES 120`, `formatSection`, hard-break `\` markers rejoined spaceless |
+| `format.test.ts` | `format.ts` `capBrief` `BRIEF_MAX_LINES 120` (dropped-line count matches the snip), `formatSection`, hard-break `\` markers rejoined spaceless |
 | `normalize.test.ts` | `normalize.ts` lex→parse IR, thinking blocks preserved with `sourceIndex`, `custom` kind for injected context, queue-operation discard, `digits→` strip |
-| `rank.test.ts` | `rank.ts` TF-IDF, `selectRankedBriefBlocks` budget `maxBriefChars` / `maxBriefCharsCeiling` / `briefCharsPerBlock`, size-relative clamp `1100→2000` tok, `custom-context` scoring |
+| `rank.test.ts` | `rank.ts` TF-IDF (dedup key includes tool args), `selectRankedBriefBlocks` budget `maxBriefChars` / `maxBriefCharsCeiling` / `briefCharsPerBlock`, size-relative clamp `1100→2000` tok, `custom-context` scoring |
 | `sanitize.test.ts` | `sanitize.ts` ANSI `\u001b[31m` strip, `queue-operation` discard |
 | `token-estimate.test.ts` | `token-estimate.ts` `calibrateCharsPerToken` clamp 2–6 fallback 4 + content-class guards (Latin/CJK priors, usage-stats sampling), `estimateMessageContentChars/Tokens`, `IMAGE_CONTENT_CHARS 4800`, `collectUsageStats` models/span/tool-calls/usage-totals + charsPerToken calibration |
 | `extract-files.test.ts` | `extract/files.ts` tool-name matching, fileOps seeding, full verbatim paths, `longestCommonDirPrefix`, `renderFileCategoryLines` flat/grouped/bare-count caps |
@@ -135,18 +136,20 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 | `filter-noise.test.ts` | `filter-noise.ts` `XML_WRAPPER_RE` `<system-reminder>`/`<ide_opened_file>` etc |
 | `lineage.test.ts` | `lineage.ts` `getActiveLineageEntryIds`, `branch_summary` lineage, `reset_boundary` supersession |
 | `load-messages.test.ts` | `load-messages.ts` `loadAllMessages` JSONL read, `ENOENT → []` not throw, `getActiveLineageEntryIds` integration |
-| `recall-scope.test.ts` | `recall-scope.ts` `normalizeRecallScope`/`normalizeRecallMode`/`parseRecallScope` `scope:all` |
-| `search-entries.test.ts` (809 lines) | `search-entries.ts` `searchEntriesDetailed` regex→TF-IDF fallback, `looksLikeRegex`, `safeRegex`, `hasNestedQuantifier`, BM25 `buildBM25Context`, Bayesian posterior gate `probabilityFloor 0.5` + coverage parity, planted-relevance hit-rate (short/medium/long/diluted docs survive), parity-beats-threshold at 0.99, uniform-weak stand-down, file-path-only survival with null snippet, summary fallback, all-stopword query, stopword-reduced bypass, gate-then-cap honesty, regex-path no-probability, empty corpus, default≡0.5/cap-50, floor monotonicity, recall-flat-across-band, hard cap `SEARCH_RESULT_CAP 50`, `getTouchedFiles` via `getFileIndicators` + `isContentBearing` |
-| `bayesian-probability.test.ts` (114 lines) | `bayesian-probability.ts` port fidelity: `sigmoid`/`clampProbability`/`tfPrior`/`normPrior`/`compositePrior`/`posterior` hand-computed equation values, `estimateLikelihoodParams` median/1-std, score→probability monotonicity |
+| `recall-scope.test.ts` | `recall-scope.ts` `normalizeRecallScope`/`normalizeRecallMode`/`parseRecallScope` `scope:all`, repeated selector tokens fully consumed |
+| `search-entries.test.ts` (809 lines) | `search-entries.ts` `searchEntriesDetailed` regex→TF-IDF fallback, `looksLikeRegex`, `safeRegex`, `hasNestedQuantifier`, BM25 `buildBM25Context`, Bayesian posterior gate `probabilityFloor 0.5` + coverage parity, planted-relevance hit-rate (short/medium/long/diluted docs survive), parity-beats-threshold at 0.99, uniform-weak stand-down, file-path-only survival with null snippet, summary fallback, all-stopword query, stopword-reduced bypass, gate-then-cap honesty, regex-path no-probability, empty corpus, default≡0.5/cap-50, floor monotonicity, recall-flat-across-band, hard cap `SEARCH_RESULT_CAP 50`, backslash literal retry + CJK punctuation-only term fallback, `getTouchedFiles` via `getFileIndicators` + `isContentBearing` |
+| `bayesian-probability.test.ts` (114 lines) | `bayesian-probability.ts` port fidelity: `sigmoid`/`clampProbability`/`tfPrior`/`normPrior`/`compositePrior`/`posterior` hand-computed equation values, `estimateLikelihoodParams` median/1-std, score→probability monotonicity, `clampProbability(NaN)` floors instead of propagating |
 | `render-entries.test.ts` | `render-entries.ts` rendered entry formatting, role tags |
 | `format-recall.test.ts` | `format-recall.ts` `formatRecallOutput` `Found N matches`, `#N` full-text hint footer on capped/clipped results, `formatTouchedOutput` `TOUCHED_PAGE_SIZE 5` `Page X/Y` |
 | `recall-touched-drilldown.test.ts` | `drill-down.ts` `parseDrillDown` `#N:path`/`#N:path:full`/`#N:path:offset:limit`, `expandEntryFile`; bare `#N` refs + `expandEntry` covered in `entry-ref.test.ts` |
-| `drill-down-gaps.test.ts` | `drill-down.ts` residual branches: edits/old-new/no-content bodies, 50KB full cap, offset first/middle/last/beyond windows, `:file` 0/1/N calls, ambiguous-match list, `parseEntryRef`/`parseDrillDown` null + suffix forms |
+| `drill-down-gaps.test.ts` | `drill-down.ts` residual branches: edits/old-new/no-content bodies, 50KB full cap, offset first/middle/last/beyond windows, `:file` 0/1/N calls, ambiguous-match list, `parseEntryRef`/`parseDrillDown` null + suffix forms, zero-limit paging, 50KB continuation pointer past the dumped lines |
 | `extract-migrate-gaps.test.ts` | `extract/commits.ts` quoting/hash-pairing/skips/dedup/window + `formatCommits`; `migrate-stale.ts` tmp-HOME fixtures (no-lock, historic removal, deps guard, dup keeper, orphans, scope-dir cleanup); `skill-collapse.ts` dup/unclosed/stray forms; `extractPreferences` caps/rejections + goal dedup |
-| `dispatch-gaps.test.ts` | `extensions/main.ts` factory dispatch: `vcc_recall` execute (entry-ref/drill-down lineage guards + bypass, touched, expand valid/invalid, page range, scope:all, recent) + `/omp-vcc`/`/pi-vcc`/`/vcc-recall`/`/pi-vcc-recall` handlers |
-| `core-residual-gaps.test.ts` | residual branches: `content.ts` clip/surrogate/snippet, `summarize.ts` rejoin/parseHead, `search-entries.ts` quantifier/budget, `settings.ts` legacy migration, `tool-args.ts`, `brief.ts`, `format-recall.ts`, `hook.ts` preview/diagnostic/chain-shake, factory recall tool schema + lineage guard + scope:all recent, factory `/pi-vcc-recall` recent paths |
-| `parity-features.test.ts` | streamed loader/global IDs, bounded model recall, file/CJK search, native memory, append context projection, invalid config precedence |
-| `compaction-chain.test.ts` / `tool-output-budget.test.ts` | v3 chain validation/projection and consumed-vs-pending tool-output omission with image/raw-session invariants |
+| `dispatch-gaps.test.ts` | `extensions/main.ts` factory dispatch (repeated `page:` tokens, file-mode cap note): `vcc_recall` execute (entry-ref/drill-down lineage guards + bypass, touched, expand valid/invalid, page range, scope:all, recent) + `/omp-vcc`/`/pi-vcc`/`/vcc-recall`/`/pi-vcc-recall` handlers |
+| `core-residual-gaps.test.ts` | residual branches: `content.ts` clip/surrogate/snippet, `summarize.ts` rejoin/parseHead, `search-entries.ts` quantifier/budget, `settings.ts` legacy migration, `tool-args.ts`, `brief.ts`, `format-recall.ts`, `hook.ts` preview/diagnostic/no-chain, factory recall tool schema + lineage guard + scope:all recent, factory `/pi-vcc-recall` recent paths |
+| `parity-features.test.ts` | streamed loader/global IDs (**0-based `#N` ↔ `expandEntry` contract**), bounded model recall, file/CJK search, native memory, append context projection, invalid config precedence |
+| `compaction-chain.test.ts` / `tool-output-budget.test.ts` | v3 chain validation/projection and consumed-vs-pending tool-output omission with image/raw-session invariants; replay skips unresolvable omissions, returns identity when unchanged, one marker per output, ambiguous-id fallthrough |
+| `audit-regressions.test.ts` | settings normalization (malformed booleans/enum/number), warn-once per session manager, scaffold migration, manifest enum values, host contracts: append context projection, branch-vs-later-sibling compaction, coverage/branch mismatch rejection, v3-from-v2 chain start, async-memory session switch, host-owned continuation, and the retained projection surviving its own compaction (omissions resolve against the post-compaction payload) |
+| `settings-precedence.test.ts` | OMP-vs-PI race, missing-file fallbacks, defaults, unknown config keys pruned from the settings object, invalid overlay values falling through to the file value (with `file` provenance) |
 | `thinking.test.ts` (7) | thinking end-to-end: normalize keeps `thinking` blocks, brief elides, `renderMessage` `[thinking]` role, recall finds thinking-only terms |
 | `entry-ref.test.ts` (10) | `drill-down.ts` `parseEntryRef`/`expandEntry` bare `#N`/`#N:full`/`#N:offset[:limit]`, `Lines X-Y (of Z)` windows, recall-tool `#N` dispatch, `formatRecallOutput` hint footer |
 | `sanitize.test.ts` | already listed |
@@ -229,12 +232,12 @@ Support:
 
 | Test | Result |
 |---|---|
-| `DEFAULT_SETTINGS` 5 booleans | `vccEnabled true`, `override true`, `smartKeep true`, `continue true`, `debug false` |
+| `DEFAULT_SETTINGS` 11 keys (8 booleans) | `vccEnabled true`, `override true`, `smartKeep true`, `continue true`, `debug false`, `debugLog false` |
 | `scaffoldSettings` no-clobber | absent → creates with defaults, second call with `debug true` preserved |
 | XDG priority | `OMP_VCC_CONFIG_PATH` custom wins, then `PI_VCC_CONFIG_PATH` fallback, still respects `OMP` > `PI` |
 | `loadSettings(ctx)` overlay | file settings plus legacy `ctx.settings`/`ctx.config` bridge; current host also reads public plugin settings | `true`/`false` propagation and provenance covered |
 | `debug` toggle dual write | `debug false` → no `/tmp/omp-vcc-debug.json`, `true` → both `omp-vcc` + `pi-vcc` exist `usedOwnCut true` |
-| `package.json` manifest | `omp.extensions ["./extensions/main.ts"]`, `pi.extensions`, no `commands` (extension-only, avoids duplicate `/omp-vcc`), twelve settings in both manifests, enum schemas use `values` |
+| `package.json` manifest | `omp.extensions ["./extensions/main.ts"]`, `pi.extensions`, no `commands` (extension-only, avoids duplicate `/omp-vcc`), eleven settings in both manifests, enum schemas use `values` |
 | per-flag semantics | file `vccEnabled true override false smartKeep false continue false debug false` propagates |
 
 ### `recall.e2e.test.ts` (13)
@@ -369,7 +372,7 @@ Sequential VCC chains plus additive host-strategy coexistence, all host-free via
 | manual VCC `keep:1` then second VCC on grown history | both `compaction` defined, `debug` snapshot `usedOwnCut true` |
 | `override:true` explicit `compactMode`-field bypass (patch contract) | hook `void` (host would handle) |
 | `override:false` threshold proxy defers to host | `void`, VCC only via sentinel |
-| `chainShakeHint false` / `true` | 0 vs 1 `ctx.compact({mode:"shake"})` call after 40ms |
+| no post-VCC compaction | 0 `ctx.compact(...)` calls after two `session_compact` events |
 | per-pi history isolation after two sequential compactions | per-pi lengths independent |
 | orphan recovery / `toolResult` snap / `reset_boundary` after VCC | each still cuts correctly post-compaction |
 | large session brief cap 120 lines / 1100→2000 tok ceiling | `summary.length` bounded |
@@ -390,7 +393,7 @@ Command matrix plus mixed-strategy chains per `local/e2e-compaction-mix-plan.md`
 | C2 vision gate | `override:false` threshold void + sentinel handled on identical entries |
 | C3 overflow retry | `reason:overflow willRetry:true` on too-few voids (falls through to host) → retry with full session succeeds; history counts VCC only |
 | D1/D2 normal + bypass table | `override:false` void/sentinel pair; `handoff`/`soft`/`remote`/`shake` each void with `override:true` |
-| D3 additive shake | `chainShakeHint` on → 1 `{mode:"shake"}` call, off → 0 |
+| D3 no post-VCC chain | 0 `ctx.compact(...)` calls after a VCC auto compaction |
 | D4 guards | `fromExtension:false` + `willRetry:true` trigger nothing |
 | E1/E2 boundaries | `reset_boundary` supersession + `toolResult` tail snap in-chain; `debug:true` snapshot `usedOwnCut true` with no full-transcript leak |
 

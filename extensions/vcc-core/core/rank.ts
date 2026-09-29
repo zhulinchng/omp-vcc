@@ -194,6 +194,19 @@ const boostSegmentClosingAssistants = (ranked: RankedBlock[]) => {
   }
 };
 
+/** Deterministic 32-bit digest (FNV-1a, base36) used to keep dedup keys small
+ *  when tool arguments are large (file contents in Edit/Write calls). */
+const argsDigest = (args: Record<string, unknown>): string => {
+  let text = "";
+  try { text = JSON.stringify(args) ?? ""; } catch { text = ""; }
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+};
+
 const dedupKey = (block: NormalizedBlock): string | undefined => {
   const command = bashCommandFromBlock(block);
   const ghPrPoll = command?.match(GH_PR_POLL_RE);
@@ -204,7 +217,10 @@ const dedupKey = (block: NormalizedBlock): string | undefined => {
   }
   if (block.kind === "tool_call") {
     const path = pathFromBlock(block);
-    return path ? `tool:${block.name.toLowerCase()}:${path}` : undefined;
+    // Include the arguments: two Grep/Edit/Write calls on one file are
+    // different facts, and keying on name+path alone silently dropped the
+    // second one (with no `x2` marker, unlike the brief's own collapse).
+    return path ? `tool:${block.name.toLowerCase()}:${path}:${argsDigest(block.args)}` : undefined;
   }
   return undefined;
 };

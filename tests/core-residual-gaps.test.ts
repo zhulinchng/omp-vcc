@@ -324,7 +324,7 @@ describe("hook residual gaps", () => {
     // hook.ts previewContent: [image:mime] passthrough, unknown-type fallback,
     // and "" for non-string/non-array content (kept tail never normalized).
     for (const p of [DEBUG_PATH, DEBUG_LEGACY]) try { if (existsSync(p)) unlinkSync(p); } catch {}
-    setConfig({ vccEnabled: true, overrideDefaultCompaction: true, smartKeepTail: false, debug: true, chainShakeHint: false, continueAfterThresholdCompact: false });
+    setConfig({ vccEnabled: true, overrideDefaultCompaction: true, smartKeepTail: false, debug: true, continueAfterThresholdCompact: false });
     const pi = makeMockApi();
     registerBeforeCompactHook(pi as any);
     const before = (pi as any).__handlers.get("session_before_compact");
@@ -384,10 +384,10 @@ describe("hook residual gaps", () => {
     expect(notified.some((n) => n.message.includes("Too few"))).toBe(true);
   });
 
-  it("session_compact chain shake supports a synchronous ctx.compact", async () => {
-    // hook.ts chain-shake: non-promise compact result takes the sync setTimeout
-    // branch — calling .catch on it would throw and break the compact handler.
-    setConfig({ vccEnabled: true, overrideDefaultCompaction: true, smartKeepTail: false, debug: false, chainShakeHint: true, continueAfterThresholdCompact: false });
+  it("session_compact never issues a post-VCC compaction", async () => {
+    // The host has no shake mode, so an eager ctx.compact({mode:"shake"}) would
+    // run the configured methodOrder instead. The handler must stay silent.
+    setConfig({ vccEnabled: true, overrideDefaultCompaction: true, smartKeepTail: false, debug: false, continueAfterThresholdCompact: false });
     const pi = makeMockApi();
     registerBeforeCompactHook(pi as any);
     const before = (pi as any).__handlers.get("session_before_compact");
@@ -403,13 +403,15 @@ describe("hook residual gaps", () => {
     const baseCtx = makeMockCtx({ ui: { notify: () => {}, setWidget: () => {}, setHeader: () => {} } });
     const r = before(makeEvent(entries, undefined, 90000), baseCtx);
     expect(r.compaction).toBeDefined();
-    const shakeCalls: any[] = [];
+    const compactCalls: any[] = [];
     const ctx = makeMockCtx({
       ui: { notify: () => {}, setWidget: () => {}, setHeader: () => {} },
-      compact: function (opts: any) { shakeCalls.push(opts); },
+      getSystemPrompt: () => ["prompt"],
+      compact: function (opts: any) { compactCalls.push(opts); },
     });
     await onCompact({ fromExtension: true, compactionEntry: { tokensBefore: 90000, tokensAfter: 21500, id: "c1" } }, ctx);
-    expect(shakeCalls).toEqual([{ mode: "shake" }]);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(compactCalls).toEqual([]);
   });
 
   it("factory builds a vcc_recall zod schema with the five parameters", () => {

@@ -135,6 +135,8 @@ export function migrateStalePluginEntries(home?: string): string {
   for (const cand of candidates) {
     const p = join(nm, cand);
     if (!isSymlink(p)) continue;
+    // A dependency-declared symlink is a live install, not stale residue.
+    if (cand in deps) continue;
     const hasLock = !!(lockRaw.plugins && (lockRaw.plugins as Record<string, unknown>)[cand]);
     if (hasLock) continue;
     const pkgName = getPkgName(cand);

@@ -1,7 +1,7 @@
 // @ts-nocheck
 export const PI_VCC_COMPACT_INSTRUCTION = "__pi_vcc__";
 
-const KEEP_TOKEN_RE = /^keep:(\d+)$/;
+const KEEP_TOKEN_ANY_RE = /\bkeep:(\d+)\b/gi;
 
 export interface ParsedCompactionArgs {
   followUpPrompt: string;
@@ -18,26 +18,19 @@ export const parseKeepAndPrompt = (args?: string): ParsedCompactionArgs => {
   const trimmed = args?.trim() ?? "";
   if (!trimmed) return { followUpPrompt: "", keepUserTurns: null, keepUserTurnsExplicit: false };
 
-  const startMatch = trimmed.match(/^keep:(\d+)(?:\s+|$)([\s\S]*)$/);
-  if (startMatch) {
-    return {
-      followUpPrompt: startMatch[2].trim(),
-      keepUserTurns: parseKeepUserTurns(startMatch[1]),
-      keepUserTurnsExplicit: true,
-    };
+  // Every `keep:N` token (case-insensitive, anywhere in the args) is consumed:
+  // the LAST one wins. A repeated token must never survive into the follow-up
+  // prompt — that text is sent to the model as a user message.
+  const tokens = [...trimmed.matchAll(KEEP_TOKEN_ANY_RE)];
+  if (tokens.length === 0) {
+    return { followUpPrompt: trimmed, keepUserTurns: null, keepUserTurnsExplicit: false };
   }
-
-  const parts = trimmed.split(/\s+/);
-  const endMatch = parts[parts.length - 1].match(KEEP_TOKEN_RE);
-  if (endMatch) {
-    return {
-      followUpPrompt: trimmed.slice(0, trimmed.length - parts[parts.length - 1].length).trim(),
-      keepUserTurns: parseKeepUserTurns(endMatch[1]),
-      keepUserTurnsExplicit: true,
-    };
-  }
-
-  return { followUpPrompt: trimmed, keepUserTurns: null, keepUserTurnsExplicit: false };
+  const last = tokens[tokens.length - 1];
+  return {
+    followUpPrompt: trimmed.replace(KEEP_TOKEN_ANY_RE, " ").replace(/\s+/g, " ").trim(),
+    keepUserTurns: parseKeepUserTurns(last[1]),
+    keepUserTurnsExplicit: true,
+  };
 };
 
 export const buildPiVccCustomInstructions = (keepUserTurns: number | null): string => {

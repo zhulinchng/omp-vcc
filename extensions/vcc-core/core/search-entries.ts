@@ -161,9 +161,17 @@ const queryTerms = (query: string): string[] => {
   for (const word of words) {
     if (CJK_RE.test(word) && !looksLikeRegex(word)) {
       if (segmenter) {
+        let added = 0;
         for (const part of segmenter.segment(word)) {
-          if (part.isWordLike) terms.push(part.segment);
+          if (part.isWordLike) {
+            terms.push(part.segment);
+            added++;
+          }
         }
+        // Punctuation-only CJK words ("！") segment to nothing word-like; keep
+        // the raw word so the search still looks for it instead of silently
+        // returning "No matches" from an empty term list.
+        if (added === 0) terms.push(...fallbackCjkSegments(word));
       } else terms.push(...fallbackCjkSegments(word));
     } else terms.push(word);
   }
@@ -665,7 +673,7 @@ const capHits = (hits: SearchHit[], cap: number): SearchResult => {
  * `.hits`-only wrapper kept for existing call sites; use this directly when
  * a caller (the recall tool) needs to report a capped result set honestly.
  */
-export const searchEntriesDetailed = (
+const searchDetailed = (
   entries: RenderedEntry[],
   messages: Message[],
   query?: string,
@@ -779,6 +787,31 @@ export const searchEntriesDetailed = (
   const effectiveTermCount = new Set(terms.map((t) => t.toLowerCase())).size;
   const gated = effectiveTermCount >= 2 ? applyProbabilityFloor(calibrated, probabilityFloor, maxCoverage) : calibrated;
   return capHits(gated.map((s) => s.hit), cap);
+};
+
+/**
+ * Full search with truncation metadata, plus one literal retry.
+ *
+ * A backslash-bearing query compiles as a *valid but different* regex
+ * (`C:\temp\build.log` reads `\t`/`\b`), so `safeRegex`'s compile-error
+ * fallback never fires and a literally present string returns "No matches".
+ * When the regex reading finds nothing, retry once with the whole query
+ * escaped as a literal; the retry only runs when it yields hits, so an
+ * intentional regex that truly matches nothing still reports none.
+ */
+export const searchEntriesDetailed = (
+  entries: RenderedEntry[],
+  messages: Message[],
+  query?: string,
+  tuning?: SearchTuning,
+): SearchResult => {
+  const result = searchDetailed(entries, messages, query, tuning);
+  const rawQuery = query?.trim() ?? "";
+  if (result.hits.length > 0 || !rawQuery.includes("\\")) return result;
+  const literal = escapeRegex(rawQuery);
+  if (literal === rawQuery) return result;
+  const retry = searchDetailed(entries, messages, literal, tuning);
+  return retry.hits.length > 0 ? retry : result;
 };
 
 export const searchEntries = (

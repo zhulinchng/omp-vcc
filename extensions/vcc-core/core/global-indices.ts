@@ -10,12 +10,17 @@ export interface PersistedSessionEntry {
 export interface GlobalIndex {
   /** Number of persisted entries whose type is exactly "message". */
   messageCount: number;
-  /** Unique, non-empty string message IDs mapped to 1-based global positions. */
+  /** Unique, non-empty string message IDs mapped to 0-based global positions. */
   indexById: Map<string, number>;
 }
 
 /**
  * Build global message positions from persisted session entries.
+ *
+ * Positions are 0-based over message entries only (the same numbering
+ * `renderMessage` assigns and therefore the same numbering the recall tool
+ * addresses with `#N` / `expand:[N]`); a brief ref `(#N)` must resolve
+ * through `vcc_recall` unchanged, so a 1-based map would be off by one.
  *
  * Every message entry consumes a position, including entries without an ID.
  * A repeated ID is removed permanently: malformed branches must not resolve
@@ -30,6 +35,7 @@ export const buildGlobalIndex = (
 
   for (const entry of entries) {
     if (entry?.type !== "message") continue;
+    const position = messageCount;
     messageCount++;
 
     const id = entry.id;
@@ -39,7 +45,7 @@ export const buildGlobalIndex = (
     }
 
     seenIds.add(id);
-    indexById.set(id, messageCount);
+    indexById.set(id, position);
   }
 
   return { messageCount, indexById };

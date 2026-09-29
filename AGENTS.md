@@ -32,7 +32,7 @@ Lifecycle (`extensions/main.ts` factory `(pi: ExtensionAPI) => void`, hooks in `
 2. `pi.on("context")` — strip invisible-continue (`omp-vcc-auto-continue`)
 3. `pi.on("before_agent_start")` — clear pending auto-continue timer
 4. `pi.on("session_before_compact")` — explicit-mode bypass (`snapcompact|shake|soft|remote|handoff` void even if `override:true` unless `__omp_vcc__` sentinel) → `buildOwnCut` → `calibrate` → `compileRanked` → `{compaction:{summary, details}}` or `{cancel}`
-5. `pi.on("session_compact")` — toast + invisible-continue (`setTimeout 0`) + eager `chainShakeHint` (`ctx.compact({mode:"shake"})` guarded by `WeakSet`, only when `fromExtension && !willRetry && !isPiVccLast`)
+5. `pi.on("session_compact")` — toast + invisible-continue (`setTimeout 0`); never calls `ctx.compact` (the host exposes no shake mode)
 6. Registrations: `vcc_recall` (`pi.zod`), `/omp-vcc`+`/pi-vcc` (compact + inline stats), `/vcc-recall`+`/pi-vcc-recall` (main.ts); `vcc_stats` + `/vcc-stats` (single, no alias) + `/vcc-config` (single, no alias) (hook.ts)
 
 See `docs/harness.md §5` (bypass), `§8` (methodOrder coexistence), `docs/setup.md` (combining VCC+shake/snapcompact).
@@ -57,9 +57,9 @@ docs/                   — architecture, configuration, harness, omp-compaction
 
 ```bash
 bunx tsc --noEmit                    # zero-build, vendored // @ts-nocheck, skipLibCheck
-bun test                             # 619 tests, 55 files, 1876 expects
+bun test                             # 987 tests, 72 files, 3194 expects
 bun test tests/brief.test.ts         # single suite
-bun run smoke                        # 13 checks: 3 hooks + 6 cmds + 2 tools + dedup (+ pipeline)
+bun run smoke                        # 16 checks: 3 hooks + 6 cmds + 2 tools + dedup (+ pipeline)
 
 omp plugin link /Users/zhu/code/projects/omp-vcc
 omp plugin doctor                    # 0 warnings 0 errors
@@ -80,8 +80,8 @@ No `lint`/`format`. `prepublishOnly` runs `tsc && test && smoke`. Keep vendored 
 - **Sentinels**: `__omp_vcc__`/`__pi_vcc__` (`isVccSentinel`, `core/compact-args.ts`).
 - **Error handling**: `buildOwnCut` never throws — `{ok:true,...}` or `{ok:false,reason}`. Handler cancels on `no_live_messages`/`too_few_live_messages` except `overflow+willRetry` falls through. `keep:0` → `firstKeptEntryId=""` orphan recovery.
 - **Async**: `session_before_compact` is `async (event, ctx) => SessionBeforeCompactResult | void`. Invisible-continue via `setTimeout 0`; `before_agent_start` clears timer.
-- **State**: single `pi` factory, no globals. Tests use `mockPi`/`mockCtx`. Per-pi state via `WeakMap` (`perPi`) + `perPiKeys` + `pendingChainShake WeakSet` in `hook.ts`; accessors `getLastCompactionStats()` / `getCompactionHistory(pi)` / `clearCompactionHistoryForTests()` / `clearPendingAutoContinueForPi`.
-- **Settings**: file over manifest with `ctx` overlay. XDG: `$OMP_VCC_CONFIG_PATH` > `$PI_VCC_CONFIG_PATH` > `$OMP_DIR`/`$PI_CODING_AGENT_DIR` > `~/.omp/omp-vcc/config.json`; migrates `~/.pi/agent/pi-vcc-config.json` once. `scaffoldSettings()` fills missing without clobber. Manifest `omp.settings`/`pi.settings` (6 booleans) are UI; `loadSettings(ctx)` overlays `ctx.settings.get`.
+- **State**: single `pi` factory, no globals. Tests use `mockPi`/`mockCtx`. Per-pi state via `WeakMap` (`perPi`) + `perPiKeys` in `hook.ts`; accessors `getLastCompactionStats()` / `getCompactionHistory(pi)` / `clearCompactionHistoryForTests()` / `clearPendingAutoContinueForPi`. There is no chain-shake guard: `session_compact` never calls `ctx.compact`.
+- **Settings**: file over manifest with `ctx` overlay. XDG: `$OMP_VCC_CONFIG_PATH` > `$PI_VCC_CONFIG_PATH` > `$OMP_DIR`/`$PI_CODING_AGENT_DIR` > `~/.omp/omp-vcc/config.json`; migrates `~/.pi/agent/pi-vcc-config.json` once. `scaffoldSettings()` fills missing without clobber. Manifest `omp.settings`/`pi.settings` (11 keys: 8 booleans, 1 enum, 2 numbers) are UI; `loadSettings(ctx)` overlays **namespaced** `ctx.settings.get` keys (`plugins.<name>.<key>`, `omp-vcc.<key>`) so an unrelated global host setting cannot hijack an omp-vcc key; invalid overlay values fall through to the file value.
 
 ## Important Files
 
@@ -111,4 +111,4 @@ No `lint`/`format`. `prepublishOnly` runs `tsc && test && smoke`. Keep vendored 
 - **Framework**: `bun:test` (+ `node:test` compat). Suites in `tests/*.test.ts`, ported from `pi-vcc@0.7.0`.
 - **Fixtures**: `tests/fixtures.ts` (`userMsg`, `assistantText`, `toolResult`), `helpers.ts` (`makeMockApi`/`makeMockCtx`); `support/` loads real sessions with synthetic 100-turn fallback.
 - **CI gate**: `bunx tsc --noEmit && bun test && bun run smoke && omp plugin doctor`
-- **Coverage**: deterministic, no snapshots. New logic must add boundary cases: empty branch, orphan `""`, `keep:0`, `reset_boundary`, `toolResult` snap, explicit `keep:N` not boosted, `scope:all` vs lineage, regex→keyword fallback, ENOENT, `willRetry`/`overflow`, per-pi isolation, stats gaps, combined VCC+shake/snapcompact (explicit bypass, sequential, `chainShakeHint` guard), `/vcc-config` card (missing/invalid/fallback/overlay sources, args ignored, never throws).
+- **Coverage**: deterministic, no snapshots. New logic must add boundary cases: empty branch, orphan `""`, `keep:0`, `reset_boundary`, `toolResult` snap, explicit `keep:N` not boosted, `scope:all` vs lineage, regex→keyword fallback, ENOENT, `willRetry`/`overflow`, per-pi isolation, stats gaps, combined VCC+shake/snapcompact (explicit bypass, sequential), global-index ↔ recall `#N` agreement, `/vcc-config` card (missing/invalid/fallback/overlay sources, args ignored, never throws).

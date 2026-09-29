@@ -112,3 +112,19 @@ describe("estimateLikelihoodParams", () => {
     expect(estimateLikelihoodParams([5])).toEqual({ alpha: 1, beta: 5 });
   });
 });
+
+describe("clampProbability NaN handling", () => {
+  it("floors NaN so an unscoreable document is gated out", () => {
+    expect(clampProbability(Number.NaN)).toBe(1e-10);
+    expect(clampProbability(1.5)).toBe(1 - 1e-10);
+    expect(clampProbability(-1)).toBe(1e-10);
+  });
+
+  it("never yields a NaN probability through the full pipeline", () => {
+    // Degenerate calibration (infinite score/spread) produced sigmoid(NaN);
+    // a NaN probability would silently pass `p >= floor` in the recall gate.
+    const probability = scoreToProbability(Number.POSITIVE_INFINITY, 1, Number.POSITIVE_INFINITY, 0, Number.POSITIVE_INFINITY);
+    expect(Number.isNaN(probability)).toBe(false);
+    expect(probability).toBe(1e-10);
+  });
+});

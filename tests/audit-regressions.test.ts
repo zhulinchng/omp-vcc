@@ -466,3 +466,59 @@ describe("audit regressions: streamed session parsing", () => {
     expect(diagnostics).toEqual([{ kind: "session-parse-errors", sessionFile, parseErrors: 1 }]);
   });
 });
+
+describe("audit regressions: retained projection survives its own compaction", () => {
+  test("prices only the kept tail and replays against the post-compaction payload", async () => {
+    // Budget 1 token so any consumed output is omitted.
+    writeFileSync(configPath, JSON.stringify({
+      showPreCompactionMessage: false,
+      compactionSummaryMode: "append",
+      smartKeepTail: false,
+      retainedToolOutputMaxTokens: 1,
+    }));
+    const pi = makePi();
+    const entries = [
+      message("u1", "user", "goal one"),
+      message("a1", "assistant", "reply one", { stopReason: "stop" }),
+      message("t1", "toolResult", "T".repeat(400)),
+      message("u2", "user", "goal two"),
+      message("a2", "assistant", "reply two", { stopReason: "stop" }),
+      message("t2", "toolResult", "S".repeat(400)),
+      message("u3", "user", "goal three"),
+      message("a3", "assistant", "reply three", { stopReason: "stop" }),
+    ];
+    const result: any = await pi.__handlers.get("session_before_compact")(
+      makeEvent(entries, { preparation: { tokensBefore: 90_000 }, customInstructions: `${OMP_VCC_COMPACT_INSTRUCTION} keep:2` }),
+      makeCtx(),
+    );
+    expect(result.compaction).toBeDefined();
+    const firstKept = result.compaction.firstKeptEntryId;
+    const keptStart = entries.findIndex((entry) => entry.id === firstKept);
+    expect(keptStart).toBe(3);
+
+    const omissions = result.compaction.details.retainedToolOutputProjection?.omissions ?? [];
+    const keptIds = new Set(entries.slice(keptStart).map((entry) => entry.id));
+    expect(omissions.map((omission: any) => omission.entryId)).toEqual(["t2"]);
+    for (const omission of omissions) expect(keptIds.has(omission.entryId)).toBe(true);
+
+    // The host drops the summarized prefix; the persisted projection must still
+    // resolve, so the next provider payload actually loses the output text.
+    const compactionEntry = {
+      id: "c1",
+      type: "compaction",
+      summary: result.compaction.summary,
+      firstKeptEntryId: firstKept,
+      details: result.compaction.details,
+    };
+    const branch = [...entries, compactionEntry];
+    const payload = [
+      { role: "compactionSummary", summary: result.compaction.summary },
+      ...entries.slice(keptStart).map((entry) => structuredClone(entry.message)),
+    ];
+    const projected: any = pi.__handlers.get("context")(
+      { messages: payload },
+      makeCtx({ sessionManager: { getSessionId: () => "session-a", getEntries: () => branch, getBranch: () => branch } }),
+    );
+    expect(JSON.stringify(projected?.messages ?? payload)).toContain("omitted from active context");
+  });
+});

@@ -52,9 +52,9 @@ Each row: **what is registered** → **reason** → **verified**.
 | 2.4 | **Commands** `/omp-vcc [keep:N] [focus]`, `/pi-vcc`, `/vcc-recall` + `/pi-vcc-recall`, `/vcc-stats`, `/vcc-config` | Manual compaction, parity recall, savings, and effective settings remain extension-only registrations. | → `extensions/main.ts` |
 | 2.5 | **Skill** `skills/omp-vcc/SKILL.md` | Teaches progressive disclosure `V_ui → V_adapt(query) → V_full[s:e]`. | → `skills/omp-vcc/SKILL.md` |
 | 2.6 | **Settings file** `~/.omp/omp-vcc/config.json` via `scaffoldSettings()` | Persists six legacy toggles plus append summaries, retained-output budget, display continuity, recall budget, native memory, and redacted metrics. Invalid primary JSON blocks fallback and uses defaults. | → `core/settings.ts` |
-| 2.7 | **Manifest settings** twelve plugin-scoped keys in both `omp.settings` and `pi.settings` | `/settings` and host overlays remain live; no global `compaction.*` patch is required. | → `package.json`, `core/settings.ts` |
+| 2.7 | **Manifest settings** eleven plugin-scoped keys in both `omp.settings` and `pi.settings` | `/settings` and host overlays remain live; no global `compaction.*` patch is required. | → `package.json`, `core/settings.ts` |
 | 2.8 | **Compaction details** rewrite v2 and append v3 | v3 persists immutable segment coverage, trailing summary, source counts, and retained-output projection; malformed/legacy chains fail closed to v2. | → `details.ts`, `core/compaction-chain.ts`, `core/tool-output-budget.ts` |
-| 2.9 | **Per-pi state and managed timers** `WeakMap` history, generation/session ID, host-managed timer fallback | Isolates stats and prevents stale continuation, stats, or chain-shake callbacks from crossing sessions. | → `hook.ts` |
+| 2.9 | **Per-pi state and managed timers** `WeakMap` history, generation/session ID, host-managed timer fallback | Isolates stats and prevents stale continuation/stats callbacks from crossing sessions. | → `hook.ts` |
 | 2.10 | **Debug and metrics** `/tmp/omp-vcc-debug.json` plus optional rotating `debug-metrics.jsonl` | `debug` keeps detailed snapshots; `debugLog` records redacted bounded events and never affects compaction. | → `hook.ts` |
 
 ---
@@ -160,7 +160,7 @@ flowchart TB
   ENV["$OMP_VCC_CONFIG_PATH\n$PI_VCC_CONFIG_PATH legacy\n$OMP_DIR / $PI_CODING_AGENT_DIR"] -. "XDG priority" .-> FILE
   MERGE --> EFFECTIVE["merged PiVccSettings\nvccEnabled etc"]
   EFFECTIVE --> HOOK["per-compaction read\nin session_before_compact"]
-  EFFECTIVE --> UI["/settings UI\nplugin section @zhulinchng/omp-vcc\n12 settings live"]
+  EFFECTIVE --> UI["/settings UI\nplugin section @zhulinchng/omp-vcc\n11 settings live"]
 
   classDef file fill:#e8f5e9,stroke:#2e7d32
   class FILE,EFFECTIVE file
@@ -480,7 +480,7 @@ The host's `CompactionMethod` is a **closed enum** (`compaction-methods.ts:10-49
 
 No patch (recommended — the plugin works without it):
 
-- `/settings` shows a **plugin section** `@zhulinchng/omp-vcc` with 12 settings (legacy toggles plus append/recall/memory/metrics controls) — verified at `docs/configuration.md:3-24`.
+- `/settings` shows a **plugin section** `@zhulinchng/omp-vcc` with 11 settings (legacy toggles plus append/recall/memory/metrics controls) — verified at `docs/configuration.md:3-24`.
 - `overrideDefaultCompaction:true` intercepts all auto compactions via the hook regardless of `methodOrder` — no dropdown entry needed.
 - Manual `/omp-vcc` always works (sentinel path bypasses the flag → `hook.ts:733`).
 - To let native methods run for auto, set `overrideDefaultCompaction:false` → host walks `methodOrder` as configured.
@@ -508,7 +508,7 @@ With the patch: set `compaction.methodOrder = ["vcc","remote",...]` in `/setting
 ```mermaid
 flowchart TB
   subgraph WithoutPatch["Without patch (default, recommended)"]
-    A1["/settings: plugin section @zhulinchng/omp-vcc\n12 settings"] --> B1["override:true → hook preempts all auto\nregardless of methodOrder"]
+    A1["/settings: plugin section @zhulinchng/omp-vcc\n11 settings"] --> B1["override:true → hook preempts all auto\nregardless of methodOrder"]
     B1 --> C1["threshold/overflow → omp-vcc V_ui\nno LLM, deterministic"]
     A1 --> B2["override:false → hook only on sentinel\n/omp-vcc"]
     B2 --> C2["threshold → host walks methodOrder\n(remote/snapcompact/handoff/shake/soft)"]
@@ -559,7 +559,7 @@ flowchart LR
   class SNAP,SHAKE,SOFT host
 ```
 
-*Why VCC+shake is additive*: shake elides inside `kept tail` (`toolResult`/`fenced` >512 chars, protect `40k` recent, need `20k` savings), VCC summarizes `messagesToSummarize` before `firstKeptEntryId` (`docs/compaction.md:186-242`). Different slices → one `CompactionEntry` can carry VCC `summary` + shake `artifact://` refs via separate `preserveData` keys; host's dead-end rescue already proves this after VCC if `!compactionCreatedHeadroom()`. The eager `chainShakeHint` (`core/settings.ts:68` default `false`) forces a second `shake` entry via `ctx.compact({mode:"shake"})` guarded by `pendingChainShake` WeakSet even when headroom was made — opt-in for workloads that always want tail elision.
+*Why VCC+shake is additive*: shake elides inside `kept tail` (`toolResult`/`fenced` >512 chars, protect `40k` recent, need `20k` savings), VCC summarizes `messagesToSummarize` before `firstKeptEntryId` (`docs/compaction.md:186-242`). Different slices → one `CompactionEntry` can carry VCC `summary` + shake `artifact://` refs via separate `preserveData` keys; host's dead-end rescue already proves this after VCC if `!compactionCreatedHeadroom()`. There is no eager chain: `CompactMode` is `soft|remote|snapcompact` (`compact-modes.ts:16`), so `ctx.compact({mode:"shake"})` cannot request a shake (an unknown mode silently runs the configured `methodOrder`), and the extension never calls `compact` from `session_compact`. Tail elision is already deterministic — `retainedToolOutputMaxTokens` prices the kept tail.
 
 *Why VCC→snapcompact is sequential*: both archive the same `messagesToSummarize`; after VCC `prepareCompaction` finds `lastEntry.type==="compaction"` → `Nothing to compact` (`session-maintenance.ts:818-823`). Valid sequential is two manual compactions or auto fallback when VCC cancels ( `hook.ts:817` `fallbackToCore` heuristic `tokensBefore>50k` → `void` → host walks to next `snapcompact` `775-784` explicit or vision gate). Vision gate `model.input.includes("image")` (`compaction-methods.ts:124-125` + `snapcompact.md:105-152`) means text-only models degrade VCC→snapcompact to VCC→shake→soft automatically.
 

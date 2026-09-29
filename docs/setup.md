@@ -268,8 +268,6 @@ omp config list | grep compaction.methodOrder
 /vcc-recall hook scope:all    # V_adapt
 /vcc-config  # show effective config with per-key source (file/host overlay/default)
 
-# eager post-VCC shake (forces second shake even when headroom made) — opt-in
-omp config set plugins."@zhulinchng/omp-vcc".chainShakeHint true
 ```
 
 
@@ -325,7 +323,7 @@ flowchart LR
 
 ### Optional native dropdown (`vcc` in methodOrder)
 
-Without a patch `/settings` shows `omp-vcc` as a separate **plugin section** `@zhulinchng/omp-vcc` (12 settings) and `override` drives interception — no core edit needed. If you want `VCC` as a first-class entry in `/settings → Context → General → Compaction method order`, apply the one-file patch from `configuration.md:243` (`packages/coding-agent/src/session/compaction-methods.ts:11` add `{value:"vcc",...}` + `STRATEGY_BY["vcc"]="context-full"` + `DEFAULT` put `vcc` first, `isCompactionMethod = Object.hasOwn` at `60`). Then set `methodOrder = ["vcc","remote","snapcompact","handoff","shake","soft"]` and `override:false` so the walk treats `vcc` as the preferred `context-full` candidate whose impl is still the extension hook. See [`configuration.md#optional-native-dropdown`](configuration.md#optional-native-dropdown).
+Without a patch `/settings` shows `omp-vcc` as a separate **plugin section** `@zhulinchng/omp-vcc` (11 settings) and `override` drives interception — no core edit needed. If you want `VCC` as a first-class entry in `/settings → Context → General → Compaction method order`, apply the one-file patch from `configuration.md:243` (`packages/coding-agent/src/session/compaction-methods.ts:11` add `{value:"vcc",...}` + `STRATEGY_BY["vcc"]="context-full"` + `DEFAULT` put `vcc` first, `isCompactionMethod = Object.hasOwn` at `60`). Then set `methodOrder = ["vcc","remote","snapcompact","handoff","shake","soft"]` and `override:false` so the walk treats `vcc` as the preferred `context-full` candidate whose impl is still the extension hook. See [`configuration.md#optional-native-dropdown`](configuration.md#optional-native-dropdown).
 
 ```sh
 # verify where auto will go without switching TUI

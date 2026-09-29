@@ -226,7 +226,6 @@ interface PerPiState {
 
 const perPi = new WeakMap<any, PerPiState>();
 const perPiKeys = new Set<any>();
-const pendingChainShake = new WeakSet<object>();
 const getPerPi = (pi: any): PerPiState | null => {
   if (!pi || typeof pi !== "object") return null;
   let state = perPi.get(pi);
@@ -341,7 +340,6 @@ const advanceSessionGeneration = (pi: any, ctx: any): void => {
   pendingFollowUpPrompt = null;
   pendingAutoContinueTimer = null;
   lastCompactWasPiVcc = false;
-  pendingChainShake.delete(pi);
 };
 const clearPendingAutoContinueForPi = (pi: any, ctx?: any): void => {
   const state = getPerPi(pi);
@@ -1275,11 +1273,6 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       const m = explicitMode.toLowerCase();
       if (m === "snapcompact" || m === "shake" || m === "soft" || m === "remote" || m === "handoff") return;
     }
-    // Chain-shake yield: while a {mode:"shake"} chain is in flight (see
-    // session_compact below), let the host run it — otherwise VCC would
-    // swallow the modeless call into a second VCC pass. Sentinel compactions
-    // still handled (isPiVcc path falls through below).
-    if (!isPiVcc && pendingChainShake.has(pi as unknown as object)) return;
     if (!isPiVcc && !settings.overrideDefaultCompaction) return;
     const memoryResult = nativeMemoryBlock(ctx, event, branchEntries as any[], settings);
     function runBody(memoryBlock: string) {
@@ -1584,7 +1577,17 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
           preview: e.type === "message" ? previewContent(e.message?.content) : undefined,
         }))
       : [];
-    const retainedCandidates = collectLiveMessages(branchEntries as any[]).map(({ entry, message }) => ({ id: entry.id, type: entry.type, message }));
+    // The retained-tool-output budget prices the KEPT TAIL only: entries the
+    // compaction summarizes away are gone from the provider payload, so
+    // persisting omissions for them would make the replayed projection
+    // unresolvable on every later turn. `firstKeptEntryId === ""` (compact-all)
+    // retains nothing, so the projection stays empty.
+    const liveWindow = collectLiveMessages(branchEntries as any[]);
+    const keptStart = firstKeptEntryId
+      ? liveWindow.findIndex((entry) => entry.entry.id === firstKeptEntryId)
+      : -1;
+    const retainedCandidates = (keptStart >= 0 ? liveWindow.slice(keptStart) : [])
+      .map(({ entry, message }) => ({ id: entry.id, type: entry.type, message }));
     const retainedProjection = buildRetainedToolOutputProjection(retainedCandidates, settings.retainedToolOutputMaxTokens, globalIndexById);
 
     const KNOWN_SECTIONS = new Set(["Session Goal", "Files And Changes", "Commits", "Outstanding Context", "User Preferences"]);
@@ -1838,29 +1841,6 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     if (willRetry) return;
     scheduleCompactionStatsNotify(pi, ctx, stats);
     if (hostOwnsContinuation) return;
-    try {
-      const ctxMaybe = ctx as unknown as Record<string, unknown>;
-      const compactFn = ctxMaybe["compact"];
-      const promptOf = ctxMaybe["getSystemPrompt"] as ((this: unknown) => unknown) | undefined;
-      const chainForm = getCompactForm(() => promptOf?.call(ctx));
-      if (settings.chainShakeHint && chainForm === "string" && typeof compactFn === "function" && !pendingChainShake.has(pi as unknown as object) && !willRetry) {
-        pendingChainShake.add(pi as unknown as object);
-        const startShake = () => {
-          try {
-            const maybePromise = (compactFn as unknown as (o: unknown) => Promise<void>).call(ctx, { mode: "shake" } as unknown);
-            const asPromise = maybePromise as unknown as Promise<void> | void;
-            if (asPromise && typeof (asPromise as unknown as Promise<void>).catch === "function") {
-              (asPromise as unknown as Promise<void>).catch(() => { pendingChainShake.delete(pi as unknown as object); });
-            }
-          } catch {
-            pendingChainShake.delete(pi as unknown as object);
-          }
-        };
-        if (typeof ctx?.setTimeout === "function") scheduleManaged(pi, ctx, startShake, 5, "chain-shake-start");
-        else startShake();
-        scheduleManaged(pi, ctx, () => { try { pendingChainShake.delete(pi as unknown as object); } catch {} }, 2000, "chain-shake-cleanup");
-      }
-    } catch {}
     if (followUpPrompt) {
       try {
         const sent = (pi as any).sendUserMessage?.(followUpPrompt) as Promise<void> | undefined;

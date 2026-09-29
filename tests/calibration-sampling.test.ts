@@ -17,7 +17,7 @@ let origOmp: string | undefined;
 let origPi: string | undefined;
 const setCfg = (extra: any = {}) => writeFileSync(
   CONFIG_PATH,
-  JSON.stringify({ vccEnabled: true, overrideDefaultCompaction: true, smartKeepTail: false, debug: false, continueAfterThresholdCompact: false, chainShakeHint: false, ...extra }),
+  JSON.stringify({ vccEnabled: true, overrideDefaultCompaction: true, smartKeepTail: false, debug: false, continueAfterThresholdCompact: false, ...extra }),
 );
 const T = Date.now();
 

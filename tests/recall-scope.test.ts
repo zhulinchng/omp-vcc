@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from "bun:test";
-import { normalizeRecallScope, parseRecallScope } from "../extensions/vcc-core/core/recall-scope";
+import { normalizeRecallScope, normalizeRecallMode, parseRecallMode, parseRecallScope } from "../extensions/vcc-core/core/recall-scope";
 
 describe("normalizeRecallScope", () => {
   it("defaults to active lineage", () => {
@@ -29,5 +29,15 @@ describe("parseRecallScope", () => {
       scope: "lineage",
       text: "license page:2",
     });
+  });
+});
+
+describe("repeated selector tokens", () => {
+  it("strips every scope selector, not just the first", () => {
+    expect(parseRecallScope("auth scope:all scope:all")).toEqual({ scope: "all", text: "auth" });
+  });
+
+  it("strips every mode selector, not just the first", () => {
+    expect(parseRecallMode("auth mode:file mode:file")).toEqual({ mode: "file", text: "auth" });
   });
 });

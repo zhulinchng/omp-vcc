@@ -109,12 +109,19 @@ function formatToolCallContent(
       }
       const truncated = bytes.subarray(0, end).toString("utf8");
       const omittedBytes = bytes.length - end;
+      // Point at the first line the byte-clipped dump did not finish: a fixed
+      // `:${previewLimit}` offset can land inside the dumped text (or before it
+      // on a 1000-line file), so the continuation pointer could never advance.
+      const completeLines = truncated.split("\n").length - 1;
+      const continuation = completeLines > 0
+        ? `Use #${entryIndex}:${tc.path}:${completeLines} to continue from the first line not fully shown.`
+        : `The first line alone exceeds the display limit, so line paging cannot advance.`;
       return `File: ${tc.path}
 Tool: ${tc.name}
 
 ${truncated}
 
-... (${omittedBytes} more bytes — file exceeds 50KB display limit. Use #${entryIndex}:${tc.path}:${previewLimit} for next page.)`;
+... (${omittedBytes} more bytes — file exceeds 50KB display limit. ${continuation})`;
     }
     return `File: ${tc.path}
 Tool: ${tc.name}
@@ -125,7 +132,9 @@ ${body}`;
   if (offset !== undefined) {
     // Offset-based window: show slice
     const startLine = Math.max(0, offset);
-    const maxLines = limit ?? 30;
+    // A non-positive limit means "unspecified" (a `#N:path:10:0` suffix would
+    // otherwise render an empty window and a false "beyond file length").
+    const maxLines = limit !== undefined && limit > 0 ? limit : previewLimit;
     const endLine = Math.min(startLine + maxLines, totalLines);
     const visible = allLines.slice(startLine, endLine);
     const displayStart = startLine + 1; // 1-indexed for user display
@@ -367,7 +376,7 @@ export function expandEntry(
   const totalLines = allLines.length;
   if (offset !== undefined) {
     const startLine = Math.max(0, offset);
-    const maxLines = limit ?? ENTRY_PREVIEW_LIMIT;
+    const maxLines = limit !== undefined && limit > 0 ? limit : ENTRY_PREVIEW_LIMIT;
     const endLine = Math.min(startLine + maxLines, totalLines);
     const visible = allLines.slice(startLine, endLine);
     const displayStart = startLine + 1; // 1-indexed for user display

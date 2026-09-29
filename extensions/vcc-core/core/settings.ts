@@ -36,7 +36,8 @@ const settingsPath = (): string =>
   process.env.OMP_VCC_CONFIG_PATH ??
   process.env.PI_VCC_CONFIG_PATH ??
   SETTINGS_PATH_DEFAULT;
-/** Backwards-compat export. Resolves at access time, not import time. */
+/** Backwards-compat export: frozen at import time (use `getSettingsPath()` for
+ *  a live path that reflects the current `OMP_VCC_CONFIG_PATH`). */
 export const SETTINGS_PATH = settingsPath();
 // For migration: if omp config missing but legacy pi config exists, we read legacy but write to new
 // Also handles concurrent-test env shadowing: if OMP path is set by another test but file missing,
@@ -85,16 +86,6 @@ export interface PiVccSettings {
   continueAfterThresholdCompact: boolean;
   /** Write debug snapshot to /tmp/omp-vcc-debug.json on each compaction. */
   debug: boolean;
-  /**
-   * When true, after a successful VCC threshold/overflow compaction, eagerly
-   * trigger a follow-up shake via ctx.compact when the host rescue would not.
-   * Default false: host's #rescueCompactionDeadEnd already runs shake elide
-   * automatically when VCC didn't create enough headroom, and leaving shake in
-   * methodOrder covers that case without a second entry. Set true only if you
-   * want a chained shake even when VCC already made headroom (costs a second
-   * CompactionEntry).
-   */
-  chainShakeHint: boolean;
   /** Use append-only segments with a mutable trailing summary. */
   compactionSummaryMode: "rewrite" | "append";
   /** Maximum provider-visible retained tool-output tokens; 0 disables projection. */
@@ -115,7 +106,6 @@ export const DEFAULT_SETTINGS: PiVccSettings = {
   smartKeepTail: true,
   continueAfterThresholdCompact: true,
   debug: false,
-  chainShakeHint: false,
   compactionSummaryMode: "append",
   retainedToolOutputMaxTokens: 20_000,
   showPreCompactionMessage: true,
@@ -166,7 +156,7 @@ const warnInvalidConfig = (ctx: unknown, path: string): void => {
 
 const BOOLEAN_SETTING_KEYS: Array<keyof PiVccSettings> = [
   "vccEnabled", "overrideDefaultCompaction", "smartKeepTail", "continueAfterThresholdCompact",
-  "debug", "chainShakeHint", "showPreCompactionMessage", "nativeMemory", "debugLog",
+  "debug", "showPreCompactionMessage", "nativeMemory", "debugLog",
 ];
 const isValidSettingValue = (key: keyof PiVccSettings, value: unknown): boolean => {
   if (BOOLEAN_SETTING_KEYS.includes(key)) return typeof value === "boolean";
@@ -177,7 +167,13 @@ const isValidSettingValue = (key: keyof PiVccSettings, value: unknown): boolean 
 };
 
 const normalizeSettings = (value: Record<string, unknown> | undefined): PiVccSettings => {
-  const merged: PiVccSettings = { ...DEFAULT_SETTINGS, ...(value ?? {}) };
+  // Copy only known keys: an unknown/typo'd file or overlay key must not leak
+  // into the settings object (the /vcc-config card and its key count read this).
+  const source = asRecord(value) ?? {};
+  const merged: PiVccSettings = { ...DEFAULT_SETTINGS };
+  for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
+    if (key in source) (merged as Record<string, unknown>)[key] = source[key];
+  }
   for (const key of BOOLEAN_SETTING_KEYS) {
     if (typeof merged[key] !== "boolean") merged[key] = DEFAULT_SETTINGS[key];
   }
@@ -213,10 +209,11 @@ const tryGetSetting = (ctx: unknown, key: string): unknown => {
 const contextOverlay = (ctx: unknown): Partial<PiVccSettings> => {
   const overlay: Partial<PiVccSettings> = {};
   for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
+    // Namespaced forms only. A bare `<key>` probe would let an unrelated global
+    // host setting of the same name (e.g. `debug`) hijack an omp-vcc key.
     const value = tryGetSetting(ctx, `plugins.@zhulinchng/omp-vcc.${key}`)
       ?? tryGetSetting(ctx, `plugins.omp-vcc.${key}`)
-      ?? tryGetSetting(ctx, `omp-vcc.${key}`)
-      ?? tryGetSetting(ctx, key);
+      ?? tryGetSetting(ctx, `omp-vcc.${key}`);
     if (value !== undefined) Object.assign(overlay, { [key]: value });
   }
   return overlay;
@@ -255,11 +252,29 @@ const readFileSettings = (ctx?: unknown): { values: PiVccSettings; parsed: Recor
   return { values: normalizeSettings(parsed ?? undefined), parsed, readPath, filePresent, fileValid };
 };
 
+/** Valid overlay keys only, layered over `base`: an out-of-contract overlay
+ *  value must fall through to the file value, never reset it to the default. */
+const applyValidOverlay = (
+  base: PiVccSettings,
+  overlay: Record<string, unknown>,
+): { values: PiVccSettings; applied: Set<keyof PiVccSettings> } => {
+  const accepted: Record<string, unknown> = {};
+  const applied = new Set<keyof PiVccSettings>();
+  for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
+    if (!(key in overlay)) continue;
+    const value = overlay[key];
+    if (value === undefined || !isValidSettingValue(key, value)) continue;
+    accepted[key] = value;
+    applied.add(key);
+  }
+  return { values: normalizeSettings({ ...base, ...accepted }), applied };
+};
+
 export function loadSettings(ctx?: unknown): PiVccSettings {
   const file = readFileSettings(ctx).values;
   if (!ctx) return file;
   const overlay = contextOverlay(ctx);
-  return Object.keys(overlay).length ? normalizeSettings({ ...file, ...overlay }) : file;
+  return Object.keys(overlay).length ? applyValidOverlay(file, overlay as Record<string, unknown>).values : file;
 }
 
 const pluginSettingsCwd = (ctx: unknown): string | undefined => {
@@ -274,7 +289,7 @@ export function loadSettingsWithPluginOverlay(ctx: unknown): PiVccSettings | Pro
   const cwd = pluginSettingsCwd(ctx);
   if (!loader || !cwd) return base;
   return Promise.resolve(loader("omp-vcc", cwd))
-    .then((overlay) => normalizeSettings({ ...base, ...overlay }))
+    .then((overlay) => applyValidOverlay(base, overlay ?? {}).values)
     .catch(() => base);
 }
 
@@ -290,10 +305,12 @@ export function loadSettingsWithSources(ctx?: unknown): VccConfigView {
   }
   if (ctx) {
     const overlay = contextOverlay(ctx);
-    const merged = normalizeSettings({ ...values, ...overlay });
-    for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
-      values[key] = merged[key];
-      if (overlay[key] !== undefined) sources[key] = isValidSettingValue(key, overlay[key]) ? "overlay" : "default";
+    if (Object.keys(overlay).length > 0) {
+      const merged = applyValidOverlay(values, overlay as Record<string, unknown>);
+      for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
+        values[key] = merged.values[key];
+        if (merged.applied.has(key)) sources[key] = "overlay";
+      }
     }
   }
   return { path, readPath: file.readPath, filePresent: file.filePresent, fileValid: file.fileValid, values, sources };
@@ -306,10 +323,10 @@ export function loadSettingsWithSourcesAsync(ctx: unknown): VccConfigView | Prom
   if (!loader || !cwd) return view;
   return Promise.resolve(loader("omp-vcc", cwd))
     .then((overlay) => {
-      const merged = normalizeSettings({ ...view.values, ...overlay });
+      const merged = applyValidOverlay(view.values, overlay ?? {});
       for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
-        view.values[key] = merged[key];
-        if (overlay[key] !== undefined) view.sources[key] = isValidSettingValue(key, overlay[key]) ? "overlay" : "default";
+        view.values[key] = merged.values[key];
+        if (merged.applied.has(key)) view.sources[key] = "overlay";
       }
       return view;
     })

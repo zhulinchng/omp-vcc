@@ -40,14 +40,13 @@ describe("settings E2E — file source, XDG priority, migration, overlay, manife
     expect(DEFAULT_SETTINGS.smartKeepTail).toBe(true);
     expect(DEFAULT_SETTINGS.continueAfterThresholdCompact).toBe(true);
     expect(DEFAULT_SETTINGS.debug).toBe(false);
-    expect(DEFAULT_SETTINGS.chainShakeHint).toBe(false);
     expect(DEFAULT_SETTINGS.compactionSummaryMode).toBe("append");
     expect(DEFAULT_SETTINGS.retainedToolOutputMaxTokens).toBe(20_000);
     expect(DEFAULT_SETTINGS.showPreCompactionMessage).toBe(true);
     expect(DEFAULT_SETTINGS.recallResponseMaxChars).toBe(48_000);
     expect(DEFAULT_SETTINGS.nativeMemory).toBe(true);
     expect(DEFAULT_SETTINGS.debugLog).toBe(false);
-    expect(Object.keys(DEFAULT_SETTINGS).length).toBe(12);
+    expect(Object.keys(DEFAULT_SETTINGS).length).toBe(11);
   });
 
   test("scaffoldSettings creates file with defaults without clobbering existing keys", () => {
@@ -133,15 +132,14 @@ describe("settings E2E — file source, XDG priority, migration, overlay, manife
     // manifest commands removed to avoid file+extension duplicate — extension registers programmatically
     expect(pkg.omp.commands).toBeUndefined();
     expect(pkg.pi.commands).toBeUndefined();
-    // settings include the six legacy toggles plus six approved parity controls
+    // settings include the legacy toggles plus the approved parity controls
     const settingsKeys = Object.keys(pkg.omp.settings ?? {});
-    expect(settingsKeys.length).toBe(12);
+    expect(settingsKeys.length).toBe(11);
     expect(settingsKeys).toContain("vccEnabled");
     expect(settingsKeys).toContain("overrideDefaultCompaction");
     expect(settingsKeys).toContain("smartKeepTail");
     expect(settingsKeys).toContain("continueAfterThresholdCompact");
     expect(settingsKeys).toContain("debug");
-    expect(settingsKeys).toContain("chainShakeHint");
     expect(settingsKeys).toContain("compactionSummaryMode");
     expect(settingsKeys).toContain("retainedToolOutputMaxTokens");
     expect(settingsKeys).toContain("showPreCompactionMessage");

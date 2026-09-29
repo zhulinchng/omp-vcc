@@ -417,35 +417,26 @@ describe("mix-matrix — VCC with normal, handoff, shake, soft, remote", () => {
     expect((await before(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 90000), cap.ctx))?.compaction).toBeDefined();
   });
 
-  test("D3: additive VCC + shake chain on/off", async () => {
-    for (const chain of [false, true]) {
-      writeConfig({ overrideDefaultCompaction: true, vccEnabled: true, chainShakeHint: chain, continueAfterThresholdCompact: false });
-      const cap = captureFullPi();
-      registerBeforeCompactHook(cap.pi);
-      const entries = buildSession({ turns: 6 }) as any[];
-      const r: any = await cap.getBefore()(makeEvent(entries, undefined, 90000), cap.ctx);
-      expect(r.compaction).toBeDefined();
-      let shakeCalls = 0;
-      let shakeArg: any = null;
-      const chainCtx: any = {
-        ...cap.ctx,
-        compact: (arg: any) => { shakeCalls++; shakeArg = arg; return Promise.resolve(); },
-        settings: { get: (k: string) => (k.includes("chainShakeHint") ? chain : undefined) },
-        config: { get: () => undefined },
-      };
-      await cap.getCompact()({ fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 21000 } }, chainCtx);
-      await new Promise((res) => setTimeout(res, 40));
-      if (chain) {
-        expect(shakeCalls).toBe(1);
-        expect(shakeArg).toEqual({ mode: "shake" });
-      } else {
-        expect(shakeCalls).toBe(0);
-      }
-    }
+  test("D3: no post-VCC chain compaction is ever issued", async () => {
+    writeConfig({ overrideDefaultCompaction: true, vccEnabled: true, continueAfterThresholdCompact: false });
+    const cap = captureFullPi();
+    registerBeforeCompactHook(cap.pi);
+    const entries = buildSession({ turns: 6 }) as any[];
+    const r: any = await cap.getBefore()(makeEvent(entries, undefined, 90000), cap.ctx);
+    expect(r.compaction).toBeDefined();
+    let compactCalls = 0;
+    const chainCtx: any = {
+      ...cap.ctx,
+      getSystemPrompt: () => ["prompt"],
+      compact: () => { compactCalls++; return Promise.resolve(); },
+    };
+    await cap.getCompact()({ fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 90000, tokensAfter: 21000 } }, chainCtx);
+    await new Promise((res) => setTimeout(res, 40));
+    expect(compactCalls).toBe(0);
   });
 
   test("D4: native fromExtension:false and willRetry overflow trigger nothing", async () => {
-    writeConfig({ overrideDefaultCompaction: true, vccEnabled: true, chainShakeHint: true, continueAfterThresholdCompact: true });
+    writeConfig({ overrideDefaultCompaction: true, vccEnabled: true, continueAfterThresholdCompact: true });
     const cap = captureFullPi();
     registerBeforeCompactHook(cap.pi);
     const entries = buildSession({ turns: 6 }) as any[];

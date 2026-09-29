@@ -48,7 +48,10 @@ export function formatTouchedOutput(
 
   const ps = pageSize ?? TOUCHED_PAGE_SIZE;
   const totalPages = Math.ceil(touched.length / ps);
-  const currentPage = Math.max(1, page ?? 1);
+  const currentPage = Math.max(1, Math.floor(page ?? 1));
+  if (currentPage > totalPages) {
+    return `Page ${currentPage} is outside the available range 1-${totalPages} (${touched.length} total files). Use page:N with N between 1 and ${totalPages}.`;
+  }
   const start = (currentPage - 1) * ps;
   const pageFiles = touched.slice(start, start + ps);
 

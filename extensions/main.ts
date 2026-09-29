@@ -45,7 +45,9 @@ const parseRecallCommandArgs = (
   const parsed = parseRecallMode(scoped.text);
   const pageMatch = parsed.text.match(/\bpage:(\d+)\b/i);
   const page = pageMatch ? Math.max(1, Number.parseInt(pageMatch[1] ?? "1", 10)) : 1;
-  const query = parsed.text.replace(/\bpage:\d+\b/i, "").trim();
+  // Consume every `page:N` token, not just the first: a leftover token would be
+  // searched for as part of the query text.
+  const query = parsed.text.replace(/\bpage:\d+\b/gi, " ").replace(/\s+/g, " ").trim();
   return { query, scope: scoped.scope, mode: normalizeRecallMode(parsed.mode), page };
 };
 
@@ -170,8 +172,9 @@ export default function (pi: ExtensionAPI): void {
       }
       if (mode === "file" && !q) {
         const { rendered, rawMessages } = loadRecallMessages(ctx, sessionFile, false, lineageEntryIds);
-        const { hits } = searchEntriesDetailed(rendered, rawMessages as unknown[], undefined, { mode });
-        const output = (scope === "all" ? "Scope: all\n\n" : "") + formatRecallOutput(hits);
+        const { hits, totalBeforeCap, truncated } = searchEntriesDetailed(rendered, rawMessages as unknown[], undefined, { mode });
+        const note = truncated ? `Showing ${hits.length} of ${totalBeforeCap} file entries.\n\n` : "";
+        const output = (scope === "all" ? "Scope: all\n\n" : "") + note + formatRecallOutput(hits);
         return { content: [{ type: "text", text: capModelRecall(settings, [{ id: "file", text: output }], "file") }], details: undefined };
       }
 
@@ -197,7 +200,7 @@ export default function (pi: ExtensionAPI): void {
       const { rendered: msgs, rawMessages } = loadRecallMessages(ctx, sessionFile, false, lineageEntryIds);
       if (q) {
         const { hits, totalBeforeCap, truncated } = searchEntriesDetailed(msgs, rawMessages as unknown[], q, { mode });
-        const page = Math.max(1, p.page ?? 1);
+        const page = Math.max(1, Math.floor(p.page ?? 1));
         const totalPages = Math.ceil(hits.length / PAGE_SIZE);
         const scopeSuffix = scope === "all" ? " (scope: all)" : "";
         const truncationNote = truncated ? ` — showing ${hits.length} of ${totalBeforeCap} matches, refine your query for more precise results` : "";
@@ -342,8 +345,9 @@ export default function (pi: ExtensionAPI): void {
       if (!query) {
         const { rendered, rawMessages } = loadRecallMessages(ctx, sessionFile, false, lineageEntryIds);
         if (mode === "file") {
-          const { hits } = searchEntriesDetailed(rendered, rawMessages as unknown[], undefined, { mode });
-          const output = (scope === "all" ? "Scope: all\n\n" : "") + formatRecallOutput(hits);
+          const { hits, totalBeforeCap, truncated } = searchEntriesDetailed(rendered, rawMessages as unknown[], undefined, { mode });
+          const note = truncated ? `Showing ${hits.length} of ${totalBeforeCap} file entries.\n\n` : "";
+          const output = (scope === "all" ? "Scope: all\n\n" : "") + note + formatRecallOutput(hits);
           try { piAny.sendMessage?.({ customType: "vcc-recall", content: output, display: true }, { triggerTurn: false }); } catch {}
           return;
         }
@@ -399,8 +403,9 @@ export default function (pi: ExtensionAPI): void {
       const { rendered, rawMessages } = loadRecallMessages(ctx, sessionFile, false, lineageEntryIds);
       if (!query) {
         if (mode === "file") {
-          const { hits } = searchEntriesDetailed(rendered, rawMessages as unknown[], undefined, { mode });
-          const output = (scope === "all" ? "Scope: all\n\n" : "") + formatRecallOutput(hits);
+          const { hits, totalBeforeCap, truncated } = searchEntriesDetailed(rendered, rawMessages as unknown[], undefined, { mode });
+          const note = truncated ? `Showing ${hits.length} of ${totalBeforeCap} file entries.\n\n` : "";
+          const output = (scope === "all" ? "Scope: all\n\n" : "") + note + formatRecallOutput(hits);
           try { piAny.sendMessage?.({ customType: "vcc-recall", content: output, display: true }, { triggerTurn: false }); } catch {}
           return;
         }

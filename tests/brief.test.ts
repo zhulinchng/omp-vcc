@@ -429,3 +429,28 @@ describe("brief tool result pointers (VCC reference call+result ranges)", () => 
     expect(r).toContain('* Read "a.ts" (#4, #6) x2');
   });
 });
+
+describe("compileBrief section attribution", () => {
+  it("does not relabel the next turn when a block renders empty", () => {
+    // A bashExecution entry with no command (normalize emits `command: ""`)
+    // renders nothing; it must not leave the section state set to [user], or
+    // the following user turn is appended into the preceding [assistant] block.
+    const blocks: NormalizedBlock[] = [
+      { kind: "assistant", text: "Checking logs.", sourceIndex: 1 },
+      { kind: "bash", command: "", output: "", exitCode: 0, sourceIndex: 2 },
+      { kind: "user", text: "now fix the bug", sourceIndex: 3 },
+    ];
+    const r = compileBrief(blocks);
+    expect(r).toBe("[assistant]\nChecking logs. (#1)\n\n[user]\nnow fix the bug (#3)");
+  });
+
+  it("keeps consecutive assistant blocks in one section when a user block is empty", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "assistant", text: "first", sourceIndex: 0 },
+      { kind: "user", text: "   " },
+      { kind: "assistant", text: "second", sourceIndex: 2 },
+    ];
+    const r = compileBrief(blocks);
+    expect(r).toBe("[assistant]\nfirst (#0)\nsecond (#2)");
+  });
+});

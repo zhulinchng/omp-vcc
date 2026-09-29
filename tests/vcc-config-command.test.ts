@@ -111,7 +111,7 @@ describe("vcc-config card: file states", () => {
     expect(m.content).toBe(expected);
     expect(m.content).toContain(`**omp-vcc config** (\`${process.env.OMP_VCC_CONFIG_PATH}\`)`);
     expect(notes.length).toBe(1);
-    expect(notes[0].msg).toMatch(/vcc_config: 12 keys from /);
+    expect(notes[0].msg).toMatch(/vcc_config: 11 keys from /);
     expect(notes[0].level).toBe("info");
   });
 
@@ -154,7 +154,6 @@ describe("vcc-config card: file states", () => {
       smartKeepTail: false,
       continueAfterThresholdCompact: false,
       debug: true,
-      chainShakeHint: true,
       compactionSummaryMode: "rewrite",
       retainedToolOutputMaxTokens: 1234,
       showPreCompactionMessage: false,
@@ -191,7 +190,9 @@ describe("vcc-config card: host overlay", () => {
     expect(content).toContain("- vccEnabled: on (default)");
   });
 
-  test("config.get bare key overlays file value", async () => {
+  test("bare host setting of the same name does not hijack an omp-vcc key", async () => {
+    // A global host `debug` setting must not flip omp-vcc's own `debug`: only
+    // namespaced probes (plugins.*/omp-vcc.*) are honoured.
     const cfg = join(tmp, "overlay2.json");
     writeFileSync(cfg, JSON.stringify({ debug: false }));
     process.env.OMP_VCC_CONFIG_PATH = cfg;
@@ -200,7 +201,7 @@ describe("vcc-config card: host overlay", () => {
     const { ctx } = makeCtx();
     ctx.config = { get: (k) => (k === "debug" ? true : undefined) };
     await cmds.get("vcc-config").handler("", ctx);
-    expect(pi._sent[0].m.content).toContain("- debug: on (host overlay)");
+    expect(pi._sent[0].m.content).toContain("- debug: off (file)");
   });
 
   test("plain settings map overlays file value", async () => {

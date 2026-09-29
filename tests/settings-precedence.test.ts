@@ -87,7 +87,11 @@ describe("settings precedence — OMP vs PI race (gap from Node24 CI #3365621376
     process.env.OMP_VCC_CONFIG_PATH = join(tmpRoot, "nope-omp.json");
     process.env.PI_VCC_CONFIG_PATH = join(tmpRoot, "nope-pi.json");
     const s = loadSettings();
-    expect(s).toEqual(DEFAULT_SETTINGS);
+    // Every default key must resolve to its default. Compare per key
+    // (objectContaining) rather than deep-equal: `fallbackReadPath` may still
+    // read a real ~/.omp/omp-vcc/config.json when the env-selected paths are
+    // absent, and that file may carry extra keys.
+    expect(s).toEqual(expect.objectContaining(DEFAULT_SETTINGS));
   });
 
   test("concurrent shadowing simulation: OMP set by other test with defaults does not leak into PI test when fixed", () => {
@@ -244,5 +248,39 @@ describe("settings overlay — pi-shaped ctx (no host settings channel)", () => 
     ];
     const result = invokeBefore(makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION, { reason: "manual", willRetry: false }));
     expect(result?.compaction).toBeDefined();
+  });
+});
+
+describe("settings hygiene: unknown keys and invalid overlays", () => {
+  test("unknown config keys never reach the settings object", () => {
+    const cfg = join(tmpRoot, "unknown.json");
+    writeCfg(cfg, { debug: true, overideDefaultCompaction: false, futureFlag: 1 });
+    process.env.OMP_VCC_CONFIG_PATH = cfg;
+    const s = loadSettings();
+    expect(Object.keys(s).sort()).toEqual(Object.keys(DEFAULT_SETTINGS).sort());
+    expect(s.debug).toBe(true);
+    expect(s.overideDefaultCompaction).toBeUndefined();
+  });
+
+  test("an out-of-contract overlay value falls through to the file value", () => {
+    const cfg = join(tmpRoot, "overlay-invalid.json");
+    writeCfg(cfg, { debug: true });
+    process.env.OMP_VCC_CONFIG_PATH = cfg;
+    const ctx = { settings: { get: (key: string) => (key === "omp-vcc.debug" ? "yes" : undefined) } };
+    expect(loadSettings(ctx).debug).toBe(true);
+    const view = loadSettingsWithSources(ctx);
+    expect(view.values.debug).toBe(true);
+    expect(view.sources.debug).toBe("file");
+  });
+
+  test("a valid overlay value still wins and is reported as overlay", () => {
+    const cfg = join(tmpRoot, "overlay-valid.json");
+    writeCfg(cfg, { debug: false });
+    process.env.OMP_VCC_CONFIG_PATH = cfg;
+    const ctx = { settings: { get: (key: string) => (key === "plugins.omp-vcc.debug" ? true : undefined) } };
+    expect(loadSettings(ctx).debug).toBe(true);
+    const view = loadSettingsWithSources(ctx);
+    expect(view.values.debug).toBe(true);
+    expect(view.sources.debug).toBe("overlay");
   });
 });

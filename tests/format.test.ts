@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from "bun:test";
-import { formatSummary } from "../extensions/vcc-core/core/format";
+import { capBrief, formatSummary } from "../extensions/vcc-core/core/format";
 import type { SectionData } from "../extensions/vcc-core/sections";
 
 const empty: SectionData = {
@@ -67,5 +67,22 @@ describe("formatSummary", () => {
     };
     const r = formatSummary(data);
     expect(Math.max(...r.split("\n").map((line) => line.length))).toBeLessThanOrEqual(120);
+  });
+});
+
+describe("capBrief", () => {
+  it("counts the lines actually dropped, including the header snip", () => {
+    // 200 lines, and the only section header inside the last-120 window sits at
+    // index 10 of that window: 80 overflow + 10 snipped = 90 dropped.
+    const lines = Array.from({ length: 199 }, (_, i) => `line ${i}`);
+    lines[90] = "[user]";
+    const capped = capBrief(lines.join("\n"));
+    expect(capped).toContain("...(90 earlier lines omitted)");
+    expect(capped).toContain("[user]\nline 91");
+    expect(capped).not.toContain("line 90\n");
+  });
+
+  it("returns short briefs unchanged", () => {
+    expect(capBrief("[user]\nhi")).toBe("[user]\nhi");
   });
 });
