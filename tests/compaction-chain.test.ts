@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test";
 import {
   APPEND_SEGMENT_CUSTOM_TYPE,
   APPEND_TRAILING_CUSTOM_TYPE,
+  APPEND_FRAME_OPEN,
+  APPEND_FRAME_CLOSE,
   buildAppendOnlyDetails,
   collectActiveSegments,
   compactionThresholds,
@@ -101,8 +103,13 @@ describe("append compaction chain", () => {
     ];
     const projected = projectAppendOnlyContext({ messages, chain, fallbackSummary: "fallback" });
     expect(projected).toHaveLength(4);
-    expect(projected[1]).toMatchObject({ customType: APPEND_SEGMENT_CUSTOM_TYPE, display: false, content: "segment 1" });
-    expect(projected[2]).toMatchObject({ customType: APPEND_TRAILING_CUSTOM_TYPE, display: false, content: "fallback" });
+    // The replacement is framed so the model still receives the
+    // "build on prior work; NEVER duplicate prior work" directive that a raw
+    // `custom` message would otherwise drop.
+    expect(projected[1]).toMatchObject({ customType: APPEND_SEGMENT_CUSTOM_TYPE, display: false });
+    expect(projected[1].content).toBe(APPEND_FRAME_OPEN + "segment 1");
+    expect(projected[2]).toMatchObject({ customType: APPEND_TRAILING_CUSTOM_TYPE, display: false });
+    expect(projected[2].content).toBe("fallback" + APPEND_FRAME_CLOSE);
     expect(messages).toHaveLength(3);
     expect(messages[1]).toEqual({ role: "branchSummary", summary: "fallback" });
 
@@ -128,5 +135,68 @@ describe("append compaction chain", () => {
     expect(decision.fullContextTokens).toBeUndefined();
     expect(decideAppendMode({ manual: true, chainTokens: 10, rebaseChainTokens: 20 }).mode).toBe("rebase");
     expect(decideAppendMode({ overflow: true, chainTokens: 50, rebaseChainTokens: 20 }).mode).toBe("rebase");
+  });
+
+  test("frames the whole append chain exactly once (multi-segment)", () => {
+    const first = details(1, true, "fallback two", "a", "b", "c");
+    const second = details(2, false, "fallback two", "c", "d", "e");
+    const branch = [
+      entry("a", "user"), entry("b", "assistant"), entry("c", "user"), entry("d", "assistant"), entry("e", "user"),
+      compaction("c1", first), compaction("c2", second, "e"),
+    ];
+    const chain = collectActiveSegments(branch, { fallbackSummary: "fallback two" });
+    expect(chain?.segments.length).toBe(2);
+
+    const messages = [
+      { role: "user", content: "before" },
+      { role: "compactionSummary", summary: "fallback two" },
+      { role: "user", content: "after" },
+    ];
+    const projected = projectAppendOnlyContext({ messages, chain, fallbackSummary: "fallback two" });
+    // 1 summary replaced by 2 segments + 1 trailing.
+    expect(projected).toHaveLength(5);
+
+    // Exactly one open and one close across the whole chain.
+    const rendered = projected.map((m: any) => m.content ?? "").join("\n");
+    expect(rendered.split(APPEND_FRAME_OPEN).length - 1).toBe(1);
+    expect(rendered.split(APPEND_FRAME_CLOSE).length - 1).toBe(1);
+    expect(rendered.indexOf(APPEND_FRAME_OPEN)).toBeLessThan(rendered.indexOf(APPEND_FRAME_CLOSE));
+    expect(rendered).toContain("segment 1");
+    expect(rendered).toContain("segment 2");
+    expect(rendered).toContain("fallback two");
+
+    // Input is never mutated.
+    expect(messages).toHaveLength(3);
+    expect(messages[1]).toEqual({ role: "compactionSummary", summary: "fallback two" });
+  });
+
+  test("frames the trailing summary when the chain has no segments", () => {
+    const chain = {
+      segments: [],
+      trailingSummary: "only trailing",
+      fallbackSummary: "only trailing",
+    };
+    const messages = [
+      { role: "user", content: "before" },
+      { role: "compactionSummary", summary: "only trailing" },
+      { role: "user", content: "after" },
+    ];
+    const projected = projectAppendOnlyContext({ messages, chain, fallbackSummary: "only trailing" });
+    expect(projected).toHaveLength(3);
+    expect(projected[1]).toMatchObject({ customType: APPEND_TRAILING_CUSTOM_TYPE, display: false });
+    expect(projected[1].content).toBe(APPEND_FRAME_OPEN + "only trailing" + APPEND_FRAME_CLOSE);
+  });
+
+  test("a second projection over already-projected messages is a no-op", () => {
+    // The context hook runs on every provider request; framing must not stack.
+    const chain = {
+      segments: [{ sequence: 1, summary: "s1", coverage: coverage("a", "b", "c"), tokensBefore: 100 }],
+      trailingSummary: "t1",
+      fallbackSummary: "t1",
+    };
+    const messages = [{ role: "user", content: "u" }, { role: "compactionSummary", summary: "t1" }];
+    const once = projectAppendOnlyContext({ messages, chain, fallbackSummary: "t1" });
+    const twice = projectAppendOnlyContext({ messages: once, chain, fallbackSummary: "t1" });
+    expect(twice).toBe(once);
   });
 });

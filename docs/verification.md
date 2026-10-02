@@ -232,7 +232,7 @@ After any `omp-vcc` compaction (auto or manual):
 
 - `session_before_compact` calibrates `charsPerToken` (2–6, fallback 4), sums `keptChars` → `keptTokensEst`, renders `summary` via `compileRanked` (1100→2000 tok), then `summaryChars → summaryTokensEst → tokensAfterEst = summaryTokensEst + keptTokensEst → tokensSavedEst/percent` and writes `details.savings` (`version:2`, `compactor:"omp-vcc"`) + `dbg.savings` + `setLastStats` (per-pi + global, 50-capped, `timestamp`).
 - `session_compact` enriches `lastStats` with authoritative `compactionEntry.tokensAfter/tokensBefore → saved/percent` *before* the `isPiVccLast/willRetry` early returns, so manual `omp-vcc` compactions also get precise numbers and `authoritativeSavings` in debug when `debug:true`. Fallback `kept 0/2 turns…` when `tokensBefore` missing.
-- History is per-pi (`WeakMap` + `perPiKeys` set for test clear) + global, copy-isolated, `clearCompactionHistoryForTests()` clears both. Edge: `after>before` → `saved 0 (0%)`, `percent 0` → no prefix, `saved 0` → `—` in table, `timestamp null` → `—`.
+- History is per-pi (`WeakMap` + a `WeakRef`/`FinalizationRegistry` key registry for the test-only clear) + global, copy-isolated, `clearCompactionHistoryForTests()` clears both. Edge: `after>before` → `saved 0 (0%)`, `percent 0` → no prefix, `saved 0` → `—` in table, `timestamp null` → `—`.
 
 ```mermaid
 flowchart LR
@@ -261,7 +261,7 @@ flowchart LR
 - `scope:"all"` vs `active` (lineage) — off-lineage filtered
 - Savings: `before=0` → no prefix, `percent 0` → no prefix, `saved 0` → `—`, `after>before` → `0`, budgetCut + savings prefix, boundaries 999/1000, negative → no prefix
 - Table: `timestamp null` → `—`, `budgetCut` suffix, `undefined` history → `No compactions yet.`, `perPi` vs `global` copy isolation, capping 50 (global + perPi), `authoritative > est` note
-- History: `clearCompactionHistoryForTests()` clears `global` + `perPi` via `perPiKeys` set, `timestamp` assigned once, `setLastStats(null)` no push, `willRetry` enrichment before early return
+- History: `clearCompactionHistoryForTests()` clears `global` + `perPi` via the `WeakRef` key registry, `timestamp` assigned once, `setLastStats(null)` no push, `willRetry` enrichment before early return
 - Commands: `vcc-stats` `history`/`all` variants, `vcc_stats({history:true})` schema fallback when `zod.boolean` missing; `/omp-vcc` compact only (toast single line, no inline `Last compaction`) — no `omp-vcc-stats` alias
 - Docs: harness impact table pipes fixed (`&#124;` escaped as `/` in cells) and setup mermaid labels quoted — see [harness.md §9](harness.md#9-verification-map-claim--evidence) for table/mermaid lint.
 
@@ -276,7 +276,7 @@ flowchart TB
     E5["oversized_tail ×2.5\nsnap off toolResult"]
     E6["explicit keep:N\n→ no smartKeep boost"]
     E7["ENOENT file\n→ [] not throw"]
-    E8["per-pi WeakMap+perPiKeys\nisolated + clear"]
+    E8["per-pi WeakMap + WeakRef registry\nisolated + clear"]
     E9["savings 0 / percent 0\n999/1000 boundary"]
     E10["table — / timestamp —\nbudgetCut suffix"]
     E11["capping 50\nperPi + global"]

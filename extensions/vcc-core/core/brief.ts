@@ -256,6 +256,16 @@ export interface BriefLine {
   header: string;
   /** Content lines for this section */
   lines: string[];
+  /**
+   * Indices into `lines` that came from a `tool_call` block.
+   *
+   * Tool lines cannot be recognised by their "* " prefix: assistant prose
+   * rendered through pushText produces markdown bullets with the same shape,
+   * and treating those as tool output both deleted the first bullet and
+   * replaced it with a fabricated "N earlier tool-call entries omitted".
+   * Tracking provenance structurally keeps the two apart.
+   */
+  toolLineIdx: Set<number>;
 }
 
 /**
@@ -265,12 +275,16 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
   const sections: BriefLine[] = [];
   let lastHeader = "";
 
-  const push = (header: string, line: string) => {
+  // `isTool` records provenance structurally. Matching on the "* " prefix
+  // instead would also capture assistant markdown bullets.
+  const push = (header: string, line: string, isTool = false) => {
     if (header === lastHeader && sections.length > 0) {
-      sections[sections.length - 1].lines.push(line);
+      const sec = sections[sections.length - 1];
+      sec.lines.push(line);
+      if (isTool) sec.toolLineIdx.add(sec.lines.length - 1);
       return;
     }
-    sections.push({ header, lines: [line] });
+    sections.push({ header, lines: [line], toolLineIdx: isTool ? new Set([0]) : new Set() });
     lastHeader = header;
   };
 
@@ -344,7 +358,7 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
           ? (resultIdx != null ? ` (#${b.sourceIndex}, result #${resultIdx})` : ` (#${b.sourceIndex})`)
           : (resultIdx != null ? ` (result #${resultIdx})` : "");
         const summary = toolOneLiner(b.name, b.args) + ref;
-        push("[assistant]", summary);
+        push("[assistant]", summary, true);
         break;
       }
       case "thinking":
@@ -372,8 +386,10 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
   for (const sec of sections) {
     if (sec.header !== "[assistant]") continue;
     const out: string[] = [];
-    for (const line of sec.lines) {
-      if (!line.startsWith("* ")) { out.push(line); continue; }
+    const outToolIdx = new Set<number>();
+    for (let i = 0; i < sec.lines.length; i++) {
+      const line = sec.lines[i];
+      if (!sec.toolLineIdx.has(i)) { out.push(line); continue; }
       const cur = splitToolLine(line);
       const last = out.length > 0 ? splitToolLine(out[out.length - 1]) : null;
       if (cur && last && cur.base === last.base) {
@@ -381,10 +397,12 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
         for (const r of cur.refs) if (!refs.includes(r)) refs.push(r);
         out[out.length - 1] = `${cur.base} (${refs.join(", ")}) x${last.count + cur.count}`;
       } else {
+        outToolIdx.add(out.length);
         out.push(line);
       }
     }
     sec.lines = out;
+    sec.toolLineIdx = outToolIdx;
   }
 
   // Cap tool calls per [assistant] turn — keep tail (latest actions tend to
@@ -392,24 +410,27 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
   const TOOL_CALLS_PER_TURN = 8;
   for (const sec of sections) {
     if (sec.header !== "[assistant]") continue;
-    const toolIdxs = sec.lines
-      .map((l, i) => (l.startsWith("* ") ? i : -1))
-      .filter((i) => i >= 0);
+    const toolIdxs = [...sec.toolLineIdx].sort((a, b) => a - b);
     if (toolIdxs.length <= TOOL_CALLS_PER_TURN) continue;
     const dropCount = toolIdxs.length - TOOL_CALLS_PER_TURN;
     const dropSet = new Set(toolIdxs.slice(0, dropCount));
     const firstKeptToolIdx = toolIdxs[dropCount];
     const next: string[] = [];
+    const nextToolIdx = new Set<number>();
     let inserted = false;
     for (let i = 0; i < sec.lines.length; i++) {
       if (dropSet.has(i)) continue;
       if (!inserted && i === firstKeptToolIdx) {
         next.push(`* (${dropCount} earlier tool-call entries omitted)`);
+        // next.length is already past the marker: it now occupies length - 1.
+        nextToolIdx.add(next.length - 1);
         inserted = true;
       }
       next.push(sec.lines[i]);
+      if (sec.toolLineIdx.has(i)) nextToolIdx.add(next.length - 1);
     }
     sec.lines = next;
+    sec.toolLineIdx = nextToolIdx;
   }
 
   return sections;

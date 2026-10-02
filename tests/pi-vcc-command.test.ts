@@ -273,7 +273,9 @@ describe("pi-vcc alias command", () => {
     const { approval, ...stripped } = tool as any;
     void approval;
     expect(stripped.name).toBe("vcc_recall");
-    expect(Object.keys(stripped.parameters ?? {}).sort()).toEqual(["expand", "mode", "page", "query", "scope"]);
+    // The schema is plain JSON Schema, so a host that keeps only the pi-required
+    // tool keys still sees all five parameters.
+    expect(Object.keys(stripped.parameters?.properties ?? {}).sort()).toEqual(["expand", "mode", "page", "query", "scope"]);
     expect(typeof stripped.execute).toBe("function");
   });
 

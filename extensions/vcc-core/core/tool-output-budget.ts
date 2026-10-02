@@ -97,6 +97,18 @@ export const buildRetainedToolOutputProjection = (
 
   const idCounts = uniqueIdCounts(entries);
   let exhausted = false;
+  const omissionPos: number[] = [];
+  const markerFor = (entryId: string): string => {
+    const globalIndex = globalIndexById?.get(entryId);
+    return Number.isInteger(globalIndex)
+      ? `[Tool output text omitted from active context; recall #${globalIndex}.]`
+      : "[Tool output text omitted from active context; use recall.]";
+  };
+  // Omission markers are provider-visible text too, and the limit is documented
+  // as the maximum PROVIDER-VISIBLE retained tool-output tokens. Charging only
+  // the retained bodies under-reported the real cost by ~15 tokens per omission,
+  // so `spent` tracks bodies AND markers together and the budget is shared.
+  let spent = 0;
   for (let i = lastAssistant - 1; i >= 0; i--) {
     const entry = entries[i];
     const message = entry?.message;
@@ -109,22 +121,29 @@ export const buildRetainedToolOutputProjection = (
     if (typeof entry?.id !== "string" || entry.id.length === 0 || idCounts.get(entry.id) !== 1) continue;
 
     const tokens = outputTokens(message);
-    if (!exhausted && projection.retainedTokens + tokens <= limit) {
+    const markerCost = estimateScriptAwareTokens(markerFor(entry.id));
+    // Retain while it fits. Also retain when omitting would NOT save anything:
+    // swapping a body for a marker costs `markerCost`, so a body cheaper than
+    // its own marker stays. Without this, a session full of trivial tool calls
+    // would emit ~2x more tokens as markers than it would have kept as text.
+    if (!exhausted && (spent + tokens <= limit || tokens <= markerCost)) {
       projection.retainedTokens += tokens;
+      spent += tokens;
       continue;
     }
 
     exhausted = true;
     projection.omittedTokens += tokens;
-    const globalIndex = globalIndexById?.get(entry.id);
-    projection.omissions.push({
-      entryId: entry.id,
-      marker: Number.isInteger(globalIndex)
-        ? `[Tool output text omitted from active context; recall #${globalIndex}.]`
-        : "[Tool output text omitted from active context; use recall.]",
-    });
+    projection.omissions.push({ entryId: entry.id, marker: markerFor(entry.id) });
+    omissionPos.push(i);
+    spent += markerCost;
   }
-  projection.omissions.reverse();
+
+  // Oldest-first, matching the ordering the descending scan produced.
+  const order = projection.omissions
+    .map((_, i) => i)
+    .sort((a, b) => omissionPos[a] - omissionPos[b]);
+  projection.omissions = order.map((i) => projection.omissions[i]);
   return projection;
 };
 

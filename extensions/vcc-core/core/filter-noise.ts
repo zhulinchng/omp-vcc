@@ -33,7 +33,10 @@ export const filterNoise = (blocks: NormalizedBlock[]): NormalizedBlock[] => {
       if (isNoiseUserBlock(b.text)) continue;
       const cleaned = cleanUserText(b.text);
       if (!cleaned) continue;
-      out.push({ kind: "user", text: cleaned });
+      // sourceIndex must survive: brief.ts renders ` (#N)` for user blocks, so
+      // dropping it here silently strips the vcc_recall drill-down pointer from
+      // every [user] line of every compaction summary.
+      out.push({ kind: "user", text: cleaned, sourceIndex: b.sourceIndex });
       continue;
     }
     out.push(b);

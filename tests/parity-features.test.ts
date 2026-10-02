@@ -11,7 +11,7 @@ import { searchEntriesDetailed } from "../extensions/vcc-core/core/search-entrie
 import { loadSettings } from "../extensions/vcc-core/core/settings";
 import { registerBeforeCompactHook, OMP_VCC_COMPACT_INSTRUCTION, clearCompactionHistoryForTests } from "../extensions/vcc-core/hook";
 
-import { buildAppendOnlyDetails } from "../extensions/vcc-core/core/compaction-chain";
+import { buildAppendOnlyDetails, APPEND_FRAME_OPEN, APPEND_FRAME_CLOSE } from "../extensions/vcc-core/core/compaction-chain";
 const message = (id: string, role: string, content: unknown) => ({ id, type: "message", message: { role, content } });
 const rendered = (index: number, role: string, summary: string, files?: string[]) => ({ index, role, summary, ...(files ? { files } : {}) });
 
@@ -178,8 +178,12 @@ describe("approved parity feature contracts", () => {
     const pi: any = { on: (event: string, handler: any) => { if (event === "context") context = handler; }, sendMessage: () => {}, sendUserMessage: () => {} };
     registerBeforeCompactHook(pi);
     const result = context({ messages: [{ role: "user", content: "old" }, { role: "branchSummary", summary: "complete fallback" }, { role: "user", content: "tail" }] }, { sessionManager: { getEntries: () => entries } });
-    expect(result.messages[1]).toMatchObject({ role: "custom", display: false, content: "fresh segment" });
-    expect(result.messages[2]).toMatchObject({ role: "custom", display: false, content: "complete fallback" });
+    // Replaced messages are framed so the model keeps the "build on prior work;
+    // NEVER duplicate prior work" directive that a raw `custom` message drops.
+    expect(result.messages[1]).toMatchObject({ role: "custom", display: false });
+    expect(result.messages[1].content).toBe(APPEND_FRAME_OPEN + "fresh segment");
+    expect(result.messages[2]).toMatchObject({ role: "custom", display: false });
+    expect(result.messages[2].content).toBe("complete fallback" + APPEND_FRAME_CLOSE);
     clearCompactionHistoryForTests();
   });
 

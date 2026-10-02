@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { dirname, join } from "path";
+import { dirname, isAbsolute, join } from "path";
 import { createRequire } from "node:module";
 
 type PluginSettingsLoader = (pluginName: string, cwd: string) => Promise<Record<string, unknown>>;
@@ -26,15 +26,38 @@ const resolvePluginSettingsLoader = (): PluginSettingsLoader | null => {
   pluginSettingsLoader = null;
   return pluginSettingsLoader;
 };
-// omp-vcc: XDG-aware config path, mirrored from pi-vcc but under ~/.omp
-// Priorities: $OMP_VCC_CONFIG_PATH > $PI_VCC_CONFIG_PATH (legacy) > ~/.omp/omp-vcc/config.json
-// Also respects $PI_CODING_AGENT_DIR / $OMP_DIR if set (oh-my-pi base dir)
-const defaultBase = process.env.OMP_DIR ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".omp");
+// omp-vcc: XDG-aware config path, mirrored from pi-vcc but under the omp base.
+// Priorities: $OMP_VCC_CONFIG_PATH > $PI_VCC_CONFIG_PATH (legacy) > $OMP_DIR >
+// $PI_CONFIG_DIR > $PI_CODING_AGENT_DIR > ~/.omp/omp-vcc/config.json
+//
+// The host knobs mean different things on the two hosts:
+//   $PI_CONFIG_DIR       omp: "Config root dirname under home (default .omp)"
+//                        (coding-agent/docs/environment-variables.md:533)
+//   $PI_CODING_AGENT_DIR omp: agent-directory override; pi: "Override the config
+//                        directory" (pi coding-agent/docs/environment-variables.md:81)
+// Neither may be dropped from the chain: removing one silently relocates an
+// existing config and re-defaults every setting with no warning. Each is also a
+// read fallback, so no config is orphaned either way. $OMP_DIR is read for
+// historical reasons but is NOT an oh-my-pi variable — its config-root knob is
+// $PI_CONFIG_DIR.
+//
+// `??` falls through only on null/undefined, so an env var set to "" would
+// otherwise collapse the path to a cwd-relative one that scaffold would create.
+const nonEmptyEnv = (value: string | undefined): string | undefined =>
+  value !== undefined && value.length > 0 ? value : undefined;
+const configDirBase = nonEmptyEnv(process.env.PI_CONFIG_DIR);
+const configRoot = configDirBase
+  ? (isAbsolute(configDirBase) ? configDirBase : join(homedir(), configDirBase))
+  : undefined;
+const agentDirBase = nonEmptyEnv(process.env.PI_CODING_AGENT_DIR);
+const defaultBase = nonEmptyEnv(process.env.OMP_DIR) ?? configRoot ?? agentDirBase ?? join(homedir(), ".omp");
 export const SETTINGS_PATH_DEFAULT = join(defaultBase, "omp-vcc", "config.json");
 const legacyPiPath = join(homedir(), ".pi", "agent", "pi-vcc-config.json");
+const agentDirSettingsPath = agentDirBase ? join(agentDirBase, "omp-vcc", "config.json") : undefined;
+const configDirSettingsPath = configRoot ? join(configRoot, "omp-vcc", "config.json") : undefined;
 const settingsPath = (): string =>
-  process.env.OMP_VCC_CONFIG_PATH ??
-  process.env.PI_VCC_CONFIG_PATH ??
+  nonEmptyEnv(process.env.OMP_VCC_CONFIG_PATH) ??
+  nonEmptyEnv(process.env.PI_VCC_CONFIG_PATH) ??
   SETTINGS_PATH_DEFAULT;
 /** Backwards-compat export: frozen at import time (use `getSettingsPath()` for
  *  a live path that reflects the current `OMP_VCC_CONFIG_PATH`). */
@@ -44,10 +67,15 @@ export const SETTINGS_PATH = settingsPath();
 // fall back to PI path before default.
 const fallbackReadPath = (): string | null => {
   const candidates: string[] = [];
-  if (process.env.OMP_VCC_CONFIG_PATH) candidates.push(process.env.OMP_VCC_CONFIG_PATH);
-  if (process.env.PI_VCC_CONFIG_PATH) candidates.push(process.env.PI_VCC_CONFIG_PATH);
+  const ompPath = nonEmptyEnv(process.env.OMP_VCC_CONFIG_PATH);
+  const piPath = nonEmptyEnv(process.env.PI_VCC_CONFIG_PATH);
+  if (ompPath) candidates.push(ompPath);
+  if (piPath) candidates.push(piPath);
   if (!candidates.includes(legacyPiPath)) candidates.push(legacyPiPath);
   if (!candidates.includes(SETTINGS_PATH_DEFAULT)) candidates.push(SETTINGS_PATH_DEFAULT);
+  // Never orphan a config that used to resolve under $PI_CODING_AGENT_DIR.
+  if (agentDirSettingsPath && !candidates.includes(agentDirSettingsPath)) candidates.push(agentDirSettingsPath);
+  if (configDirSettingsPath && !candidates.includes(configDirSettingsPath)) candidates.push(configDirSettingsPath);
   for (const p of candidates) if (existsSync(p)) return p;
   // No candidate exists — return primary for creation path (used by scaffold)
   return null;

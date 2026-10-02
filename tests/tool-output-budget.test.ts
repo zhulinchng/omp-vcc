@@ -5,6 +5,7 @@ import {
   applyToolOutputBudget,
   buildRetainedToolOutputProjection,
 } from "../extensions/vcc-core/core/tool-output-budget";
+import { estimateScriptAwareTokens } from "../extensions/vcc-core/core/token-estimate";
 
 const output = (id: string, text: string, toolCallId = `call-${id}`) => ({
   id,
@@ -22,7 +23,9 @@ describe("retained tool output budget", () => {
       assistant("a1"),
       output("pending", "still pending"),
     ];
-    const projection = buildRetainedToolOutputProjection(entries, 2, new Map([["old", 4]]));
+    // Limit 20: "new" (1 tok) fits, "old" (20 tok) does not, and the single
+    // omission marker (~15 tok) still fits within the budget once charged.
+    const projection = buildRetainedToolOutputProjection(entries, 20, new Map([["old", 4]]));
     expect(projection).toMatchObject({ version: 1, retainedTokens: 1, pendingCount: 1 });
     expect(projection.omissions).toEqual([{ entryId: "old", marker: "[Tool output text omitted from active context; recall #4.]" }]);
 
@@ -34,6 +37,48 @@ describe("retained tool output budget", () => {
     expect(projected[3]).toEqual(messages[3]);
     expect(messages[0].content[0].text).toHaveLength(80);
   });
+
+  test("a body cheaper than its own marker is retained, not omitted", () => {
+    // The limit is documented as MAXIMUM PROVIDER-VISIBLE retained tool-output
+    // tokens, and markers are provider-visible too (~15 tok each). A previous
+    // change charged markers only AFTER the fact and retroactively evicted
+    // retained entries — which made the total WORSE, because swapping an 8-token
+    // body for a 15-token marker adds tokens. It drained the whole retained set:
+    // 100 x 8-tok outputs at limit 500 became 0 retained + 1500 marker tokens.
+    const many = [...Array.from({ length: 100 }, (_, i) => output(`m${i}`, "x".repeat(30))), assistant("a1")];
+    const projection = buildRetainedToolOutputProjection(many, 500);
+    expect(projection.omissions).toEqual([]);
+    // Retaining all 100 is the MINIMUM achievable cost here; omitting any would
+    // cost more in markers than it saves in bodies.
+    expect(projection.retainedTokens).toBeGreaterThan(500);
+  });
+
+  test("marker cost is charged against the budget when bodies are large", () => {
+    // 80-char bodies cost 20 tok each; a marker costs ~15. At limit 25 only the
+    // newest body fits once a marker has to be charged.
+    const entries = [output("a", "a".repeat(80)), output("b", "b".repeat(80)), assistant("a1")];
+    const roomy = buildRetainedToolOutputProjection(entries, 400);
+    expect(roomy.omissions).toEqual([]);
+
+    const tight = buildRetainedToolOutputProjection(entries, 25);
+    expect(tight.retainedTokens).toBe(20);
+    expect(tight.omissions.map((o) => o.entryId)).toEqual(["a"]);
+    expect(tight.omittedTokens).toBe(20);
+    // Retained bodies alone never exceed the limit: the marker was charged
+    // against it rather than being free.
+    expect(tight.retainedTokens).toBeLessThanOrEqual(25);
+  });
+
+  test("omissions stay in chronological (oldest-first) order", () => {
+    const entries = [
+      output("old1", "a".repeat(80)), output("old2", "a".repeat(80)), output("n3", "a".repeat(80)),
+      output("n2", "a".repeat(80)), output("n1", "a".repeat(80)), assistant("a1"),
+    ];
+    const projection = buildRetainedToolOutputProjection(entries, 30);
+    const order = projection.omissions.map((o) => o.entryId);
+    expect(order).toEqual([...order].sort((a, b) => entries.findIndex((e) => e.id === a) - entries.findIndex((e) => e.id === b)));
+  });
+
 
   test("protects ambiguous ids and uses a generic marker without a global index", () => {
     const entries = [output("duplicate", "a".repeat(80)), output("duplicate", "b".repeat(80)), output("other", "c".repeat(80)), assistant("a1")];

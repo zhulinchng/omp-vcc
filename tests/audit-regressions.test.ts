@@ -6,6 +6,8 @@ import { join } from "path";
 import {
   APPEND_SEGMENT_CUSTOM_TYPE,
   APPEND_TRAILING_CUSTOM_TYPE,
+  APPEND_FRAME_OPEN,
+  APPEND_FRAME_CLOSE,
   buildAppendOnlyDetails,
   collectActiveSegments,
   compactionThresholds,
@@ -221,8 +223,12 @@ describe("audit regressions: append context and compaction ownership", () => {
       chain,
       fallbackSummary: "fallback",
     });
-    expect(projected[0]).toMatchObject({ customType: APPEND_SEGMENT_CUSTOM_TYPE, content: "segment" });
-    expect(projected[1]).toMatchObject({ customType: APPEND_TRAILING_CUSTOM_TYPE, content: "fallback" });
+    // Framed: a raw `custom` message would drop the host's
+    // "build on prior work; NEVER duplicate prior work" directive.
+    expect(projected[0]).toMatchObject({ customType: APPEND_SEGMENT_CUSTOM_TYPE });
+    expect(projected[0].content).toBe(APPEND_FRAME_OPEN + "segment");
+    expect(projected[1]).toMatchObject({ customType: APPEND_TRAILING_CUSTOM_TYPE });
+    expect(projected[1].content).toBe("fallback" + APPEND_FRAME_CLOSE);
   });
 
   test("context uses the active branch instead of a later sibling compaction", () => {
@@ -247,8 +253,8 @@ describe("audit regressions: append context and compaction ownership", () => {
     const pi: any = { on: (event: string, handler: any) => { if (event === "context") pi.context = handler; }, sendMessage: () => {}, sendUserMessage: () => {} };
     registerBeforeCompactHook(pi);
     const result = pi.context({ messages: [{ role: "compactionSummary", summary: "A fallback" }] }, { sessionManager: { getBranch: () => branchA, getEntries: () => allEntries } });
-    expect(result.messages[0]).toMatchObject({ content: "A segment" });
-    expect(result.messages[1]).toMatchObject({ content: "A fallback" });
+    expect(result.messages[0].content).toBe(APPEND_FRAME_OPEN + "A segment");
+    expect(result.messages[1].content).toBe("A fallback" + APPEND_FRAME_CLOSE);
   });
 
   test("rejects append coverage that disagrees with host firstKeptEntryId", () => {

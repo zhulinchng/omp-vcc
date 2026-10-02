@@ -795,9 +795,12 @@ const searchDetailed = (
  * A backslash-bearing query compiles as a *valid but different* regex
  * (`C:\temp\build.log` reads `\t`/`\b`), so `safeRegex`'s compile-error
  * fallback never fires and a literally present string returns "No matches".
- * When the regex reading finds nothing, retry once with the whole query
- * escaped as a literal; the retry only runs when it yields hits, so an
- * intentional regex that truly matches nothing still reports none.
+ * The retry therefore runs whenever the raw query is not already a valid
+ * literal reading of itself — NOT only when the first pass found nothing. A
+ * multi-word query containing a path (`fix C:\temp\build.log`) scores BM25 hits
+ * for the ordinary words, which used to suppress the retry and hide the path.
+ * Hits from both readings are unioned; an intentional regex that truly matches
+ * nothing still reports none.
  */
 export const searchEntriesDetailed = (
   entries: RenderedEntry[],
@@ -807,11 +810,23 @@ export const searchEntriesDetailed = (
 ): SearchResult => {
   const result = searchDetailed(entries, messages, query, tuning);
   const rawQuery = query?.trim() ?? "";
-  if (result.hits.length > 0 || !rawQuery.includes("\\")) return result;
+  if (!rawQuery.includes("\\")) return result;
   const literal = escapeRegex(rawQuery);
   if (literal === rawQuery) return result;
   const retry = searchDetailed(entries, messages, literal, tuning);
-  return retry.hits.length > 0 ? retry : result;
+  if (retry.hits.length === 0) return result;
+  if (result.hits.length === 0) return retry;
+
+  // Literal-only hits must SURVIVE the cap. Appending them after an already
+  // capped first pass put them at position 51+, where capHits sliced them right
+  // back off — making the union a no-op in exactly the large-corpus case where
+  // the first pass had used up the whole cap. Reserve room for them instead,
+  // dropping the lowest-ranked first-pass hits instead.
+  const firstPass = new Set(result.hits.map((hit) => hit.index));
+  const literalOnly = retry.hits.filter((hit) => !firstPass.has(hit.index));
+  const cap = tuning?.cap ?? SEARCH_RESULT_CAP;
+  const keptFirstPass = result.hits.slice(0, Math.max(0, cap - literalOnly.length));
+  return capHits([...keptFirstPass, ...literalOnly], cap);
 };
 
 export const searchEntries = (

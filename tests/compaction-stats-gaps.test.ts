@@ -388,15 +388,15 @@ describe("gap: session_compact enrichment edge cases", () => {
 
 describe("gap: vcc_stats tool schema and history variants", () => {
   beforeEach(() => clearCompactionHistoryForTests());
-  test("tool falls back to empty schema when zod.boolean missing", async () => {
+  test("tool exposes a JSON Schema parameters object regardless of pi.zod presence", async () => {
     const tools: any[] = [];
     const pi: any = {
-      zod: { object: (o: any) => o }, // no boolean
       registerTool: (t: any) => tools.push(t),
       registerCommand: () => {},
     };
     registerVccStatsTool(pi);
-    expect(tools[0].parameters).toEqual({});
+    expect(tools[0].parameters.type).toBe("object");
+    expect(tools[0].parameters.properties.history.type).toBe("boolean");
     const res = await tools[0].execute("id", {}, null, null, {});
     expect(res.content[0].text).toContain("No compactions yet");
   });

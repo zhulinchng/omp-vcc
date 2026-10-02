@@ -34,15 +34,6 @@ declare module "@oh-my-pi/pi-coding-agent" {
     registerTool(tool: unknown): void;
     registerCommand(name: string, opts: unknown): void;
     on(event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown): void;
-    zod: {
-      object(shape: Record<string, unknown>): any;
-      string(): any;
-      number(): any;
-      boolean(): any;
-      enum(values: string[]): any;
-      array(item: unknown): any;
-      optional(item: unknown): any;
-    };
     arktype: unknown;
     typebox: unknown;
     ui?: unknown;
@@ -55,8 +46,6 @@ declare module "@oh-my-pi/pi-coding-agent" {
     [key: string]: unknown;
   }
   export type HookFactory = (pi: ExtensionAPI) => void | Promise<void>;
-  export type CustomToolFactory = (pi: { zod: ExtensionAPI["zod"] }) => unknown;
-  export const zod: ExtensionAPI["zod"];
   export function convertToLlm(messages: any[]): any[];
 }
 

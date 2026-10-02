@@ -43,7 +43,7 @@ flowchart TB
 
   subgraph Precedence["Precedence"]
     direction LR
-    P1["$OMP_VCC_CONFIG_PATH"] --> P2["$PI_VCC_CONFIG_PATH"] --> P3["$OMP_DIR / $PI_CODING_AGENT_DIR"] --> P4["~/.omp/omp-vcc/config.json"]
+    P1["$OMP_VCC_CONFIG_PATH"] --> P2["$PI_VCC_CONFIG_PATH"] --> P3["$OMP_DIR / $PI_CONFIG_DIR / $PI_CODING_AGENT_DIR"] --> P4["~/.omp/omp-vcc/config.json"]
     P4 -. "migrates once" .-> LEGACY["~/.pi/agent/pi-vcc-config.json"]
   end
   P1 & P2 & P3 & P4 -.-> FILE
@@ -55,7 +55,7 @@ XDG-aware path (priority):
 
 1. `$OMP_VCC_CONFIG_PATH` (explicit)
 2. `$PI_VCC_CONFIG_PATH` (legacy pi-vcc)
-3. `$OMP_DIR`/`$PI_CODING_AGENT_DIR` if set, else `~/.omp/omp-vcc/config.json`
+3. `$OMP_DIR` / `$PI_CONFIG_DIR` / `$PI_CODING_AGENT_DIR` if set, else `~/.omp/omp-vcc/config.json`. Each host-specific var means something different (omp: config-root dirname vs agent-dir override; pi: `PI_CODING_AGENT_DIR` IS the config dir), so none may be dropped without silently relocating an existing config. Empty values are ignored so a `FOO=""` never yields a cwd-relative path.
 4. Migrates legacy `~/.pi/agent/pi-vcc-config.json` on first `scaffoldSettings()` (copies values, preserves existing).
 
 ```mermaid
@@ -63,7 +63,7 @@ flowchart LR
   ENV1{"$OMP_VCC_CONFIG_PATH\nset?"} -->|yes| USE1["use it"]
   ENV1 -->|no| ENV2{"$PI_VCC_CONFIG_PATH\nset?"}
   ENV2 -->|yes| USE2["use it (legacy)"]
-  ENV2 -->|no| ENV3{"$OMP_DIR or\n$PI_CODING_AGENT_DIR?"}
+  ENV2 -->|no| ENV3{"$OMP_DIR /\n$PI_CONFIG_DIR /\n$PI_CODING_AGENT_DIR?"}
   ENV3 -->|yes| USE3["$DIR/omp-vcc/config.json"]
   ENV3 -->|no| USE4["~/.omp/omp-vcc/config.json"]
   USE4 --> MIG{"legacy ~/.pi/agent/pi-vcc-config.json\nexists and target missing?"}
@@ -139,7 +139,7 @@ Even with `debug:false`, every compaction computes and surfaces savings:
 
 - **Toast** `session_compact` → `ctx.ui.notify(formatCompactionStats(stats))` where `formatCompactionStats` prefixes `90.0k→22.0k (76% saved, ~68.0k) · ` when `before>after>0 && percent>0`, else falls back to `kept 1/5 turns`. Handles `budgetCut` (`no_anchor`/`oversized_tail`) with same prefix, `999→500` vs `1.0k`, and `after>before` → `0`.
 - **Divider** host renders `── compacted · 90K→22K · ctrl+o ──` from `CompactionEntry.tokensBefore/tokensAfter` (already persisted before plugin).
-- **`vcc_stats` tool** (`approval: read`, `{history?:boolean}`) + **`/vcc-stats` / `/omp-vcc-stats` commands**: `getCompactionHistory(pi)` (per-pi `WeakMap` + `perPiKeys` set, global fallback, 50-capped, copy-isolated) → `formatStatsTable` (`| # | Before → After | Saved | Kept | Summarized | When |`, `—` for `saved 0` or `timestamp null`, `budgetCut` suffix) and `formatLastStatsDetail` (`Before→After`, `Summary … tok … chars`, `Summarized … (smart-keep …)`, `Details: reason=… willRetry …`, `est after vs authoritative` note when they differ). `/omp-vcc` also shows this detail inline after compacting (single option with stats).
+- **`vcc_stats` tool** (`approval: read`, `{history?:boolean}`) + **`/vcc-stats` / `/omp-vcc-stats` commands**: `getCompactionHistory(pi)` (per-pi `WeakMap`, global fallback, 50-capped, copy-isolated) → `formatStatsTable` (`| # | Before → After | Saved | Kept | Summarized | When |`, `—` for `saved 0` or `timestamp null`, `budgetCut` suffix) and `formatLastStatsDetail` (`Before→After`, `Summary … tok … chars`, `Summarized … (smart-keep …)`, `Details: reason=… willRetry …`, `est after vs authoritative` note when they differ). `/omp-vcc` also shows this detail inline after compacting (single option with stats).
 - **`CompactionEntry.details`** — `compactionSummaryMode:"rewrite"` keeps v2 savings details; default `append` persists v3 `{compactor:"omp-vcc", version:3, summaryMode:"append", chainStart, segment, trailingSummary, sections, sourceMessageCount, previousSummaryUsed, retainedToolOutputProjection}`. Invalid or legacy chains fail closed to v2 rewrite details. Append details also carry optional reason/willRetry/savings metadata for compatibility.
 - **`/tmp/omp-vcc-debug.json`** and **`debug-metrics.jsonl`** — snapshots remain available with `debug:true`; `debugLog:true` writes redacted rotating JSONL events for cut IDs, append/rebase decisions, retained-output counts, native-memory status, continuation, and stale callbacks.
 
@@ -157,7 +157,8 @@ flowchart LR
   class TOAST,TABLE,DETAILS,ENRICH obs
 ```
 
-History nuances: `setLastStats(pi, v)` assigns `timestamp=Date.now()` once, pushes to `perPi.statsHistory` and `globalHistory` each capped 50 (oldest evicted), `getCompactionHistory(pi)` returns copy, `clearCompactionHistoryForTests()` clears `globalHistory`, `lastStats`, and all `perPi` histories via `perPiKeys`. Edge `tokensBefore undefined → 0`, `saved 0 → —`, `percent 0 → no prefix`.
+Budget semantics: `retainedToolOutputMaxTokens` is charged against BOTH retained tool-output bodies AND the omission markers written in their place (~15 tok each), because markers are provider-visible too. A body cheaper than its own marker is therefore retained rather than omitted — omitting it would cost more than it saves. Retained bodies alone never exceed the limit; when many cheap outputs are in play the effective total can sit above it, since markers are the cheaper representation.
+History nuances: `setLastStats(pi, v)` assigns `timestamp=Date.now()` once, pushes to `perPi.statsHistory` and `globalHistory` each capped 50 (oldest evicted), `getCompactionHistory(pi)` returns copy, `clearCompactionHistoryForTests()` clears `globalHistory`, `lastStats`, and all `perPi` histories. The registry backing that test-only clear holds `WeakRef`s guarded by a `FinalizationRegistry`, so it never pins an `ExtensionAPI` — the previous strong `Set` defeated the `WeakMap`'s GC semantics and leaked one API object per session. Edge `tokensBefore undefined → 0`, `saved 0 → —`, `percent 0 → no prefix`.
 
 
 ```mermaid

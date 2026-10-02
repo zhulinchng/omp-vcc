@@ -273,6 +273,17 @@ export const decideAppendMode = (input: CompactionDecisionInput): CompactionDeci
 export const APPEND_SEGMENT_CUSTOM_TYPE = "omp-vcc-append-segment";
 export const APPEND_TRAILING_CUSTOM_TYPE = "omp-vcc-append-trailing";
 
+// Host-neutral compaction framing. Both hosts wrap a native `compactionSummary`
+// in a preamble telling the model to build on prior work and never duplicate it —
+// omp as a user message from compaction-summary-context.md, pi as a user message
+// from COMPACTION_SUMMARY_PREFIX/SUFFIX. A `custom` message passes through raw as a
+// developer message on both, so replacing the summary without a frame forfeits that
+// directive. Hard-coding either host's template would drift with host releases, so
+// the plugin emits its own equivalent.
+export const APPEND_FRAME_OPEN =
+  "Prior model work/tool state available.\nMUST build on prior work; NEVER duplicate prior work.\n\n<summary>\n";
+export const APPEND_FRAME_CLOSE = "\n</summary>";
+
 export interface AppendContextProjectionInput {
   messages: ChainEntry[];
   chain: ActiveCompactionChain;
@@ -289,13 +300,36 @@ export const projectAppendOnlyContext = (input: AppendContextProjectionInput): C
     if ((message.role === "compactionSummary" || message.role === "branchSummary") && message.summary === input.fallbackSummary) matches.push(i);
   }
   if (matches.length !== 1) return input.messages;
-  const replacement: ChainEntry[] = input.chain.segments.map((segment) => ({
+  // Host-neutral compaction framing. Both hosts wrap a native `compactionSummary`
+  // in a preamble telling the model to build on prior work and never duplicate it
+  // — omp as a user message from compaction-summary-context.md, pi as a user
+  // message from COMPACTION_SUMMARY_PREFIX/SUFFIX. A `custom` message passes through
+  // raw as a developer message on both, so replacing the summary without a frame
+  // forfeits that directive. Hard-coding either host's template would drift, so the
+  // plugin emits its own equivalent, spanning the whole chain exactly once.
+  const segments = input.chain.segments;
+  if (segments.length === 0) {
+    const result = input.messages.slice();
+    result.splice(matches[0], 1, {
+      role: "custom",
+      customType: APPEND_TRAILING_CUSTOM_TYPE,
+      display: false,
+      content: `${APPEND_FRAME_OPEN}${input.chain.trailingSummary}${APPEND_FRAME_CLOSE}`,
+    });
+    return result;
+  }
+  const replacement: ChainEntry[] = segments.map((segment, i) => ({
     role: "custom",
     customType: APPEND_SEGMENT_CUSTOM_TYPE,
     display: false,
-    content: segment.summary,
+    content: (i === 0 ? APPEND_FRAME_OPEN + segment.summary : segment.summary),
   }));
-  replacement.push({ role: "custom", customType: APPEND_TRAILING_CUSTOM_TYPE, display: false, content: input.chain.trailingSummary });
+  replacement.push({
+    role: "custom",
+    customType: APPEND_TRAILING_CUSTOM_TYPE,
+    display: false,
+    content: input.chain.trailingSummary + APPEND_FRAME_CLOSE,
+  });
   const result = input.messages.slice();
   result.splice(matches[0], 1, ...replacement);
   return result;

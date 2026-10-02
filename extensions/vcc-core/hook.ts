@@ -23,7 +23,7 @@ import {
 } from "./core/tool-output-budget";
 import { buildPiVccCustomInstructions, parseKeepAndPrompt, PI_VCC_COMPACT_INSTRUCTION } from "./core/compact-args";
 import { loadSettings, loadSettingsWithPluginOverlay, loadSettingsWithSourcesAsync, getSettingsPath, DEFAULT_SETTINGS, type PiVccSettings, type VccConfigView } from "./core/settings";
-import { calibrateCharsPerToken, estimateMessageContentChars, estimateScriptAwareTokens, estimateScriptAwareMessageContentTokens, collectUsageStats } from "./core/token-estimate";
+import { calibrateCharsPerToken, estimateMessageContentChars, estimateScriptAwareTokens, estimateScriptAwareMessageContentTokens, estimateTokensFromChars, collectUsageStats } from "./core/token-estimate";
 import { sanitize } from "./core/sanitize";
 import type { PiVccCompactionDetails } from "./details";
 import type { CompactionReason } from "./types";
@@ -168,6 +168,17 @@ export interface CompactionStats {
 
 export type BudgetCutKind = "no_anchor" | "oversized_tail";
 export const OVERSIZED_TAIL_FACTOR = 2.5;
+
+// Tool parameter schema as plain JSON Schema (see extensions/main.ts for why:
+// `pi.zod` does not exist on pi and throws, discarding the whole extension).
+export const VCC_STATS_PARAMETERS = {
+  type: "object",
+  properties: {
+    history: { type: "boolean", description: "Include full history table of all compactions in this session" },
+  },
+  additionalProperties: false,
+} as const;
+
 // Growth-guard tolerance: compacting removes N messages (freeing their
 // per-message framing) and adds one summary entry (framing + details JSON).
 // Char-diff is otherwise exact, but host token accounting has noise both
@@ -225,7 +236,20 @@ interface PerPiState {
 }
 
 const perPi = new WeakMap<any, PerPiState>();
-const perPiKeys = new Set<any>();
+// Registry used only so `clearCompactionHistoryForTests` can reach live per-pi
+// state. It holds WEAK references: a previous strong `Set<any>` pinned every
+// ExtensionAPI the plugin ever saw — and through it the session manager and
+// agent graph — for the process lifetime, which voided the WeakMap's GC
+// semantics and leaked one API object per session in long-lived hosts.
+const perPiKeys = new Set<WeakRef<object>>();
+const perPiKeyFinalizer = new FinalizationRegistry<WeakRef<object>>((ref) => {
+  perPiKeys.delete(ref);
+});
+const rememberPi = (pi: object): void => {
+  const ref = new WeakRef(pi);
+  perPiKeys.add(ref);
+  perPiKeyFinalizer.register(pi, ref);
+};
 const getPerPi = (pi: any): PerPiState | null => {
   if (!pi || typeof pi !== "object") return null;
   let state = perPi.get(pi);
@@ -241,7 +265,7 @@ const getPerPi = (pi: any): PerPiState | null => {
       pendingDisplay: undefined,
     };
     perPi.set(pi, state);
-    perPiKeys.add(pi);
+    rememberPi(pi);
   }
   if (!state.statsHistory) state.statsHistory = [];
   if (!state.timers) state.timers = new Set<unknown>();
@@ -446,7 +470,14 @@ export const clearCompactionHistoryForTests = () => {
   pendingFollowUpPrompt = null;
   clearTimerHandle(undefined, pendingAutoContinueTimer);
   pendingAutoContinueTimer = null;
-  for (const pi of perPiKeys) {
+  for (const ref of [...perPiKeys]) {
+    // The WeakMap is keyed weakly, so a collected ExtensionAPI needs no cleanup;
+    // entries whose target is already gone are simply dropped.
+    const pi = ref.deref();
+    if (!pi) {
+      perPiKeys.delete(ref);
+      continue;
+    }
     const state = perPi.get(pi);
     if (state) {
       for (const timer of state.timers) clearTimerHandle(undefined, timer);
@@ -458,6 +489,7 @@ export const clearCompactionHistoryForTests = () => {
       state.pendingAutoContinueTimer = null;
     }
     perPi.delete(pi);
+    perPiKeys.delete(ref);
   }
   perPiKeys.clear();
 };
@@ -511,9 +543,18 @@ export const formatLastStatsDetail = (stats: CompactionStats | null): string => 
 };
 
 
+// Reasons the host owns end-to-end. `willRetry` is true when the host intends
+// to re-drive the turn after compaction; `overflow` and `incomplete` are omp's
+// two recovery reasons (context overflow, and a length-truncated assistant
+// turn recovered via runRecoveryCompactionWithRollback). omp-vcc must abort and
+// defer on all three — cancelling one strands the user with no recovery
+// compaction and no retry.
+export const isRecoveryReason = (reason: unknown): boolean =>
+  reason === "overflow" || reason === "incomplete";
+
 const readCompactionEventContext = (event: unknown): { reason?: CompactionReason; willRetry: boolean } => {
   const raw = event as { reason?: unknown; willRetry?: unknown };
-  const reason = raw.reason === "manual" || raw.reason === "threshold" || raw.reason === "overflow"
+  const reason = raw.reason === "manual" || raw.reason === "threshold" || raw.reason === "overflow" || raw.reason === "incomplete"
     ? raw.reason
     : undefined;
   return { reason, willRetry: raw.willRetry === true };
@@ -1183,11 +1224,31 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         }
       }
       const projection: RetainedToolOutputProjection | undefined = latest.details?.retainedToolOutputProjection;
-      if (projection) {
+      // Only the omitted entries are ever looked up: findProjectionTarget reads
+      // at most projection.omissions.length keys, and applyRetainedToolOutputProjection
+      // returns `messages` by identity when omissions is empty. Stringifying the
+      // whole branch here ran on EVERY provider request (this handler is on the
+      // hot path) and cost scaled with total session size, not with the number
+      // of omissions.
+      // Array.isArray is load-bearing: `projection` is read straight out of the
+      // persisted session file with no shape validation, and
+      // applyRetainedToolOutputProjection's own `!Array.isArray(projection.omissions)`
+      // guard used to degrade a malformed field to "no projection" silently.
+      // Calling .map() first would throw instead, and a throw inside this handler
+      // makes the host discard the WHOLE return value — losing the invisible-
+      // continue marker filtering above and the append-chain projection on every
+      // provider request for that session.
+      const omissionIds = new Set(
+        (Array.isArray(projection?.omissions) ? projection.omissions : [])
+          .map((omission) => omission?.entryId)
+          .filter((id): id is string => typeof id === "string" && id.length > 0),
+      );
+      if (projection && omissionIds.size > 0) {
         const serializedByEntryId: Record<string, string> = {};
         const omissionToolCallIds: Record<string, string> = {};
         for (const entry of entries) {
           if (entry?.type !== "message" || typeof entry.id !== "string") continue;
+          if (!omissionIds.has(entry.id)) continue;
           try { serializedByEntryId[entry.id] = JSON.stringify(entry.message); } catch {}
           if (typeof entry.message?.toolCallId === "string") omissionToolCallIds[entry.id] = entry.message.toolCallId;
         }
@@ -1250,7 +1311,11 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       const { preparation, branchEntries, customInstructions } = event;
       const eventContext = readCompactionEventContext(event);
       const auto = attemptState?.autoCompaction;
-      const autoReason = auto?.reason === "threshold" || auto?.reason === "overflow" || auto?.reason === "manual" ? auto.reason : undefined;
+      // `auto_compaction_start` is emitted BEFORE `session_before_compact`
+      // (session-maintenance.ts:4353 → :1707), and omp's SessionBeforeCompactEvent
+      // carries no reason at all — so this is the only place `incomplete` is
+      // visible in time to act on it.
+      const autoReason = auto?.reason === "threshold" || auto?.reason === "overflow" || auto?.reason === "manual" || auto?.reason === "incomplete" ? auto.reason : undefined;
       const reason = eventContext.reason ?? autoReason;
       const willRetry = eventContext.willRetry || auto?.willRetry === true;
       if (!settings.vccEnabled) return;
@@ -1377,11 +1442,11 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
 
       setPendingFollowUpPrompt(pi, null);
       // Fallback when pi-vcc cannot cut: for omp, SessionBeforeCompactEvent has no
-      // reason/willRetry (shared-events.ts:64-74), so overflow would otherwise be
-      // cancelled. Use tokensBefore as heuristic: large context + undefined
-      // reason likely means auto threshold/overflow, not manual /compact.
+      // reason/willRetry (shared-events.ts:64-74), so overflow / incomplete would
+      // otherwise be cancelled. Use tokensBefore as heuristic: large context +
+      // undefined reason likely means auto threshold/overflow, not manual /compact.
       const isOverflowHeuristic = preparation.tokensBefore > 50000;
-      const fallbackToCore = !isPiVcc && (reason === "overflow" || willRetry || (reason == null && isOverflowHeuristic));
+      const fallbackToCore = !isPiVcc && (isRecoveryReason(reason) || willRetry || (reason == null && isOverflowHeuristic));
       dbg(settings, {
         cancelled: !fallbackToCore,
         fallbackToCore,
@@ -1517,11 +1582,15 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         (sum: number, message: any) => sum + estimateScriptAwareMessageContentTokens(message.content),
         0,
       );
-      const netNewTok = estimateScriptAwareTokens(String(Math.max(0, netNewSummaryChars)));
+      // netNewSummaryChars is already a CHARACTER count. Estimating the decimal
+      // string of a number ("20000" → 2 tok) under-reported by ~2500x, so this
+      // notification told users a huge summary cost 2 tokens.
+      const netNewTok = estimateTokensFromChars(Math.max(0, netNewSummaryChars), tokenEstimate.charsPerToken);
+      const deferToHost = isRecoveryReason(reason) || willRetry;
       dbg(settings, {
         growthGuard: true,
-        cancelled: reason !== "overflow" && !willRetry,
-        fallbackToCore: reason === "overflow" || willRetry,
+        cancelled: !deferToHost,
+        fallbackToCore: deferToHost,
         compaction: { reason, willRetry },
         prefixChars,
         prevSummaryChars,
@@ -1531,11 +1600,11 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       });
       try {
         ctx?.ui?.notify?.(
-          `omp-vcc: compaction would grow context (prefix ~${formatTokens(prefixTok)} tok, summary adds ~${formatTokens(netNewTok)} tok) — ${reason === "overflow" || willRetry ? "deferring to host compaction" : "cancelled"}`,
+          `omp-vcc: compaction would grow context (prefix ~${formatTokens(prefixTok)} tok, summary adds ~${formatTokens(netNewTok)} tok) — ${deferToHost ? "deferring to host compaction" : "cancelled"}`,
           "info",
         );
       } catch {}
-      if (reason === "overflow" || willRetry) return;
+      if (deferToHost) return;
       return { cancel: true };
     }
 
@@ -1831,7 +1900,9 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const auto = per?.autoCompaction;
     const hostOwnsContinuation = auto?.generation === generation && (auto.sessionId ?? sessionIdOf(ctx)) === sessionId;
     const eventContext = readCompactionEventContext(event);
-    const autoReason = auto?.reason === "threshold" || auto?.reason === "overflow" ? auto.reason : undefined;
+    // `incomplete` is a recovery the host will itself re-drive; it is deliberately
+    // NOT added to the auto-continue gate below, which must stay off for it.
+    const autoReason = auto?.reason === "threshold" || auto?.reason === "overflow" || auto?.reason === "incomplete" ? auto.reason : undefined;
     const reason = eventContext.reason ?? autoReason;
     const willRetry = eventContext.willRetry || auto?.willRetry === true;
     const isLargeCompaction = (stats.summarized > 10) || (stats.kept > 5) || (stats.keptTokensEst > 2000);
@@ -1858,18 +1929,12 @@ export const invalidExpandIndices = (requested: number[], available: Set<number>
   requested.filter((i) => !Number.isInteger(i) || !available.has(i));
 
 export const registerVccStatsTool = (pi: any) => {
-  const hasBoolean = typeof pi?.zod?.boolean === "function";
-  const schema = pi?.zod?.object && hasBoolean
-    ? pi.zod.object({
-        history: pi.zod.boolean().optional().describe("Include full history table of all compactions in this session"),
-      })
-    : {};
   pi.registerTool({
     name: "vcc_stats",
     label: "VCC Stats",
     description: "Show omp-vcc compaction savings — last compaction before→after, tokens saved, percent, and optional history of all compactions in this session. Divider in transcript already shows 256K→20K; this tool surfaces the same numbers with kept/summarized details.",
     approval: "read",
-    parameters: schema,
+    parameters: VCC_STATS_PARAMETERS,
     async execute(_toolCallId: string, params: any, _signal: unknown, _onUpdate: unknown, _ctx: any) {
       const history = getCompactionHistory(pi);
       const last = getLastCompactionStats(pi);

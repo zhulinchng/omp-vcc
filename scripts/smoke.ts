@@ -63,7 +63,9 @@ try {
     "vcc_recall schema has query/expand/page/scope/mode",
     (() => {
       const t = tools.find((t) => t.name === "vcc_recall");
-      const keys = t?.parameters ? Object.keys(t.parameters) : [];
+      // The schema is plain JSON Schema (pi has no pi.zod), so the parameters
+      // live under `properties`.
+      const keys = t?.parameters ? Object.keys(t.parameters.properties ?? {}) : [];
       return ["query", "expand", "page", "scope", "mode"].every((k) => keys.includes(k));
     })(),
   );

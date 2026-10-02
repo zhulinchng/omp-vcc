@@ -1,7 +1,10 @@
 // @ts-nocheck
 import type { Message } from "@oh-my-pi/pi-ai";
 
-export type CompactionReason = "manual" | "threshold" | "overflow";
+// "incomplete" is omp's length-truncated-turn recovery reason
+// (runRecoveryCompactionWithRollback("incomplete", …)). Like "overflow" it is a
+// recovery the host must own, so omp-vcc defers to it instead of cancelling.
+export type CompactionReason = "manual" | "threshold" | "overflow" | "incomplete";
 
 export interface FileOps {
   readFiles?: string[];

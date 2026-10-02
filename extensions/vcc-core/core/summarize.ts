@@ -187,7 +187,12 @@ const briefLineCount = (text: string): number =>
   text ? text.split("\n").length : 0;
 
 const capBriefToLineBudget = (text: string, maxLines: number): string => {
-  if (!text || maxLines <= 0) return "";
+  if (!text) return "";
+  // A zero budget used to return "" — silently discarding the ENTIRE previous
+  // brief with no marker, so the model was given a summary that looked complete
+  // but had lost a whole prior cycle. capBrief always emits an omission notice;
+  // do the same.
+  if (maxLines <= 0) return `...(${briefLineCount(text)} earlier lines omitted)`;
   const lines = text.split("\n");
   if (lines.length <= maxLines) return text;
   const kept = lines.slice(-maxLines);
@@ -201,9 +206,22 @@ const mergeBriefTranscriptWithFreshBudget = (prev: string, fresh: string): strin
   if (!prev) return fresh;
   if (!fresh) return capBrief(prev);
   const freshLines = briefLineCount(fresh);
-  const remainingPrevLines = Math.max(0, BRIEF_MAX_LINES - freshLines);
-  const prevTail = capBriefToLineBudget(prev, remainingPrevLines);
-  return prevTail ? `${prevTail}\n\n${fresh}` : fresh;
+  // Reserve one line for the blank separator, and two more when the previous
+  // brief must be truncated (the "...(N earlier lines omitted)" notice plus its
+  // blank line). Reserving the overhead up front keeps the merged brief within
+  // BRIEF_MAX_LINES AND keeps capBriefToLineBudget's count honest — it is
+  // computed against the REAL previous brief. Re-capping the merged string with
+  // capBrief instead would recompute the count against the already-truncated
+  // blob and report a misleadingly small number (a real "200 lines omitted"
+  // became "...(4 earlier lines omitted)").
+  const roomForPrev = Math.max(0, BRIEF_MAX_LINES - freshLines - 1);
+  const prevLines = briefLineCount(prev);
+  const prevBudget = prevLines > roomForPrev ? roomForPrev - 2 : roomForPrev;
+  // Even with no room left, still declare the loss rather than dropping prev
+  // silently — one notice line over budget beats a summary that lies about
+  // having covered everything.
+  const prevTail = capBriefToLineBudget(prev, prevBudget);
+  return `${prevTail}\n\n${fresh}`;
 };
 
 const mergePrevious = (prev: string, fresh: string, options: { preserveFreshBrief?: boolean } = {}): string => {

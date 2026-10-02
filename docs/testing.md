@@ -177,18 +177,18 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 | File | What it checks |
 |---|---|
 | `real-sessions.test.ts` (2) | Copies real sessions from `~/.pi/sessions` when present, otherwise synthetic 100-turn `prepareSessionSamples` fallback; proves `compileRanked` on large transcripts |
-| `review-gaps.test.ts` (13) | Gaps: `reset_boundary` not resurrected, ENOENT graceful `[]`, `approval read`, manifest `omp.settings` overlay, fallback heuristic when `tokensBefore` missing, per-pi `WeakMap` + `perPiKeys` |
+| `review-gaps.test.ts` (13) | Gaps: `reset_boundary` not resurrected, ENOENT graceful `[]`, `approval read`, manifest `omp.settings` overlay, fallback heuristic when `tokensBefore` missing, per-pi `WeakMap` + `WeakRef` key registry |
 | `support/load-session.ts` + `real-sessions.ts` | Helpers: `loadSessionSamples`, `prepareSessionSamples` |
 
 ## Savings observability suites (68 tests)
 
-Unified via `hook.ts:38-105` `CompactionStats` + `details.ts:PiVccCompactionDetails` `savings` v2 (`version:2`, `compactor:"omp-vcc"`), `perPi` `WeakMap` + `Set` `perPiKeys`, `setLastStats` 50-cap global+perPi `timestamp=Date.now()` once.
+Unified via `hook.ts:38-105` `CompactionStats` + `details.ts:PiVccCompactionDetails` `savings` v2 (`version:2`, `compactor:"omp-vcc"`), `perPi` `WeakMap` + `WeakRef`/`FinalizationRegistry` key registry, `setLastStats` 50-cap global+perPi `timestamp=Date.now()` once.
 
 | File | Coverage |
 |---|---|
 | `compaction-stats.test.ts` (23) | Toast `omp-vcc: 90.0k→22.0k (76% saved, ~68.0k) · kept 1/5 turns, ~2.1k tok` prefix, `formatLastStatsDetail` `Before → After: **90.0k → 22.0k** (76% saved)`, `formatStatsTable` `| # | Before → After | Saved | Kept | Summarized | When |`, history copy-isolation, `details.savings` v2, `authoritative refine`, `debug` file + `usage` models/span/tool-calls/input-output/calibration block |
 | `compaction-stats-gaps.test.ts` (36) | Edge gaps: `percent 0`/`before 0`/`saved 0→—`/`after>before→0` no prefix, `999→500` vs `1.0k`, negative, empty table, `budgetCut` suffix, `timestamp null→—`, `derived saved`, `smartKeep`/`budgetCut`/`willRetry`, perPi isolation & clear, 50-cap global+perPi, enrichment missing/after>before/willRetry, `debug authoritativeSavings`, tool schema fallback when `zod.boolean` missing, `vcc-stats` `history`/`all` variants, `tokensBefore undefined` |
-| `compaction-bugs-fix.test.ts` (10) | Bugs: fallback `kept 0/2` when `tokensBefore` missing, perPi isolation for `vcc_stats`, sections filter `KNOWN_SECTIONS`, `perPiKeys` leak via `WeakMap` enumeration |
+| `compaction-bugs-fix.test.ts` (10) | Bugs: fallback `kept 0/2` when `tokensBefore` missing, perPi isolation for `vcc_stats`, sections filter `KNOWN_SECTIONS`, per-pi key-registry leak via `WeakMap` enumeration |
 
 ## E2E suites (124 tests, `tests/e2e/`)
 
@@ -274,7 +274,7 @@ After manual compaction via `registerBeforeCompactHook`, asserts `getLastCompact
 | `formatCompactionStats` edges | `before 0 → kept 1/5` no prefix, `saved 0 percent 0` no prefix, `after>before` still `kept`, `90k→22k (76% saved)` `formatTokens` `999→500` vs `1.0k` |
 | `formatStatsTable` edges | `timestamp null → —`, `budgetCut oversized_tail` suffix, `saved 0 → —`, `1.0k` boundary |
 | 50-cap + copy isolation | 55 compactions → `history.length 50`, mutated copy not affect internal |
-| per-pi isolation | `piA` 2 → `length 2`, `piB` 1 → `1`, `clearCompactionHistoryForTests` clears both via `perPiKeys` Set |
+| per-pi isolation | `piA` 2 → `length 2`, `piB` 1 → `1`, `clearCompactionHistoryForTests` clears both via the `WeakRef` key registry |
 | authoritative before early return | `before` `details.savings.tokensBefore 90000`, `compact` `fromExtension true compactionEntry {tokensBefore 90000, tokensAfter 21000}` → `last.tokensBefore 90000` `tokensAfter 21000` (enrichment before `isPiVccLast` return, `hook.ts:1018-1050`) |
 | deferred toast | `scheduleCompactionStatsNotify(ctx, {...})` → after 600ms `notify` matches `/omp-vcc:/` (`setTimeout 500`) |
 | `vcc-stats` history/all | `history`/`all` variants for `vcc-stats` → table via `getCompactionHistory` |
@@ -424,7 +424,7 @@ Covered in `compaction-stats-gaps` + `review-gaps` + `edge-cases` + `mixed-seque
 - `scope:all` vs `active` lineage — off-lineage filtered
 - Savings `before 0`, `percent 0`, `saved 0 → —`, `after>before → 0`, `budgetCut` + savings prefix, `999→500` vs `1.0k`, negative
 - Table `timestamp null → —`, `budgetCut` suffix, `undefined history → No compactions yet`, perPi vs global copy isolation, 50-cap global+perPi, `authoritative > est` note
-- History `clearCompactionHistoryForTests()` clears `global` + `perPi` via `perPiKeys` Set, timestamp once, `setLastStats(null)` no push, `willRetry` enrichment before early return
+- History `clearCompactionHistoryForTests()` clears `global` + `perPi` via the `WeakRef` key registry, timestamp once, `setLastStats(null)` no push, `willRetry` enrichment before early return
 - Commands `vcc-stats` vs `omp-vcc-stats`, `history`/`all` variants, `vcc_stats({history:true})` schema fallback when `zod.boolean` missing; `/omp-vcc` compact only (toast single line, no inline `Last compaction`)
 - Pipeline `queue-operation` discard, `digits→` strip, `Escape JSON → |` block scalar, `IMAGE_CONTENT_CHARS 4800`, ANSI strip, `<system-reminder>` etc
 
@@ -456,7 +456,7 @@ Artifacts: `cat /tmp/omp-vcc-debug.json | jq '.usedOwnCut,.savings,.tokenEstimat
 ## Gotchas
 
 - `tests/e2e/support/*.ts` and `scripts/e2e.ts` are `// @ts-nocheck` (vendored core is too) — `tsc` is `skipLibCheck` + `allowImportingTsExtensions`.
-- `perPi` isolation: each `pi` object is a distinct `WeakMap` key; `clearCompactionHistoryForTests()` clears both global and per-pi via `perPiKeys` Set.
+- `perPi` isolation: each `pi` object is a distinct `WeakMap` key; `clearCompactionHistoryForTests()` clears both global and per-pi via the `WeakRef` key registry.
 - `smartKeepTail` default `true` boosts small tails (`MIN 5k→MAX 25k`); set `smartKeepTail:false` in `isolated.configPath` for deterministic `keep:1`.
 - `debug` dual writes `/tmp/omp-vcc-debug.json` and `/tmp/pi-vcc-debug.json` (`hook.ts:360-364`) when `debug:true`; `e2e-harness` cleans both.
 - Coverage residuals (accepted, not product gaps): `tests/e2e/support/e2e-harness.ts` keeps defensive I/O fallbacks

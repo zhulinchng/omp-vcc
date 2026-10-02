@@ -414,12 +414,14 @@ describe("hook residual gaps", () => {
     expect(compactCalls).toEqual([]);
   });
 
-  it("factory builds a vcc_recall zod schema with the five parameters", () => {
-    // Factory requires pi.zod; the shape carries all five parameters.
+  it("factory builds a vcc_recall JSON Schema with the five parameters", () => {
+    // Factory emits plain JSON Schema (no pi.zod); properties carry all five params.
     const capture: { tool?: any } = {};
     makeFactoryPi(capture);
     expect(capture.tool.name).toBe("vcc_recall");
-    expect(Object.keys(capture.tool.parameters).sort()).toEqual(["expand", "mode", "page", "query", "scope"]);
+    expect(capture.tool.parameters.type).toBe("object");
+    expect(Object.keys(capture.tool.parameters.properties).sort()).toEqual(["expand", "mode", "page", "query", "scope"]);
+    expect(capture.tool.parameters.properties.scope.enum).toEqual(["lineage", "all", "active"]);
   });
 
   it("recall tool refuses entry refs outside the active lineage", async () => {
