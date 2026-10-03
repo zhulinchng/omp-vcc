@@ -12,17 +12,26 @@ const NOISE_STRINGS = [
   "IMPORTANT: TodoWrite was not called yet.",
 ];
 
+// The harness injects these wrappers into user turns both as a prelude and as a
+// trailing reminder (tests pin both shapes), so they are stripped wherever they
+// appear. That does mean a user who types a literal `<system-reminder>` block
+// loses that span; the two shapes are indistinguishable from the message text
+// alone, and stripping is required for the harness case.
 const XML_WRAPPER_RE = /<(system-reminder|ide_opened_file|command-message|context-window-usage)[^>]*>[\s\S]*?<\/\1>/g;
-
-const isNoiseUserBlock = (text: string): boolean => {
-  const trimmed = text.trim();
-  if (NOISE_STRINGS.some((s) => trimmed.includes(s))) return true;
-  const stripped = trimmed.replace(XML_WRAPPER_RE, "").trim();
-  return stripped.length === 0;
-};
 
 const cleanUserText = (text: string): string =>
   text.replace(XML_WRAPPER_RE, "").trim();
+
+const isNoiseUserBlock = (text: string): boolean => {
+  const trimmed = text.trim();
+  // Exact match only. These are standalone harness messages; a user who merely
+  // QUOTES one of these phrases must keep their message (the previous unbounded
+  // `includes` test dropped the entire user turn).
+  if (NOISE_STRINGS.some((s) => trimmed === s)) return true;
+  const stripped = cleanUserText(trimmed);
+  if (NOISE_STRINGS.some((s) => stripped === s)) return true;
+  return stripped.length === 0;
+};
 
 export const filterNoise = (blocks: NormalizedBlock[]): NormalizedBlock[] => {
   const out: NormalizedBlock[] = [];

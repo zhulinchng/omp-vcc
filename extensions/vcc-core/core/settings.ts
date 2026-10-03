@@ -45,12 +45,19 @@ const resolvePluginSettingsLoader = (): PluginSettingsLoader | null => {
 // otherwise collapse the path to a cwd-relative one that scaffold would create.
 const nonEmptyEnv = (value: string | undefined): string | undefined =>
   value !== undefined && value.length > 0 ? value : undefined;
-const configDirBase = nonEmptyEnv(process.env.PI_CONFIG_DIR);
-const configRoot = configDirBase
-  ? (isAbsolute(configDirBase) ? configDirBase : join(homedir(), configDirBase))
-  : undefined;
-const agentDirBase = nonEmptyEnv(process.env.PI_CODING_AGENT_DIR);
-const defaultBase = nonEmptyEnv(process.env.OMP_DIR) ?? configRoot ?? agentDirBase ?? join(homedir(), ".omp");
+// Every root is normalised to an ABSOLUTE path. A relative or `~`-prefixed
+// value would otherwise make settingsPath() cwd-relative, and scaffoldSettings()
+// would mkdir a stray tree inside whatever directory the host was launched from.
+const expandRoot = (value: string | undefined): string | undefined => {
+  const raw = nonEmptyEnv(value);
+  if (!raw) return undefined;
+  const expanded = raw === "~" ? homedir() : raw.startsWith("~/") ? join(homedir(), raw.slice(2)) : raw;
+  return isAbsolute(expanded) ? expanded : join(homedir(), expanded);
+};
+const configRoot = expandRoot(process.env.PI_CONFIG_DIR);
+const agentDirBase = expandRoot(process.env.PI_CODING_AGENT_DIR);
+const ompDirBase = expandRoot(process.env.OMP_DIR);
+const defaultBase = ompDirBase ?? configRoot ?? agentDirBase ?? join(homedir(), ".omp");
 export const SETTINGS_PATH_DEFAULT = join(defaultBase, "omp-vcc", "config.json");
 const legacyPiPath = join(homedir(), ".pi", "agent", "pi-vcc-config.json");
 const agentDirSettingsPath = agentDirBase ? join(agentDirBase, "omp-vcc", "config.json") : undefined;
@@ -65,7 +72,11 @@ export const SETTINGS_PATH = settingsPath();
 // For migration: if omp config missing but legacy pi config exists, we read legacy but write to new
 // Also handles concurrent-test env shadowing: if OMP path is set by another test but file missing,
 // fall back to PI path before default.
-const fallbackReadPath = (): string | null => {
+/** Ordered read candidates. Callers must SKIP unparseable ones: treating the
+ *  first existing file as terminal let a corrupt legacy config permanently
+ *  shadow a valid config later in the chain, and blocked scaffoldSettings from
+ *  ever creating the primary file. */
+const fallbackReadCandidates = (): string[] => {
   const candidates: string[] = [];
   const ompPath = nonEmptyEnv(process.env.OMP_VCC_CONFIG_PATH);
   const piPath = nonEmptyEnv(process.env.PI_VCC_CONFIG_PATH);
@@ -76,9 +87,7 @@ const fallbackReadPath = (): string | null => {
   // Never orphan a config that used to resolve under $PI_CODING_AGENT_DIR.
   if (agentDirSettingsPath && !candidates.includes(agentDirSettingsPath)) candidates.push(agentDirSettingsPath);
   if (configDirSettingsPath && !candidates.includes(configDirSettingsPath)) candidates.push(configDirSettingsPath);
-  for (const p of candidates) if (existsSync(p)) return p;
-  // No candidate exists — return primary for creation path (used by scaffold)
-  return null;
+  return candidates;
 };
 
 export interface PiVccSettings {
@@ -263,18 +272,21 @@ const readFileSettings = (ctx?: unknown): { values: PiVccSettings; parsed: Recor
     readPath = primary;
     warnInvalidConfig(ctx, primary);
   } else {
-    const fb = fallbackReadPath();
-    if (fb && fb !== primary) {
-      const fallbackStatus = readJsonStatus(fb);
+    for (const candidate of fallbackReadCandidates()) {
+      if (candidate === primary) continue;
+      const status = readJsonStatus(candidate);
+      if (status.kind === "missing") continue;
       filePresent = true;
-      if (fallbackStatus.kind === "valid") {
-        parsed = fallbackStatus.value;
-        readPath = fb;
+      if (status.kind === "valid") {
+        parsed = status.value;
+        readPath = candidate;
         fileValid = true;
-      } else if (fallbackStatus.kind === "invalid") {
-        readPath = fb;
-        warnInvalidConfig(ctx, fb);
+        break;
       }
+      // Unparseable: warn, remember it for reporting, and KEEP LOOKING — a
+      // corrupt legacy file must not shadow a valid config further down.
+      warnInvalidConfig(ctx, candidate);
+      if (readPath === null) readPath = candidate;
     }
   }
   return { values: normalizeSettings(parsed ?? undefined), parsed, readPath, filePresent, fileValid };
@@ -310,11 +322,76 @@ const pluginSettingsCwd = (ctx: unknown): string | undefined => {
   return typeof cwd === "string" && cwd.length > 0 ? cwd : undefined;
 };
 
+/**
+ * The host's plugin-settings store, read straight off disk.
+ *
+ * `getPluginSettings()` is the documented bridge, but it needs
+ * `@oh-my-pi/pi-coding-agent` resolvable at runtime — which it is not from a
+ * plugin install: the package is ESM-only, its `./*` export maps to a source
+ * FILE (`./src/*.ts`, so `.../extensibility/plugins` points at a non-existent
+ * `plugins.ts`), and the plugin's install directory has no `node_modules` entry
+ * for it. Every resolution base the plugin can reach returns MODULE_NOT_FOUND,
+ * so the bridge never fired and every setting declared in the manifest was
+ * unreachable. Read the same files the host itself reads instead:
+ *   <pluginsDir>/omp-plugins.lock.json       → settings[<plugin name>]
+ *   <cwd>/{.omp,.pi}/plugin-overrides.json   → settings[<plugin name>]
+ * Strictly best-effort: a missing or malformed file is ignored, never fatal.
+ */
+const HOST_PLUGIN_NAMES = ["omp-vcc", "@zhulinchng/omp-vcc", "pi-vcc"];
+
+const pluginsDirCandidates = (): string[] => {
+  const dirs: string[] = [];
+  const dataHome = nonEmptyEnv(process.env.XDG_DATA_HOME);
+  if (dataHome) dirs.push(join(dataHome, "omp", "plugins"));
+  if (ompDirBase) dirs.push(join(ompDirBase, "plugins"));
+  dirs.push(join(homedir(), ".omp", "plugins"));
+  return dirs;
+};
+
+const readJsonObject = (path: string): Record<string, unknown> | null => {
+  try {
+    if (!existsSync(path)) return null;
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+/** Copy `settings[<plugin name>]` entries out of one host config document. */
+const mergeHostSettings = (target: Record<string, unknown>, document: Record<string, unknown> | null): void => {
+  const settings = document?.settings;
+  if (settings === null || typeof settings !== "object" || Array.isArray(settings)) return;
+  for (const name of HOST_PLUGIN_NAMES) {
+    const entry = (settings as Record<string, unknown>)[name];
+    if (entry !== null && typeof entry === "object" && !Array.isArray(entry)) {
+      Object.assign(target, entry as Record<string, unknown>);
+    }
+  }
+};
+
+const hostStoreOverlay = (cwd?: string): Record<string, unknown> => {
+  const overlay: Record<string, unknown> = {};
+  for (const dir of pluginsDirCandidates()) {
+    mergeHostSettings(overlay, readJsonObject(join(dir, "omp-plugins.lock.json")));
+  }
+  if (cwd) {
+    for (const name of [".omp", ".pi"]) {
+      mergeHostSettings(overlay, readJsonObject(join(cwd, name, "plugin-overrides.json")));
+    }
+  }
+  return overlay;
+};
+
 /** Load file settings plus the host's public plugin-settings overlay. */
 export function loadSettingsWithPluginOverlay(ctx: unknown): PiVccSettings | Promise<PiVccSettings> {
-  const base = loadSettings(ctx);
-  const loader = resolvePluginSettingsLoader();
   const cwd = pluginSettingsCwd(ctx);
+  // On-disk host store first (always reachable), then the module bridge on top
+  // for hosts that do expose it.
+  const base = applyValidOverlay(loadSettings(ctx), hostStoreOverlay(cwd)).values;
+  const loader = resolvePluginSettingsLoader();
   if (!loader || !cwd) return base;
   return Promise.resolve(loader("omp-vcc", cwd))
     .then((overlay) => applyValidOverlay(base, overlay ?? {}).values)
@@ -331,14 +408,14 @@ export function loadSettingsWithSources(ctx?: unknown): VccConfigView {
       ? "file"
       : "default";
   }
-  if (ctx) {
-    const overlay = contextOverlay(ctx);
-    if (Object.keys(overlay).length > 0) {
-      const merged = applyValidOverlay(values, overlay as Record<string, unknown>);
-      for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
-        values[key] = merged.values[key];
-        if (merged.applied.has(key)) sources[key] = "overlay";
-      }
+  // Host store first, then the ctx bridge, so the more specific source wins.
+  const overlay: Record<string, unknown> = { ...hostStoreOverlay(pluginSettingsCwd(ctx)) };
+  if (ctx) Object.assign(overlay, contextOverlay(ctx));
+  if (Object.keys(overlay).length > 0) {
+    const merged = applyValidOverlay(values, overlay);
+    for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
+      values[key] = merged.values[key];
+      if (merged.applied.has(key)) sources[key] = "overlay";
     }
   }
   return { path, readPath: file.readPath, filePresent: file.filePresent, fileValid: file.fileValid, values, sources };
@@ -374,19 +451,19 @@ export function scaffoldSettings(): void {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
     if (!existsSync(path)) {
-      const fallback = fallbackReadPath();
-      if (fallback && fallback !== path) {
-        const status = readJsonStatus(fallback);
-        if (status.kind === "valid") {
-          writeFileSync(path, `${JSON.stringify(normalizeSettings(status.value), null, 2)}\n`);
-        } else if (status.kind === "invalid") {
-          return;
-        } else {
-          writeFileSync(path, `${JSON.stringify(DEFAULT_SETTINGS, null, 2)}\n`);
-        }
-      } else {
-        writeFileSync(path, `${JSON.stringify(DEFAULT_SETTINGS, null, 2)}\n`);
+      // Migrate from the first VALID candidate. An unparseable candidate must
+      // not block creation: returning here left the plugin on defaults forever,
+      // re-warning on every session with no way to recover.
+      let migrated = false;
+      for (const candidate of fallbackReadCandidates()) {
+        if (candidate === path) continue;
+        const status = readJsonStatus(candidate);
+        if (status.kind !== "valid") continue;
+        writeFileSync(path, `${JSON.stringify(normalizeSettings(status.value), null, 2)}\n`);
+        migrated = true;
+        break;
       }
+      if (!migrated) writeFileSync(path, `${JSON.stringify(DEFAULT_SETTINGS, null, 2)}\n`);
       return;
     }
 

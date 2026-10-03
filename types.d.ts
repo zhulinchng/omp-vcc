@@ -30,9 +30,33 @@ declare module "@oh-my-pi/pi-coding-agent" {
   export interface ExtensionCommandContext extends ExtensionContext {
     compact(instructionsOrOptions?: string | any): Promise<void> | void;
   }
+  // Mirrors the host's ToolDefinition closely enough that a missing required
+  // field or a bogus `approval` tier is a tsc error. Declaring the parameter as
+  // `unknown` erased the whole contract and let such mistakes compile clean.
+  export interface ToolDefinition {
+    name: string;
+    label?: string;
+    description?: string;
+    parameters: Record<string, unknown>;
+    approval?: "read" | "write" | "exec" | ((...args: unknown[]) => unknown);
+    execute(
+      toolCallId: string,
+      params: unknown,
+      signal: unknown,
+      onUpdate: unknown,
+      ctx: ExtensionContext,
+    ): unknown;
+    [key: string]: unknown;
+  }
+  export interface RegisteredCommand {
+    description?: string;
+    handler(...args: unknown[]): unknown;
+    getArgumentCompletions?: (...args: unknown[]) => unknown;
+    [key: string]: unknown;
+  }
   export interface ExtensionAPI {
-    registerTool(tool: unknown): void;
-    registerCommand(name: string, opts: unknown): void;
+    registerTool(tool: ToolDefinition): void;
+    registerCommand(name: string, opts: RegisteredCommand): void;
     on(event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown): void;
     arktype: unknown;
     typebox: unknown;

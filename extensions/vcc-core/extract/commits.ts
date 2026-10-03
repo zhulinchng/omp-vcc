@@ -6,9 +6,17 @@ interface CommitInfo {
   message: string;
 }
 
-const COMMIT_MSG_RE = /git\s+commit[^\n]*?-m\s+(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|\$?'((?:[^'\\]|\\.)*)')/;
-// Match short hash from git output: "[branch hash]" or "main hash" or 7-12 hex
-const HASH_RE = /\b([0-9a-f]{7,12})\b/;
+// `-m` may sit inside a short-flag cluster (`-am`), be spelled `--message`, and
+// hug its message (`-m"msg"`); the message may be double-quoted, single-quoted,
+// ANSI-C quoted (`$'...'`), or bare. The whitespace anchor before the flag is
+// what stops a longer flag that merely ends in `m` (e.g. `--amend`) from being
+// misread as `-am`.
+const COMMIT_MSG_RE = /git\s+commit[^\n]*?\s(?:-[A-Za-z]*m|--message)[\s=]*(?:"((?:[^"\\]|\\.)*)"|\$?'((?:[^'\\]|\\.)*)'|(\S+))/;
+// Git abbreviates to 7+ hex by default but prints the full 40-char SHA when
+// core.abbrev is raised, so allow the whole range.
+const HASH_RE = /\b([0-9a-f]{7,40})\b/;
+const BRACKET_HASH_RE = /\[\S+\s+([0-9a-f]{7,40})\]/;
+const RANGE_HASH_RE = /\b([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})\b/;
 
 const firstLineOf = (text: string): string => {
   const line = text.split(/\\n|\n/)[0] ?? "";
@@ -17,6 +25,10 @@ const firstLineOf = (text: string): string => {
 
 const cleanMessage = (msg: string): string =>
   msg.replace(/\\"/g, '"').replace(/\\'/g, "'").trim();
+
+/** Tool names are compared case-insensitively: hosts differ on casing. */
+const sameTool = (a: string | undefined, b: string | undefined): boolean =>
+  typeof a === "string" && typeof b === "string" && a.toLowerCase() === b.toLowerCase();
 
 /**
  * Extract git commits from bash tool calls (`git commit -m "..."`) and pair
@@ -36,14 +48,16 @@ export const extractCommits = (blocks: NormalizedBlock[]): CommitInfo[] => {
     if (!message) continue;
 
     let hash: string | undefined;
-    // Look at next tool_result for hash
+    // Look at the next tool_result for the hash. It must come from the SAME
+    // tool: a parallel batch interleaves other tools' results, and taking the
+    // first hex-looking word from any of them reported an unrelated commit hash.
     for (let j = i + 1; j < Math.min(blocks.length, i + 3); j++) {
       const r = blocks[j];
-      if (r.kind !== "tool_result") continue;
+      if (r.kind !== "tool_result" || !sameTool(r.name, b.name)) continue;
       // Common git commit output: `[branch <hash>] message` or `<branch> <hash>..<hash>`
-      const bracket = r.text.match(/\[\S+\s+([0-9a-f]{7,12})\]/);
+      const bracket = r.text.match(BRACKET_HASH_RE);
       if (bracket) { hash = bracket[1]; break; }
-      const range = r.text.match(/\b([0-9a-f]{7,12})\.\.([0-9a-f]{7,12})\b/);
+      const range = r.text.match(RANGE_HASH_RE);
       if (range) { hash = range[2]; break; }
       const plain = r.text.match(HASH_RE);
       if (plain) { hash = plain[1]; break; }

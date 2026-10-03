@@ -42,9 +42,13 @@ export const firstLine = (text: string, max = 200): string =>
 export const textParts = (content: Message["content"]): string[] => {
   if (!content) return [];
   if (typeof content === "string") return [content];
+  // A malformed content array (null elements, or a non-array object) must
+  // degrade rather than throw: this runs inside the session_before_compact
+  // handler, where a throw makes the host discard the entire return value.
+  if (!Array.isArray(content)) return [];
   return content
-    .filter((part) => part.type === "text")
-    .map((part) => part.text);
+    .filter((part) => part && typeof part === "object" && part.type === "text")
+    .map((part) => (typeof part.text === "string" ? part.text : ""));
 };
 
 export const textOf = (content: Message["content"]): string =>
@@ -52,8 +56,9 @@ export const textOf = (content: Message["content"]): string =>
 
 export const thinkingParts = (content: Message["content"]): string[] => {
   if (!content || typeof content === "string") return [];
+  if (!Array.isArray(content)) return [];
   return content
-    .filter((part) => part.type === "thinking")
+    .filter((part) => part && typeof part === "object" && part.type === "thinking")
     .map((part) => (part.thinking ?? part.text ?? "") as string)
     .filter((t) => typeof t === "string" && t.length > 0);
 };

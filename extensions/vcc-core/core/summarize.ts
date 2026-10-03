@@ -6,7 +6,7 @@ import { filterNoise } from "./filter-noise";
 import { buildSections } from "./build-sections";
 import { formatSummary, capBrief, BRIEF_MAX_LINES, RECALL_NOTE, wrapLongLines } from "./format";
 import { selectRankedBriefBlocks, type BriefRankingOptions } from "./rank";
-import { renderFileCategoryLines } from "../extract/files";
+import { renderFileCategoryLines, splitEscapedPathList } from "../extract/files";
 
 export interface CompileInput {
   messages: Message[];
@@ -44,12 +44,23 @@ const sectionOf = (text: string, header: string): string => {
   return (end ? after.slice(0, end) : after).trim();
 };
 
-/** Extract the brief transcript part (everything after ---) */
+/** Extract the brief transcript part (everything after the header separator).
+ *
+ *  `formatSummary` emits the separator ONLY between a header block and the
+ *  brief, so a headerless summary (every section empty) is all brief and may
+ *  legitimately contain its own markdown `---` rules. Locating the separator
+ *  with a bare `indexOf` therefore truncated such a summary at the first rule
+ *  the assistant wrote and silently dropped everything before it.
+ */
 const briefOf = (text: string): string => {
-  const idx = text.indexOf(SEPARATOR);
-  if (idx >= 0) return text.slice(idx + SEPARATOR.length).trim();
-  // No separator: a stripped headerless summary is all brief, while a lone
-  // headers block (starts with a known tag) has no brief.
+  const head = text.split(SEPARATOR)[0];
+  const hasHeaderRegion = HEADER_NAMES.some((h) => new RegExp(`(^|\\n)\\[${escapeRegExp(h)}\\]`).test(head));
+  if (hasHeaderRegion) {
+    const idx = text.indexOf(SEPARATOR);
+    return idx >= 0 ? text.slice(idx + SEPARATOR.length).trim() : "";
+  }
+  // Headerless: a stripped summary is all brief, while a lone headers block
+  // (starts with a known tag) has no brief.
   const tagPattern = new RegExp(`^\\[(${HEADER_NAMES.map(escapeRegExp).join("|")})\\]`);
   if (tagPattern.test(text.trimStart())) return "";
   return text.trim();
@@ -114,9 +125,10 @@ const mergeFileLines = (prev: string, fresh: string): string => {
   // is ignored (legacy counts were lossy by design).
   const addPaths = (cat: string, prefix: string, rest: string) => {
     const clean = rest.replace(/\s*\(\+\d+ more\)\s*$/, "");
-    for (const p of clean.split(",")) {
-      const trimmed = p.trim();
-      if (trimmed) merged[cat].add(prefix + trimmed);
+    // Split on UNESCAPED commas only: renderFileCategoryLines escapes a literal
+    // comma inside a path, and a plain `split(",")` destroyed such paths.
+    for (const p of splitEscapedPathList(clean)) {
+      merged[cat].add(prefix + p);
     }
   };
   const parseHead = (cat: string, tail: string): { prefix: string; rest: string } | null => {

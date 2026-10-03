@@ -391,7 +391,13 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
       const line = sec.lines[i];
       if (!sec.toolLineIdx.has(i)) { out.push(line); continue; }
       const cur = splitToolLine(line);
-      const last = out.length > 0 ? splitToolLine(out[out.length - 1]) : null;
+      // Only merge into a line that is itself a tracked TOOL line. Assistant
+      // prose can end with a byte-identical line once pushText appends its
+      // (#N) ref, and merging into it both dropped the real tool line's
+      // provenance (so the per-turn cap never fired) and invented a repeat
+      // count for a call that happened once.
+      const lastIdx = out.length - 1;
+      const last = lastIdx >= 0 && outToolIdx.has(lastIdx) ? splitToolLine(out[lastIdx]) : null;
       if (cur && last && cur.base === last.base) {
         const refs = [...last.refs];
         for (const r of cur.refs) if (!refs.includes(r)) refs.push(r);

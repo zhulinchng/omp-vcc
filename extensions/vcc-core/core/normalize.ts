@@ -9,9 +9,9 @@ const normalizeOne = (msg: Message, msgIndex: number, sourceIndex: number | unde
     const blocks: NormalizedBlock[] = [];
     const text = sanitize(textOf(msg.content));
     if (text) blocks.push({ kind: "user", text, sourceIndex });
-    if (msg.content && typeof msg.content !== "string") {
+    if (Array.isArray(msg.content)) {
       for (const part of msg.content) {
-        if (part.type === "image") {
+        if (part && typeof part === "object" && part.type === "image") {
           blocks.push({ kind: "user", text: `[image: ${part.mimeType}]`, sourceIndex });
         }
       }
@@ -41,8 +41,10 @@ const normalizeOne = (msg: Message, msgIndex: number, sourceIndex: number | unde
       return [{ kind: "assistant", text: sanitize(msg.content), sourceIndex }];
     }
 
+    if (!Array.isArray(msg.content)) return [];
     const blocks: NormalizedBlock[] = [];
     for (const part of msg.content) {
+      if (!part || typeof part !== "object") continue;
       if (part.type === "text") {
         blocks.push({ kind: "assistant", text: sanitize(part.text), sourceIndex });
       } else if (part.type === "thinking") {
@@ -52,7 +54,9 @@ const normalizeOne = (msg: Message, msgIndex: number, sourceIndex: number | unde
         blocks.push({
           kind: "tool_call",
           name: part.name,
-          args: part.arguments,
+          // Downstream extractors read `b.args.<key>` directly; a toolCall part
+          // with no arguments object must not become an undefined `args`.
+          args: part.arguments && typeof part.arguments === "object" ? part.arguments : {},
           sourceIndex,
         });
       }

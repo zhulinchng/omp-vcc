@@ -169,6 +169,25 @@ describe("step 5: omp `incomplete` recovery defers instead of cancelling", () =>
     expect(h.notifyCalls.some((n) => n.msg.includes("— cancelled"))).toBe(true);
   });
 
+  test("auto_compaction_start(idle) is a recognised reason, not the unknown-reason fallback", async () => {
+    // omp's 60s+ idle timer runs a full compaction through session_before_compact
+    // (session-maintenance.ts runAutoCompaction("idle", …), emitted at :1707).
+    // Leaving `idle` out of the recognised set sent a large idle compaction down
+    // the unknown-reason heuristic, which hands it to the host's native
+    // summarizer instead of VCC.
+    const h = createMockPi();
+    registerBeforeCompactHook(h.pi);
+    h.fire("auto_compaction_start", { reason: "idle", action: "context-full" });
+    const result: any = await h.invokeBefore(makeEvent(tinyPrefix(), undefined, {}, { tokensBefore: 85_000 }));
+    // Recognised → the plugin owns it, and cancels when it cannot produce a cut.
+    expect(result?.cancel).toBe(true);
+
+    // Same size, but an unrecognised reason: the heuristic defers to the host.
+    const h2 = createMockPi();
+    registerBeforeCompactHook(h2.pi);
+    expect(await h2.invokeBefore(makeEvent(tinyPrefix(), undefined, {}, { tokensBefore: 85_000 }))).toBeUndefined();
+  });
+
   test("pi-host path: reason+willRetry on the event itself still defers", async () => {
     // pi's SessionBeforeCompactEvent really does carry reason/willRetry.
     const h = createMockPi();

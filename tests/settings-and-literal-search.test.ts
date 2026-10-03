@@ -15,9 +15,10 @@
 // Step 12 lives in tests/tool-output-budget.test.ts.
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { isAbsolute } from "path";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
 import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { getSettingsPath } from "../extensions/vcc-core/core/settings";
 import { searchEntriesDetailed } from "../extensions/vcc-core/core/search-entries";
 
@@ -166,5 +167,143 @@ describe("step 11: literal retry inside a multi-word query", () => {
     const result = searchEntriesDetailed(rendered, messages, "build");
     expect(result.hits.length).toBeGreaterThan(0);
     expect(result.hits.every((hit) => typeof hit.index === "number")).toBe(true);
+  });
+});
+
+// Runs the module in a fresh process with a synthetic HOME, so import-time
+// constants and the real filesystem are both exercised.
+const settingsWithHome = (home: string, extra: Record<string, string> = {}) => {
+  const script = `
+    const S = require(${JSON.stringify(SETTINGS_MODULE)});
+    const fs = require("fs");
+    const v = S.loadSettingsWithSources({ ui: { notify: () => {} } });
+    S.scaffoldSettings();
+    process.stdout.write(JSON.stringify({
+      readPath: v.readPath,
+      fileValid: v.fileValid,
+      vccEnabled: v.values.vccEnabled,
+      overrideDefaultCompaction: v.values.overrideDefaultCompaction,
+      primaryCreated: fs.existsSync(S.getSettingsPath()),
+    }));
+  `;
+  return JSON.parse(execFileSync("bun", ["--eval", script], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH ?? "", HOME: home, ...extra },
+  }));
+};
+
+describe("settings: config resolution and corrupt-file recovery", () => {
+  test("relative or ~-prefixed roots never produce a cwd-relative path", () => {
+    // A relative root used to reach scaffoldSettings(), which mkdir'd a stray
+    // directory tree inside whatever directory the host was launched from.
+    expect(pathWithEnv({ PI_CODING_AGENT_DIR: "relagent" })).toBe(join(homedir(), "relagent", "omp-vcc", "config.json"));
+    expect(pathWithEnv({ OMP_DIR: "relomp" })).toBe(join(homedir(), "relomp", "omp-vcc", "config.json"));
+    expect(pathWithEnv({ PI_CODING_AGENT_DIR: "~/tildeagent" })).toBe(join(homedir(), "tildeagent", "omp-vcc", "config.json"));
+    expect(pathWithEnv({ PI_CONFIG_DIR: "relcfg" })).toBe(join(homedir(), "relcfg", "omp-vcc", "config.json"));
+  });
+
+  test("a corrupt legacy pi config does not shadow a valid omp config", () => {
+    const home = mkdtempSync(join(tmpdir(), "vcc-home-"));
+    try {
+      mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+      mkdirSync(join(home, ".omp", "omp-vcc"), { recursive: true });
+      writeFileSync(join(home, ".pi", "agent", "pi-vcc-config.json"), "BROKEN{");
+      writeFileSync(join(home, ".omp", "omp-vcc", "config.json"), JSON.stringify({ vccEnabled: false, overrideDefaultCompaction: false }));
+
+      // The fallback chain is only consulted when the primary is MISSING, so
+      // point the override at a path that does not exist yet (the case the
+      // corrupt legacy file used to win).
+      const primary = join(home, "custom", "c.json");
+      const r = settingsWithHome(home, { OMP_VCC_CONFIG_PATH: primary });
+      // The corrupt legacy candidate is skipped and the valid file wins...
+      expect(r.readPath).toBe(join(home, ".omp", "omp-vcc", "config.json"));
+      expect(r.fileValid).toBe(true);
+      expect(r.vccEnabled).toBe(false);
+      expect(r.overrideDefaultCompaction).toBe(false);
+      // ...and the primary is still created rather than being blocked forever.
+      expect(r.primaryCreated).toBe(true);
+      expect(existsSync(primary)).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // Runs the module in a fresh process with an isolated HOME/XDG root.
+  const sourcesWithStore = (home: string, store: unknown) => {
+    mkdirSync(join(home, "omp", "plugins"), { recursive: true });
+    writeFileSync(join(home, "omp", "plugins", "omp-plugins.lock.json"), JSON.stringify(store));
+    const script = `
+      const S = require(${JSON.stringify(SETTINGS_MODULE)});
+      const v = S.loadSettingsWithSources({ cwd: ${JSON.stringify(home)}, ui: { notify: () => {} } });
+      process.stdout.write(JSON.stringify({
+        vccEnabled: v.values.vccEnabled,
+        mode: v.values.compactionSummaryMode,
+        src: v.sources.vccEnabled,
+      }));
+    `;
+    return JSON.parse(execFileSync("bun", ["--eval", script], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH ?? "", HOME: home, XDG_DATA_HOME: home },
+    }));
+  };
+
+  test("the host plugin-settings store is read from disk", () => {
+    // `getPluginSettings()` cannot resolve at runtime from a plugin install, so
+    // the manifest settings were unreachable; read the host's own store.
+    const home = mkdtempSync(join(tmpdir(), "vcc-store-"));
+    try {
+      const r = sourcesWithStore(home, {
+        plugins: {},
+        settings: { "omp-vcc": { vccEnabled: false, compactionSummaryMode: "rewrite" } },
+      });
+      expect(r.vccEnabled).toBe(false);
+      expect(r.mode).toBe("rewrite");
+      expect(r.src).toBe("overlay");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("an out-of-contract host-store value falls through to the default", () => {
+    const home = mkdtempSync(join(tmpdir(), "vcc-store-bad-"));
+    try {
+      const r = sourcesWithStore(home, { plugins: {}, settings: { "omp-vcc": { vccEnabled: "no", compactionSummaryMode: "nonsense" } } });
+      expect(r.vccEnabled).toBe(true);       // DEFAULT_SETTINGS
+      expect(r.mode).toBe("append");         // DEFAULT_SETTINGS
+      expect(r.src).not.toBe("overlay");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a malformed host store is ignored, never fatal", () => {
+    const home = mkdtempSync(join(tmpdir(), "vcc-store-broken-"));
+    try {
+      mkdirSync(join(home, "omp", "plugins"), { recursive: true });
+      writeFileSync(join(home, "omp", "plugins", "omp-plugins.lock.json"), "NOT JSON{");
+      const script = `
+        const S = require(${JSON.stringify(SETTINGS_MODULE)});
+        const v = S.loadSettingsWithSources({ cwd: ${JSON.stringify(home)}, ui: { notify: () => {} } });
+        process.stdout.write(JSON.stringify({ vccEnabled: v.values.vccEnabled }));
+      `;
+      const out = JSON.parse(execFileSync("bun", ["--eval", script], {
+        encoding: "utf8",
+        env: { PATH: process.env.PATH ?? "", HOME: home, XDG_DATA_HOME: home },
+      }));
+      expect(out.vccEnabled).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("with no valid candidate at all the primary is created from defaults", () => {
+    const home = mkdtempSync(join(tmpdir(), "vcc-home-empty-"));
+    try {
+      const r = settingsWithHome(home);
+      expect(r.primaryCreated).toBe(true);
+      expect(r.vccEnabled).toBe(true); // DEFAULT_SETTINGS
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

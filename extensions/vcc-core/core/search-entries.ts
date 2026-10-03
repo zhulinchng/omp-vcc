@@ -662,9 +662,8 @@ const applyProbabilityFloor = (
  * changing which matches a truncated regex search keeps (e.g. newest-first)
  * is a separate decision, out of scope here.
  */
-const capHits = (hits: SearchHit[], cap: number): SearchResult => {
-  const totalBeforeCap = hits.length;
-  const capped = totalBeforeCap > cap ? hits.slice(0, cap) : hits;
+const capHits = (hits: SearchHit[], cap: number, totalBeforeCap = hits.length): SearchResult => {
+  const capped = hits.length > cap ? hits.slice(0, cap) : hits;
   return { hits: capped, totalBeforeCap, truncated: capped.length < totalBeforeCap };
 };
 
@@ -825,8 +824,19 @@ export const searchEntriesDetailed = (
   const firstPass = new Set(result.hits.map((hit) => hit.index));
   const literalOnly = retry.hits.filter((hit) => !firstPass.has(hit.index));
   const cap = tuning?.cap ?? SEARCH_RESULT_CAP;
-  const keptFirstPass = result.hits.slice(0, Math.max(0, cap - literalOnly.length));
-  return capHits([...keptFirstPass, ...literalOnly], cap);
+  // Reserve at most HALF the cap. An unclamped reservation is fine while the
+  // literal pass is small, but when literal-only hits alone reach the cap it
+  // leaves `keptFirstPass` empty and silently discards every ordinary-word
+  // match — the opposite of the intent. Capping the reservation keeps both
+  // readings represented; excess literal hits are the lower-ranked tail.
+  const reserved = Math.min(literalOnly.length, Math.floor(cap / 2));
+  const keptFirstPass = result.hits.slice(0, Math.max(0, cap - reserved));
+  // `keptFirstPass` is only what survived the reservation, so letting capHits
+  // re-derive the total from the concatenated list would hide the first pass's
+  // own truncation — `truncated` would read false and callers would drop the
+  // "showing N of M matches, refine your query" footer entirely. Carry the
+  // first pass's real count forward and add the hits only the literal pass found.
+  return capHits([...keptFirstPass, ...literalOnly], cap, result.totalBeforeCap + literalOnly.length);
 };
 
 export const searchEntries = (

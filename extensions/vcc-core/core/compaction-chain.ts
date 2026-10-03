@@ -299,6 +299,13 @@ export const projectAppendOnlyContext = (input: AppendContextProjectionInput): C
     const message = input.messages[i];
     if ((message.role === "compactionSummary" || message.role === "branchSummary") && message.summary === input.fallbackSummary) matches.push(i);
   }
+  // Leave ambiguous input alone. With 0 matches there is nothing to replace;
+  // with >1 the projection cannot be idempotent — framing only one of them
+  // leaves a raw summary that re-matches on the next request, injecting the
+  // whole chain a second time. This handler runs on every provider request, so
+  // a non-idempotent branch would compound. Both hosts create a `branchSummary`
+  // and a `compactionSummary` from different content, so identical text in the
+  // same list is not a shape either host produces today.
   if (matches.length !== 1) return input.messages;
   // Host-neutral compaction framing. Both hosts wrap a native `compactionSummary`
   // in a preamble telling the model to build on prior work and never duplicate it

@@ -4,7 +4,10 @@ import type { Message } from "@oh-my-pi/pi-ai";
 // "incomplete" is omp's length-truncated-turn recovery reason
 // (runRecoveryCompactionWithRollback("incomplete", …)). Like "overflow" it is a
 // recovery the host must own, so omp-vcc defers to it instead of cancelling.
-export type CompactionReason = "manual" | "threshold" | "overflow" | "incomplete";
+// "idle" is omp's 60s+ proactive auto-compaction timer (session-maintenance.ts
+// runAutoCompaction("idle", …)); it is a routine compaction, not a recovery, so
+// VCC owns it like "threshold".
+export type CompactionReason = "manual" | "threshold" | "overflow" | "incomplete" | "idle";
 
 export interface FileOps {
   readFiles?: string[];

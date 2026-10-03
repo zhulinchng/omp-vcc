@@ -83,6 +83,29 @@ export const FILE_CATEGORY_DISPLAY_CAP = 20;
 export const FILE_CATEGORY_TOTAL_CAP = 100;
 
 /**
+ * Paths are rendered inside a comma-separated list, and the next compaction's
+ * merge re-parses that list. A literal comma in a path must therefore be
+ * escaped, or `a,b.ts` splits into two bogus paths (`a`, `b.ts`) that then
+ * persist in every later summary.
+ */
+export const escapePathCommas = (p: string): string => p.replace(/,/g, "\\,");
+
+/** Inverse of {@link escapePathCommas}: split a rendered path list on unescaped
+ *  commas and restore escaped ones. */
+export const splitEscapedPathList = (list: string): string[] => {
+  const parts: string[] = [];
+  let cur = "";
+  for (let i = 0; i < list.length; i++) {
+    const ch = list[i];
+    if (ch === "\\" && list[i + 1] === ",") { cur += ","; i++; continue; }
+    if (ch === ",") { parts.push(cur); cur = ""; continue; }
+    cur += ch;
+  }
+  parts.push(cur);
+  return parts.map((p) => p.trim()).filter(Boolean);
+};
+
+/**
  * Render one Files-And-Changes category (lines WITHOUT the "- " bullet;
  * callers add it or route through section()). Shared by the fresh path
  * (build-sections) and the merge path (mergeFileLines) so both carry the
@@ -95,7 +118,7 @@ export const renderFileCategoryLines = (cat: string, paths: string[]): string[] 
   if (paths.length === 0) return [];
   const prefix = longestCommonDirPrefix(paths);
   const strip = (p: string) => (prefix && p.startsWith(prefix) ? p.slice(prefix.length) : p);
-  const flat = paths.slice(0, FILE_CATEGORY_DISPLAY_CAP).map(strip);
+  const flat = paths.slice(0, FILE_CATEGORY_DISPLAY_CAP).map(strip).map(escapePathCommas);
   const lines = [prefix ? `${cat} (in ${prefix}): ${flat.join(", ")}` : `${cat}: ${flat.join(", ")}`];
   const overflow = paths.slice(FILE_CATEGORY_DISPLAY_CAP, FILE_CATEGORY_TOTAL_CAP);
   const groups = new Map<string, string[]>();
@@ -103,7 +126,7 @@ export const renderFileCategoryLines = (cat: string, paths: string[]): string[] 
     const dir = p.includes("/") ? p.slice(0, p.lastIndexOf("/") + 1) : "";
     const base = dir ? p.slice(dir.length) : p;
     const list = groups.get(dir) ?? [];
-    list.push(base);
+    list.push(escapePathCommas(base));
     groups.set(dir, list);
   }
   for (const [dir, bases] of groups) {

@@ -231,7 +231,11 @@ interface PerPiState {
   autoCompaction?: { generation: number; sessionId?: string; reason: string; action: string; willRetry: boolean };
   pendingCompactionFingerprint?: string;
   pendingPreviousStats?: CompactionStats | null;
-  pendingStatsHistoryLength?: number;
+  /** Pre-compaction copies of the history arrays. A length snapshot cannot undo
+   *  the push once the array is at its 50-entry cap, because `setLastStats`
+   *  pushes AND shifts, leaving the length unchanged. */
+  pendingStatsHistorySnapshot?: CompactionStats[];
+  pendingGlobalHistorySnapshot?: CompactionStats[];
   lastSettings?: PiVccSettings;
 }
 
@@ -355,7 +359,8 @@ const advanceSessionGeneration = (pi: any, ctx: any): void => {
   state.lastStats = null;
   state.pendingCompactionFingerprint = undefined;
   state.pendingPreviousStats = undefined;
-  state.pendingStatsHistoryLength = undefined;
+  state.pendingStatsHistorySnapshot = undefined;
+  state.pendingGlobalHistorySnapshot = undefined;
   state.lastSettings = undefined;
   state.pendingAutoContinueTimer = null;
   state.statsHistory = [];
@@ -552,12 +557,20 @@ export const formatLastStatsDetail = (stats: CompactionStats | null): string => 
 export const isRecoveryReason = (reason: unknown): boolean =>
   reason === "overflow" || reason === "incomplete";
 
+/** Every compaction reason omp-vcc recognises. pi reports `reason` on the event
+ *  itself; omp reports none, but its `auto_compaction_start` can carry `idle`
+ *  (the 60s+ proactive timer) alongside threshold/overflow/incomplete. Leaving
+ *  `idle` out sent it down the unknown-reason heuristic, where a large context
+ *  handed the idle compaction to the host's native summarizer instead of VCC. */
+const COMPACTION_REASONS: ReadonlySet<string> = new Set(["manual", "threshold", "overflow", "incomplete", "idle"]);
+
+/** Membership in {@link COMPACTION_REASONS} is the check; the cast only narrows. */
+const asCompactionReason = (value: unknown): CompactionReason | undefined =>
+  typeof value === "string" && COMPACTION_REASONS.has(value) ? (value as CompactionReason) : undefined;
+
 const readCompactionEventContext = (event: unknown): { reason?: CompactionReason; willRetry: boolean } => {
   const raw = event as { reason?: unknown; willRetry?: unknown };
-  const reason = raw.reason === "manual" || raw.reason === "threshold" || raw.reason === "overflow" || raw.reason === "incomplete"
-    ? raw.reason
-    : undefined;
-  return { reason, willRetry: raw.willRetry === true };
+  return { reason: asCompactionReason(raw.reason), willRetry: raw.willRetry === true };
 };
 const resolveGlobalIndex = (ctx: any): Map<string, number> | undefined => {
   try {
@@ -1302,7 +1315,8 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       if (attemptState) {
         attemptState.pendingCompactionFingerprint = undefined;
         attemptState.pendingPreviousStats = attemptState.lastStats;
-        attemptState.pendingStatsHistoryLength = attemptState.statsHistory.length;
+        attemptState.pendingStatsHistorySnapshot = attemptState.statsHistory.slice();
+        attemptState.pendingGlobalHistorySnapshot = globalHistory.slice();
       }
       if (attemptState) {
         attemptState.pendingDisplay = undefined;
@@ -1315,7 +1329,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       // (session-maintenance.ts:4353 → :1707), and omp's SessionBeforeCompactEvent
       // carries no reason at all — so this is the only place `incomplete` is
       // visible in time to act on it.
-      const autoReason = auto?.reason === "threshold" || auto?.reason === "overflow" || auto?.reason === "manual" || auto?.reason === "incomplete" ? auto.reason : undefined;
+      const autoReason = asCompactionReason(auto?.reason);
       const reason = eventContext.reason ?? autoReason;
       const willRetry = eventContext.willRetry || auto?.willRetry === true;
       if (!settings.vccEnabled) return;
@@ -1845,14 +1859,27 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const pendingDisplay = per?.pendingDisplay;
     const followUpPrompt = getPendingFollowUpPrompt(pi);
     if (per) {
-      if (!ownsCompaction && pendingFingerprint && per.pendingStatsHistoryLength !== undefined) {
-        per.statsHistory.length = per.pendingStatsHistoryLength;
+      if (!ownsCompaction && pendingFingerprint && per.pendingStatsHistorySnapshot) {
+        // Restore the exact pre-compaction contents. Truncating to the old
+        // LENGTH cannot undo the push once the history is at its 50-entry cap:
+        // setLastStats pushes and shifts, so the length is unchanged and the
+        // "rollback" both kept the phantom entry and lost the oldest real one.
+        const phantom = per.lastStats;
+        per.statsHistory.splice(0, per.statsHistory.length, ...per.pendingStatsHistorySnapshot);
+        if (per.pendingGlobalHistorySnapshot) {
+          globalHistory.splice(0, globalHistory.length, ...per.pendingGlobalHistorySnapshot);
+        }
         per.lastStats = per.pendingPreviousStats;
+        // `lastStats` is a process-global mirror pointing at whichever session
+        // called setLastStats most recently; only rewind it when it is the
+        // object this rollback is undoing.
+        if (phantom !== undefined && lastStats === phantom) lastStats = per.pendingPreviousStats;
       }
       per.pendingDisplay = undefined;
       per.pendingCompactionFingerprint = undefined;
       per.pendingPreviousStats = undefined;
-      per.pendingStatsHistoryLength = undefined;
+      per.pendingStatsHistorySnapshot = undefined;
+      per.pendingGlobalHistorySnapshot = undefined;
     }
     setPendingFollowUpPrompt(pi, null);
     if (!ownsCompaction) return;
@@ -1872,7 +1899,12 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
         per.lastStats.savedPercent = percent;
         per.lastStats.tokensBefore = before;
       }
-      if (lastStats) {
+      // `lastStats` is a process-global mirror pointing at whichever session
+      // called setLastStats most recently. omp loads extensions in-process for
+      // each subagent session, so writing this session's authoritative numbers
+      // into it stamps them onto a sibling session's stats object. Only update
+      // the mirror when it genuinely is this session's object.
+      if (lastStats && lastStats === per?.lastStats) {
         lastStats.tokensAfter = after;
         lastStats.tokensSaved = saved;
         lastStats.savedPercent = percent;
@@ -1902,7 +1934,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const eventContext = readCompactionEventContext(event);
     // `incomplete` is a recovery the host will itself re-drive; it is deliberately
     // NOT added to the auto-continue gate below, which must stay off for it.
-    const autoReason = auto?.reason === "threshold" || auto?.reason === "overflow" || auto?.reason === "incomplete" ? auto.reason : undefined;
+    const autoReason = asCompactionReason(auto?.reason);
     const reason = eventContext.reason ?? autoReason;
     const willRetry = eventContext.willRetry || auto?.willRetry === true;
     const isLargeCompaction = (stats.summarized > 10) || (stats.kept > 5) || (stats.keptTokensEst > 2000);
