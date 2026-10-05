@@ -104,4 +104,77 @@ describe("normalize", () => {
   });
 });
 
+// bashExecution command/output and toolCall argument strings were the only
+// un-sanitized text-bearing branches, so a carriage return or a live escape
+// sequence reached the brief line and the persisted summary verbatim.
+describe("normalize sanitizes every text-bearing branch", () => {
+  it("sanitizes bashExecution command and output", () => {
+    const out = normalize([
+      { role: "bashExecution", command: "ls\r\ngrep foo", output: "\x1b[31mfailed\x1b[0m\r\n" },
+    ] as never, [0]);
+    expect(out).toEqual([{
+      kind: "bash",
+      command: "ls\ngrep foo",
+      output: "failed\n",
+      exitCode: undefined,
+      sourceIndex: 0,
+    }]);
+  });
+
+  it("drops a non-string bashExecution command and output", () => {
+    const out = normalize([{ role: "bashExecution", command: 7, output: { text: "x" } }] as never, [0]);
+    expect(out).toEqual([{ kind: "bash", command: "", output: "", exitCode: undefined, sourceIndex: 0 }]);
+  });
+
+  it("keeps a numeric bashExecution exitCode", () => {
+    const out = normalize([{ role: "bashExecution", command: "false", output: "", exitCode: 1 }] as never, [0]);
+    expect(out[0].exitCode).toBe(1);
+  });
+
+  it("sanitizes tool-call argument strings", () => {
+    const out = normalize([{
+      role: "assistant",
+      content: [{ type: "toolCall", name: "bash", arguments: { command: "echo a\r\necho b\x1b[0m" } }],
+    }] as never, [0]);
+    expect(out[0].args).toEqual({ command: "echo a\necho b" });
+  });
+
+  it("passes non-string argument values through by reference", () => {
+    const edits = [{ oldText: "a", newText: "b" }];
+    const out = normalize([{
+      role: "assistant",
+      content: [{ type: "toolCall", name: "edit", arguments: { path: "a\x1b[31m.ts", edits } }],
+    }] as never, [0]);
+    expect(out[0].args.path).toBe("a.ts");
+    expect(out[0].args.edits).toBe(edits);
+  });
+
+  it("normalizes a bare CR in an argument to LF, not to nothing", () => {
+    const out = normalize([{
+      role: "assistant",
+      content: [{ type: "toolCall", name: "bash", arguments: { command: "a\rb" } }],
+    }] as never, [0]);
+    expect(out[0].args.command).toBe("a\nb");
+  });
+
+  // `sanitize()` calls .replace, so a non-string `text`/`thinking` part threw
+  // out of the compaction handler. content.ts's textParts coerces the same
+  // field; normalize must too.
+  it("drops a non-string text or thinking part instead of throwing", () => {
+    for (const bad of [42, true, {}, [], null]) {
+      expect(() => normalize([{
+        role: "assistant",
+        content: [{ type: "text", text: bad }, { type: "thinking", thinking: bad }],
+      }] as never, [0])).not.toThrow();
+      const out = normalize([{
+        role: "assistant",
+        content: [{ type: "text", text: bad }, { type: "thinking", thinking: bad }],
+      }] as never, [0]);
+      // Empty text blocks are still emitted (pre-existing behaviour); the
+      // thinking block is dropped because it sanitizes to "".
+      for (const block of out) expect(typeof block.text).toBe("string");
+    }
+  });
+});
+
 

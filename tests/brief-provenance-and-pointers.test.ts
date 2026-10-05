@@ -126,24 +126,17 @@ describe("step 3: assistant markdown bullets are not tool calls", () => {
     const out = compile(base(calls));
     expect(out).toContain("* (2 earlier tool-call entries omitted)");
 
+    // The observable contract is the RENDERED line classification asserted
+    // here and in `out` above. Asserting the private `toolLineIdx` bookkeeping
+    // set only pinned an implementation detail — it passed even when the
+    // rendered output was wrong.
     const sections = buildBriefSections(normalize(calls) as any);
     const assistantSections = sections.filter((s) => s.header === "[assistant]");
     expect(assistantSections.length).toBeGreaterThan(0);
-    for (const sec of assistantSections) {
-      sec.lines.forEach((line, i) => {
-        if (sec.toolLineIdx.has(i)) {
-          expect(line.startsWith("* ")).toBe(true);
-        }
-      });
-    }
-    const markerIndex = assistantSections
-      .flatMap((s) => s.lines.map((l, i) => ({ s, l, i })))
-      .findIndex((x) => x.l.includes("earlier tool-call entries omitted"));
-    expect(markerIndex).toBeGreaterThanOrEqual(0);
     const markerHolder = assistantSections
-      .flatMap((s) => s.lines.map((l, i) => ({ s, l, i })))
-      .find((x) => x.l.includes("earlier tool-call entries omitted"))!;
-    expect(markerHolder.s.toolLineIdx.has(markerHolder.i)).toBe(true);
+      .flatMap((s) => s.lines)
+      .find((l) => l.includes("earlier tool-call entries omitted"));
+    expect(markerHolder).toBe("* (2 earlier tool-call entries omitted)");
   });
 
 });

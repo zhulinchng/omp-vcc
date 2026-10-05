@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { registerVccConfigCommand, formatVccConfigCard } from "../extensions/vcc-core/hook";
@@ -176,18 +176,42 @@ describe("vcc-config card: file states", () => {
 });
 
 describe("vcc-config card: host overlay", () => {
-  test("settings.get namespaced key overlays file value", async () => {
+  // Neither host's ExtensionContext exposes `settings`/`config`, so the only
+  // overlay a host can reach is its own project-level plugin-overrides store.
+  const writeStore = (cwd, settings) => {
+    mkdirSync(join(cwd, ".omp"), { recursive: true });
+    writeFileSync(join(cwd, ".omp", "plugin-overrides.json"), JSON.stringify({ settings: { "omp-vcc": settings } }));
+  };
+
+  test("the host project-override store overlays the file value", async () => {
     const cfg = join(tmp, "overlay1.json");
     writeFileSync(cfg, JSON.stringify({ debug: false }));
     process.env.OMP_VCC_CONFIG_PATH = cfg;
     const { pi, cmds } = makePi();
     registerVccConfigCommand(pi);
+    const cwd = join(tmp, "proj1");
+    writeStore(cwd, { debug: true });
     const { ctx } = makeCtx();
-    ctx.settings = { get: (k) => (k === "plugins.@zhulinchng/omp-vcc.debug" ? true : undefined) };
+    ctx.cwd = cwd;
     await cmds.get("vcc-config").handler("", ctx);
     const content = pi._sent[0].m.content;
     expect(content).toContain("- debug: on (host overlay)");
     expect(content).toContain("- vccEnabled: on (default)");
+  });
+
+  test("a ctx settings channel no longer changes the card", async () => {
+    // The ctx.settings/config tier never fired on either host; a stubbed channel
+    // must not reach the card.
+    const cfg = join(tmp, "overlay-channel.json");
+    writeFileSync(cfg, JSON.stringify({ debug: false }));
+    process.env.OMP_VCC_CONFIG_PATH = cfg;
+    const { pi, cmds } = makePi();
+    registerVccConfigCommand(pi);
+    const { ctx } = makeCtx();
+    ctx.settings = { get: (k) => (k === "plugins.omp-vcc.debug" ? true : undefined) };
+    ctx.config = { get: (k) => (k === "debug" ? true : undefined) };
+    await cmds.get("vcc-config").handler("", ctx);
+    expect(pi._sent[0].m.content).toContain("- debug: off (file)");
   });
 
   test("bare host setting of the same name does not hijack an omp-vcc key", async () => {
@@ -204,15 +228,17 @@ describe("vcc-config card: host overlay", () => {
     expect(pi._sent[0].m.content).toContain("- debug: off (file)");
   });
 
-  test("plain settings map overlays file value", async () => {
+  test("an out-of-contract store value falls through to the file value", async () => {
     const cfg = join(tmp, "overlay3.json");
     writeFileSync(cfg, JSON.stringify({ debug: false }));
     process.env.OMP_VCC_CONFIG_PATH = cfg;
     const { pi, cmds } = makePi();
     registerVccConfigCommand(pi);
-    const plain = { ctx: { settings: { "omp-vcc.debug": true }, ui: { notify: () => {} } } };
-    await cmds.get("vcc-config").handler("", plain.ctx);
-    expect(pi._sent[0].m.content).toContain("- debug: on (host overlay)");
+    const cwd = join(tmp, "proj3");
+    writeStore(cwd, { debug: "yes" });
+    const ctx = { cwd, ui: { notify: () => {} } };
+    await cmds.get("vcc-config").handler("", ctx);
+    expect(pi._sent[0].m.content).toContain("- debug: off (file)");
   });
 });
 

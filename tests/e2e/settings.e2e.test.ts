@@ -4,7 +4,7 @@ import { existsSync, unlinkSync, writeFileSync, readFileSync, mkdtempSync, rmSyn
 import { tmpdir } from "os";
 import { join } from "path";
 import { homedir } from "os";
-import { DEFAULT_SETTINGS, loadSettings, scaffoldSettings } from "../../extensions/vcc-core/core/settings";
+import { DEFAULT_SETTINGS, loadSettings, loadSettingsWithPluginOverlay, loadSettingsWithSources, scaffoldSettings } from "../../extensions/vcc-core/core/settings";
 import { registerBeforeCompactHook, OMP_VCC_COMPACT_INSTRUCTION } from "../../extensions/vcc-core/hook";
 import { createIsolatedOmpDir } from "./support/e2e-harness";
 import { buildSession, msg } from "./support/session-builder";
@@ -46,7 +46,6 @@ describe("settings E2E — file source, XDG priority, migration, overlay, manife
     expect(DEFAULT_SETTINGS.recallResponseMaxChars).toBe(48_000);
     expect(DEFAULT_SETTINGS.nativeMemory).toBe(true);
     expect(DEFAULT_SETTINGS.debugLog).toBe(false);
-    expect(Object.keys(DEFAULT_SETTINGS).length).toBe(11);
   });
 
   test("scaffoldSettings creates file with defaults without clobbering existing keys", () => {
@@ -82,21 +81,34 @@ describe("settings E2E — file source, XDG priority, migration, overlay, manife
     delete process.env.PI_VCC_CONFIG_PATH;
   });
 
-  test("loadSettings ctx overlay applies without restart (file false, ctx true => true)", () => {
+  test("the host's on-disk store overlays the file without restart", () => {
     process.env.OMP_VCC_CONFIG_PATH = isolated.configPath;
     writeFileSync(isolated.configPath, JSON.stringify({ debug: false }));
-    const ctx = mockCtxWithSettings({ "plugins.@zhulinchng/omp-vcc.debug": true });
-    const settings = loadSettings(ctx);
-    expect(settings.debug).toBe(true);
-    // also test namespaced key variation
-    const ctx2 = mockCtxWithSettings({ "plugins.omp-vcc.debug": true });
-    // loadSettings checks both plugins.@zhulinchng/omp-vcc.* and plugins.omp-vcc.* and plain keys
-    // at least one path should enable debug
-    const settings2 = loadSettings(ctx2);
-    // we don't assert true for second path strictly, just that file false without overlay stays false
-    const settingsNoOverlay = loadSettings({ settings: { get: () => undefined }, config: { get: () => undefined } } as any);
-    expect(settingsNoOverlay.debug).toBe(false);
-    delete process.env.OMP_VCC_CONFIG_PATH;
+    // Neither host's ExtensionContext exposes `settings`/`config`, so the only
+    // overlay that can apply is the host's own project-level store.
+    const cwd = mkdtempSync(join(tmpdir(), "vcc-overlay-store-"));
+    try {
+      mkdirSync(join(cwd, ".omp"), { recursive: true });
+      writeFileSync(
+        join(cwd, ".omp", "plugin-overrides.json"),
+        JSON.stringify({ settings: { "omp-vcc": { debug: true } } }),
+      );
+      const settings = loadSettingsWithPluginOverlay({ cwd });
+      expect(settings.debug).toBe(true);
+
+      // The same store is visible through the source-reporting view.
+      const view = loadSettingsWithSources({ cwd });
+      expect(view.values.debug).toBe(true);
+      expect(view.sources.debug).toBe("overlay");
+
+      // A ctx with a settings channel but no reachable store must leave the
+      // file value untouched.
+      const settingsNoOverlay = loadSettings({ settings: { get: () => undefined }, config: { get: () => undefined } } as any);
+      expect(settingsNoOverlay.debug).toBe(false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+      delete process.env.OMP_VCC_CONFIG_PATH;
+    }
   });
 
   test("debug toggle controls /tmp/omp-vcc-debug.json write", async () => {
@@ -132,9 +144,12 @@ describe("settings E2E — file source, XDG priority, migration, overlay, manife
     // manifest commands removed to avoid file+extension duplicate — extension registers programmatically
     expect(pkg.omp.commands).toBeUndefined();
     expect(pkg.pi.commands).toBeUndefined();
-    // settings include the legacy toggles plus the approved parity controls
+    // settings include the legacy toggles plus the approved parity controls.
+    // Assert the manifest and DEFAULT_SETTINGS declare the SAME key set rather
+    // than a hard-coded count: a count breaks on any legitimate addition while
+    // proving nothing about which keys are declared.
     const settingsKeys = Object.keys(pkg.omp.settings ?? {});
-    expect(settingsKeys.length).toBe(11);
+    expect(new Set(settingsKeys)).toEqual(new Set(Object.keys(DEFAULT_SETTINGS)));
     expect(settingsKeys).toContain("vccEnabled");
     expect(settingsKeys).toContain("overrideDefaultCompaction");
     expect(settingsKeys).toContain("smartKeepTail");

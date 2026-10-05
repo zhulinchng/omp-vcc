@@ -26,7 +26,15 @@ const wrapLine = (line: string, maxChars: number): string[] => {
       // No usable space: mid-token break. One char shorter plus a trailing
       // backslash marks it so parsers rejoin WITHOUT a space (see
       // mergeFileLines); the line stays within maxChars.
-      const cut = Math.max(1, available - 1);
+      // Back off one char when the cut would land between a surrogate pair:
+      // slicing there leaves a lone high surrogate at the end of this line and
+      // its low surrogate at the start of the next, and the split persists
+      // into the stored summary and survives JSON round-tripping.
+      let cut = Math.max(1, available - 1);
+      if (cut > 0 && cut < remaining.length) {
+        const code = remaining.charCodeAt(cut - 1);
+        if (code >= 0xd800 && code <= 0xdbff) cut = Math.max(1, cut - 1);
+      }
       wrapped.push(prefix + remaining.slice(0, cut) + "\\");
       remaining = remaining.slice(cut);
     } else {

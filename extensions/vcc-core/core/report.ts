@@ -7,6 +7,7 @@ import { renderMessage } from "./render-entries";
 import { searchEntries } from "./search-entries";
 import { type CompileInput, compile } from "./summarize";
 import { estimateTokensFromChars } from "./token-estimate";
+import { PATH_KEYS } from "./tool-args";
 
 const SECTION_HEADERS = ["Session Goal", "Files And Changes", "Commits", "Outstanding Context"];
 
@@ -99,7 +100,7 @@ const topFilesOf = (messages: Message[]): string[] => {
   const files = new Set<string>();
   for (const block of normalize(messages)) {
     if (block.kind === "tool_call") {
-      for (const key of ["path", "file_path", "filePath", "file"]) {
+      for (const key of PATH_KEYS) {
         const val = block.args[key];
         if (typeof val === "string") { files.add(val); break; }
       }
@@ -163,7 +164,7 @@ const probesOf = (messages: Message[], summary: string): RecallProbe[] => {
   let firstFile = "";
   for (const b of blocks) {
     if (b.kind === "tool_call") {
-      for (const key of ["path", "file_path", "filePath", "file"]) {
+      for (const key of PATH_KEYS) {
         if (typeof b.args[key] === "string") { firstFile = b.args[key] as string; break; }
       }
       if (firstFile) break;

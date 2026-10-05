@@ -160,6 +160,153 @@ describe("Files And Changes: filenames containing commas survive the merge", () 
   });
 });
 
+// The merge filter is STRUCTURAL. It used to also reject any line containing
+// "<skill", but the writer's collapse is line-anchored, so an ordinary
+// instruction mentioning a skill mid-line survived extraction and was then
+// silently deleted on the next merge cycle.
+describe("Session Goal: a line mentioning a skill survives the merge", () => {
+  // The tag is CLOSED: `collapseSkillText` treats an unclosed `<skill ...>` as
+  // extending to the end of the string, which is the injected-context shape.
+  const INSTRUCTION = 'always run the <skill name="lint">lint rules</skill> checks before committing';
+  const first = () => compile({
+    messages: [{ role: "user", content: INSTRUCTION }],
+    sourceIndices: [0],
+  });
+
+  it("keeps an instruction containing a mid-line skill tag", () => {
+    expect(first()).toContain("before committing");
+  });
+
+  it("collapses the tag instead of leaking it into the section", () => {
+    const out = first();
+    expect(out).toContain("[skill: lint]");
+    expect(out).not.toContain("<skill");
+  });
+
+  it("still carries the line through a second compaction cycle", () => {
+    const second = compile({
+      messages: [{ role: "user", content: "next" }],
+      previousSummary: first(),
+      sourceIndices: [0],
+    });
+    expect(second).toContain("before committing");
+    expect(second).toContain("[skill: lint]");
+    expect(second).not.toContain("<skill");
+  });
+
+  // The block-scoped collapse treats an UNTERMINATED opening tag as extending
+  // to the end of the input, so applying it per line deleted the rest of the
+  // instruction. The writers and the merge both use the line-scoped form.
+  it("keeps the instruction tail when a skill tag is unterminated", () => {
+    const out = compile({
+      messages: [{ role: "user", content: 'always run the <skill name="lint"> checks before committing' }],
+      sourceIndices: [0],
+    });
+    expect(out).toContain("[skill: lint]");
+    expect(out).toContain("checks before committing");
+    expect(out).not.toContain("<skill");
+  });
+
+  it("still drops a CLOSED block body while keeping the tail", () => {
+    const out = compile({
+      messages: [{ role: "user", content: 'always run the <skill name="lint">body rules</skill> checks before committing' }],
+      sourceIndices: [0],
+    });
+    expect(out).toContain("[skill: lint]");
+    expect(out).toContain("checks before committing");
+    expect(out).not.toContain("body rules");
+    expect(out).not.toContain("<skill");
+  });
+
+  // A summary written by the PRE-fix writer can still carry a raw mid-line tag.
+  // The removed content-blind guard was the only thing that scrubbed it, so the
+  // merge collapsed nothing and the raw tag would persist forever.
+  it("collapses a legacy raw tag on the merged previous side", () => {
+    const merged = compile({
+      messages: [{ role: "user", content: "next" }],
+      // A well-formed previous summary: the header section plus the brief
+      // separator, or the merge path is never reached.
+      previousSummary: '[Session Goal]\n- always run the <skill name="lint"> checks before committing\n\n---\n\n[user]\nOriginal goal',
+      sourceIndices: [0],
+    });
+    expect(merged).toContain("[skill: lint]");
+    expect(merged).toContain("checks before committing");
+    expect(merged).not.toContain("<skill");
+  });
+
+  it("still drops a bare skill tag that is not part of a real instruction", () => {
+    const out = compile({
+      messages: [{ role: "user", content: '<skill name="lint">\nbody\n</skill>' }],
+      sourceIndices: [0],
+    });
+    expect(out).not.toContain("<skill");
+  });
+});
+
+describe("extractCommits: host casing and the bashExecution shape", () => {
+  it("matches the bash tool name case-insensitively", () => {
+    const sha = "a1b2c3d";
+    for (const name of ["bash", "Bash", "BASH"]) {
+      expect(extractCommits([
+        { kind: "tool_call", name, args: { command: 'git commit -m "real work"' } },
+        { kind: "tool_result", name, text: `[main ${sha}] real work` },
+      ])).toEqual([{ hash: sha, message: "real work" }]);
+    }
+  });
+
+  it("reads a kind:'bash' block, whose own output carries the hash", () => {
+    expect(extractCommits([
+      { kind: "bash", command: 'git commit -m "feat: add parser"', output: "[main 9f2a1b3] feat: add parser" },
+    ])).toEqual([{ hash: "9f2a1b3", message: "feat: add parser" }]);
+  });
+
+  it("reports a kind:'bash' commit with no hash when the output has none", () => {
+    expect(extractCommits([
+      { kind: "bash", command: 'git commit -m "wip"', output: "nothing to commit, working tree clean" },
+    ])).toEqual([{ hash: undefined, message: "wip" }]);
+  });
+
+  it("does not pair a kind:'bash' commit with a later tool_result", () => {
+    expect(extractCommits([
+      { kind: "bash", command: 'git commit -m "wip"', output: "" },
+      { kind: "tool_result", name: "bash", text: "[main deadbee] unrelated" },
+    ])).toEqual([{ hash: undefined, message: "wip" }]);
+  });
+
+  it("normalizes a host bashExecution message into an extractable commit", () => {
+    const blocks = normalize([
+      { role: "bashExecution", command: 'git commit -m "feat: port"', output: "[main abc1234] feat: port" },
+    ] as never, [0]);
+    expect(extractCommits(blocks)).toEqual([{ hash: "abc1234", message: "feat: port" }]);
+  });
+});
+
+describe("Files And Changes: a newline inside a path cannot corrupt the section", () => {
+  it("normalizes newlines on render and keeps the list splittable", () => {
+    expect(escapePathCommas("/repo/src/a\nb.ts")).toBe("/repo/src/a b.ts");
+    expect(escapePathCommas("/repo/a\r\nb.ts")).toBe("/repo/a b.ts");
+    // Compose the list the way renderFileCategoryLines does: each path escaped,
+    // then joined on ", ".
+    const rendered = [escapePathCommas("/repo/src/a\nb.ts"), escapePathCommas("/repo/ok.ts")].join(", ");
+    expect(splitEscapedPathList(rendered)).toEqual(["/repo/src/a b.ts", "/repo/ok.ts"]);
+  });
+
+  it("round-trips a newline path through a second compaction without losing the tail", () => {
+    const fileOps = { modifiedFiles: ["/repo/src/bro\nken.ts", "/repo/src/ok.ts"] };
+    const first = compile({ messages: [{ role: "user", content: "edit" }], fileOps, sourceIndices: [0] });
+    expect(first).toContain("ok.ts");
+
+    const second = compile({
+      messages: [{ role: "user", content: "again" }],
+      previousSummary: first,
+      fileOps: {},
+      sourceIndices: [0],
+    });
+    expect(second).toContain("ok.ts");
+    expect(second).not.toContain("/repo/src/bro\n");
+  });
+});
+
 describe("recall: reserving cap room for literal hits keeps truncation honest", () => {
   it("reports truncated and the real total when the first pass was already capped", () => {
     const TAB = "\t";
@@ -217,18 +364,32 @@ describe("brief: assistant prose is never treated as a tool line", () => {
   const assistantSection = (blocks: any[]) =>
     buildBriefSections(blocks).find((s) => s.header === "[assistant]")!;
 
+  // The private `toolLineIdx` set is bookkeeping; these assert the RENDERED
+  // result instead, which is what a reader of the summary actually sees.
   it("does not merge a real call into an identical prose line (no invented x2)", () => {
     const sec = assistantSection(proseThenCalls(["auth"]));
     expect(sec.lines.some((l) => /x2$/.test(l))).toBe(false);
-    // Only the one real call is a tool line; the prose line is not.
-    expect(sec.toolLineIdx.size).toBe(1);
+    // Exactly ONE line is a merged call+result — the real call. The prose line
+    // that happens to read `* Read "auth.ts"` carries no result suffix, so it
+    // was never classified as a tool line.
+    const withResult = sec.lines.filter((l) => l.includes("result #"));
+    expect(withResult).toHaveLength(1);
+    expect(withResult[0]).toBe('* Read "auth.ts" (#1, result #2)');
+    expect(sec.lines).toEqual([
+      "Summary so far:",
+      '* Read "auth.ts" (#0)',
+      '* Read "auth.ts" (#1, result #2)',
+    ]);
   });
 
   it("keeps provenance for every real call so the per-turn cap still fires", () => {
     const sec = assistantSection(proseThenCalls(["file8", "file0", "file1", "file2", "file3", "file4", "file5", "file6", "file7"]));
     expect(sec.lines.some((l) => /x2$/.test(l))).toBe(false);
-    // 9 real calls -> 8 kept + the synthetic marker line.
-    expect(sec.toolLineIdx.size).toBe(9);
-    expect(sec.lines.some((l) => l.includes("earlier tool-call entries omitted"))).toBe(true);
+    // 9 real calls: the cap keeps 8, and each survivor still carries its own
+    // result — which is what proves provenance survived the cap.
+    expect(sec.lines.filter((l) => l.includes("result #"))).toHaveLength(8);
+    expect(sec.lines).toContain("* (1 earlier tool-call entries omitted)");
+    // The prose line is untouched by the cap.
+    expect(sec.lines).toContain('* Read "file8.ts" (#0)');
   });
 });

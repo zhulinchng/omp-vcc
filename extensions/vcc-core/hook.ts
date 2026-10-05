@@ -297,6 +297,54 @@ const setLastCompactWasPiVcc = (pi: any, v: boolean) => {
   const state = getPerPi(pi);
   if (state) state.lastCompactWasPiVcc = v;
 };
+/**
+ * Undo the stats a `session_before_compact` attempt pushed, for an attempt the
+ * host never committed. Shared by the `session_compact` non-owning path, the
+ * start of a later attempt, and the `session_compact_failed` handler so the
+ * three cannot drift.
+ */
+const rollbackPendingStats = (per: any): void => {
+  if (!per || !per.pendingCompactionFingerprint || !per.pendingStatsHistorySnapshot) return;
+  // Restore the exact pre-compaction contents. Truncating to the old LENGTH
+  // cannot undo the push once the history is at its 50-entry cap: setLastStats
+  // pushes and shifts, so the length is unchanged and the "rollback" both kept
+  // the phantom entry and lost the oldest real one.
+  const phantom = per.lastStats;
+  per.statsHistory.splice(0, per.statsHistory.length, ...per.pendingStatsHistorySnapshot);
+  // `globalHistory` is process-global — omp loads extensions in-process for each
+  // subagent session — and a sibling session may have committed a row since
+  // this attempt pushed. Restoring the snapshot wholesale would delete that
+  // row, so remove OUR entry by identity instead. Reverting nothing is not an
+  // option: the phantom would stay visible in /vcc-stats forever, which is the
+  // defect this rollback exists to fix.
+  if (phantom !== undefined) {
+    const idx = globalHistory.lastIndexOf(phantom);
+    if (idx >= 0) {
+      // setLastStats pushes AND shifts at its cap, so undo the push and, when
+      // no sibling has appended since (the phantom is still the tail, meaning
+      // that shift was ours), put the evicted oldest entry back.
+      globalHistory.splice(idx, 1);
+      if (idx === globalHistory.length
+        && per.pendingGlobalHistorySnapshot.length === 50
+        && globalHistory.length < 50) {
+        globalHistory.unshift(per.pendingGlobalHistorySnapshot[0]);
+      }
+    }
+  }
+  per.lastStats = per.pendingPreviousStats;
+  // `lastStats` is a process-global mirror pointing at whichever session called
+  // setLastStats most recently; only rewind it when it is the object this
+  // rollback is undoing.
+  if (phantom !== undefined && lastStats === phantom) lastStats = per.pendingPreviousStats;
+};
+/** Drop an attempt's bookkeeping so a later rollback cannot replay it. */
+const clearPendingAttempt = (per: any): void => {
+  if (!per) return;
+  per.pendingCompactionFingerprint = undefined;
+  per.pendingPreviousStats = undefined;
+  per.pendingStatsHistorySnapshot = undefined;
+  per.pendingGlobalHistorySnapshot = undefined;
+};
 const setPendingFollowUpPrompt = (pi: any, v: string | null) => {
   pendingFollowUpPrompt = v;
   const state = getPerPi(pi);
@@ -339,7 +387,12 @@ const scheduleManaged = (
   let handle: unknown;
   const guarded = () => {
     if (state) state.timers.delete(handle);
-    if (state && (state.generation !== generation || state.sessionId !== sessionId)) {
+    // Mirror isCurrentGeneration's `?? sessionIdOf(ctx)` fallback. Comparing
+    // the RAW state.sessionId reported every deferred callback as stale until
+    // something initialised it (only advanceSessionGeneration does), so the
+    // stats toast and the auto-continue were silently dropped for a live
+    // session whose guard the sibling predicate called current.
+    if (state && (state.generation !== generation || (state.sessionId ?? sessionIdOf(ctx)) !== sessionId)) {
       logMetrics(loadSettings(ctx), { event: "stale-callback", kind, generation, sessionId });
       return;
     }
@@ -352,6 +405,11 @@ const scheduleManaged = (
 const advanceSessionGeneration = (pi: any, ctx: any): void => {
   const state = getPerPi(pi);
   if (!state) return;
+  // Undo any attempt that never committed BEFORE the snapshot is discarded:
+  // once the fingerprint and snapshot are gone no later rollback site can
+  // remove its row, and it would sit in the process-global history until 50
+  // further pushes aged it out.
+  rollbackPendingStats(state);
   for (const timer of state.timers) clearTimerHandle(ctx, timer);
   state.timers.clear();
   state.generation++;
@@ -975,9 +1033,17 @@ export const collectLiveMessages = (branchEntries: any[]): EntryWithMessage[] =>
   return liveMessages;
 };
 
-export function buildOwnCut(branchEntries: any[], keepUserTurns = 1, explicitKeep = false): OwnCutResult {
+export function buildOwnCut(
+  branchEntries: any[],
+  keepUserTurns = 1,
+  explicitKeep = false,
+  live?: EntryWithMessage[],
+): OwnCutResult {
   const normalizedKeepUserTurns = normalizeKeepUserTurns(keepUserTurns);
-  const liveMessages = collectLiveMessages(branchEntries);
+  // Callers that already built the live window for this compaction pass it in;
+  // rebuilding it here made smart-keep O(userTurns x entries) with a full
+  // object allocation per entry on every loop iteration.
+  const liveMessages = live ?? collectLiveMessages(branchEntries);
 
   if (liveMessages.length === 0) return { ok: false, reason: "no_live_messages" };
   if (liveMessages.length <= 2) return { ok: false, reason: "too_few_live_messages" };
@@ -1049,7 +1115,6 @@ export function buildOwnCut(branchEntries: any[], keepUserTurns = 1, explicitKee
 export const findBudgetCutIndex = (
   live: EntryWithMessage[],
   maxTokens: number,
-  charsPerToken?: number,
 ): number => {
   let acc = 0;
   let crossed = -1;
@@ -1071,12 +1136,12 @@ export const findBudgetCutIndex = (
 export const applyTailBudget = (
   branchEntries: any[],
   cut: OwnCutResult,
-  opts: { maxTokens?: number; oversizedFactor?: number; charsPerToken?: number } = {},
+  opts: { maxTokens?: number; oversizedFactor?: number; charsPerToken?: number; live?: EntryWithMessage[] } = {},
 ): OwnCutResult => {
   if (!cut.ok) return cut;
   const maxTokens = opts.maxTokens ?? MAX_SMART_TAIL_TOKENS;
   const factor = opts.oversizedFactor ?? OVERSIZED_TAIL_FACTOR;
-  const live = collectLiveMessages(branchEntries);
+  const live = opts.live ?? collectLiveMessages(branchEntries);
 
   const budgetResult = (idx: number, budgetCut: BudgetCutKind): OwnCutResult => ({
     ok: true,
@@ -1095,7 +1160,7 @@ export const applyTailBudget = (
   // compact-all came from explicit keep:0 (which must be respected absolutely).
   if (cut.compactAll) {
     if (!cut.keepFallbackToCompactAll) return cut;
-    const idx = findBudgetCutIndex(live, maxTokens, opts.charsPerToken);
+    const idx = findBudgetCutIndex(live, maxTokens);
     if (idx < 0) return cut;
     return budgetResult(idx, "no_anchor");
   }
@@ -1108,7 +1173,7 @@ export const applyTailBudget = (
     tailTokens += estimateScriptAwareMessageContentTokens(live[i].message.content);
   }
   if (tailTokens <= maxTokens * factor) return cut;
-  const idx = findBudgetCutIndex(live, maxTokens, opts.charsPerToken);
+  const idx = findBudgetCutIndex(live, maxTokens);
   if (idx <= tailStart) return cut;
   return budgetResult(idx, "oversized_tail");
 };
@@ -1131,6 +1196,8 @@ export interface ResolveSmartKeepOptions {
   maxTokens?: number;
   /** Calibrated chars/token for the current session; defaults to heuristic when omitted. */
   charsPerToken?: number;
+  /** Prebuilt live window; rebuilt from `branchEntries` when omitted. */
+  live?: EntryWithMessage[];
 }
 
 export interface ResolveSmartKeepResult {
@@ -1146,8 +1213,8 @@ export interface ResolveSmartKeepResult {
  * so the resolver can stop growing instead of selecting a value that
  * discards the tail entirely.
  */
-const tailTokensForKeep = (branchEntries: any[], keepUserTurns: number, charsPerToken?: number): number | null => {
-  const cut = buildOwnCut(branchEntries, keepUserTurns);
+const tailTokensForKeep = (branchEntries: any[], keepUserTurns: number, live?: EntryWithMessage[]): number | null => {
+  const cut = buildOwnCut(branchEntries, keepUserTurns, false, live);
   // Null when keep would trigger compact-all, cancel, or summarize nothing
   // (keep-all cut with an empty prefix): the resolver stops growing instead
   // of selecting a value that discards the tail or compacts nothing new.
@@ -1155,10 +1222,10 @@ const tailTokensForKeep = (branchEntries: any[], keepUserTurns: number, charsPer
   // Measure over the live window (message + custom_message/branch_summary via
   // toLiveMessage), not branchEntries filtered to type === "message": custom
   // tails otherwise undercount and smart-keep over-grows (under-compaction).
-  const live = collectLiveMessages(branchEntries);
-  const keptIdx = live.findIndex((e) => e.entry.id === cut.firstKeptEntryId);
+  const window = live ?? collectLiveMessages(branchEntries);
+  const keptIdx = window.findIndex((e) => e.entry.id === cut.firstKeptEntryId);
   if (keptIdx < 0) return null;
-  return live.slice(keptIdx).reduce(
+  return window.slice(keptIdx).reduce(
     (sum: number, e) => sum + estimateScriptAwareMessageContentTokens(e.message?.content),
     0,
   );
@@ -1180,18 +1247,18 @@ export const resolveSmartKeepUserTurns = (opts: ResolveSmartKeepOptions): Resolv
     return { keepUserTurns: baseKeep, smartAdjusted: false, fromKeep: baseKeep };
   }
 
-  const baseTokens = tailTokensForKeep(opts.branchEntries, baseKeep, opts.charsPerToken);
+  const baseTokens = tailTokensForKeep(opts.branchEntries, baseKeep, opts.live);
   // base tail already above min (or unmeasurable / compact-all) → don't grow.
   if (baseTokens == null || baseTokens > minTokens) {
     return { keepUserTurns: baseKeep, smartAdjusted: false, fromKeep: baseKeep };
   }
 
-  const baseCut = buildOwnCut(opts.branchEntries, baseKeep);
+  const baseCut = buildOwnCut(opts.branchEntries, baseKeep, false, opts.live);
   const totalUserTurns = baseCut.ok ? baseCut.totalUserTurns : 0;
 
   let selected = baseKeep;
   for (let k = baseKeep + 1; k <= totalUserTurns; k++) {
-    const tokens = tailTokensForKeep(opts.branchEntries, k, opts.charsPerToken);
+    const tokens = tailTokensForKeep(opts.branchEntries, k, opts.live);
     if (tokens == null || tokens > maxTokens) break;
     selected = k;
   }
@@ -1313,6 +1380,12 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const runBefore = (settings: PiVccSettings) => {
       if (!attemptCurrent()) return;
       if (attemptState) {
+        // A fingerprint still set here means the PREVIOUS attempt was never
+        // consumed: the host aborted or failed the compaction after we
+        // returned content, so `session_compact` never fired and the phantom
+        // row would otherwise stay in the stats history forever. Undo it
+        // before snapshotting this attempt.
+        rollbackPendingStats(attemptState);
         attemptState.pendingCompactionFingerprint = undefined;
         attemptState.pendingPreviousStats = attemptState.lastStats;
         attemptState.pendingStatsHistorySnapshot = attemptState.statsHistory.slice();
@@ -1357,7 +1430,14 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     function runBody(memoryBlock: string) {
       if (!attemptCurrent()) return;
 
-    const calibrationCut = buildOwnCut(branchEntries as any[], 0);
+    // Built ONCE for the whole compaction. Every stage below — calibration,
+    // smart-keep's per-candidate probes, the tail budget, and the retained
+    // tool-output projection — used to rebuild this window itself, which made
+    // smart-keep O(userTurns x branchEntries) with a fresh object per entry on
+    // each loop iteration.
+    const liveWindow = collectLiveMessages(branchEntries as any[]);
+
+    const calibrationCut = buildOwnCut(branchEntries as any[], 0, false, liveWindow);
     const calibrationMessageChars = calibrationCut.ok
       ? calibrationCut.messages.reduce(
           (sum: number, message: any) => sum + estimateMessageContentChars(message.content),
@@ -1400,12 +1480,16 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       explicit: keepUserTurnsExplicit,
       smartKeepTail: settings.smartKeepTail,
       charsPerToken: tokenEstimate.charsPerToken,
+      live: liveWindow,
     });
-    let ownCut = buildOwnCut(branchEntries as any[], smartKeep.keepUserTurns, keepUserTurnsExplicit);
+    let ownCut = buildOwnCut(branchEntries as any[], smartKeep.keepUserTurns, keepUserTurnsExplicit, liveWindow);
     // Default path only: rescue autonomous / oversized-tail sessions with a
     // token-budget cut. Explicit keep:N is respected absolutely (no-op here).
     if (ownCut.ok && !keepUserTurnsExplicit) {
-      ownCut = applyTailBudget(branchEntries as any[], ownCut, { charsPerToken: tokenEstimate.charsPerToken });
+      ownCut = applyTailBudget(branchEntries as any[], ownCut, {
+        charsPerToken: tokenEstimate.charsPerToken,
+        live: liveWindow,
+      });
     }
     if (!ownCut.ok) {
       const lastComp = [...branchEntries].reverse().find((e: any) => e.type === "compaction");
@@ -1665,7 +1749,6 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     // persisting omissions for them would make the replayed projection
     // unresolvable on every later turn. `firstKeptEntryId === ""` (compact-all)
     // retains nothing, so the projection stays empty.
-    const liveWindow = collectLiveMessages(branchEntries as any[]);
     const keptStart = firstKeptEntryId
       ? liveWindow.findIndex((entry) => entry.entry.id === firstKeptEntryId)
       : -1;
@@ -1841,6 +1924,21 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     }
     return runBefore(settingsResult as PiVccSettings);
   });
+  // pi fires this when a compaction fails or is aborted; omp has no equivalent
+  // event, so the registration is inert there (both hosts key handlers by an
+  // unvalidated string). Without it a failed compaction left its phantom stats
+  // row, its pending display, and its follow-up prompt latched until some later
+  // unrelated compaction consumed them.
+  pi.on("session_compact_failed", (event, ctx) => {
+    const per = getPerPi(pi);
+    if ((event as any)?.fromExtension !== true) return;
+    if (!isCurrentGeneration(pi, ctx, per?.generation ?? 0, per?.sessionId ?? sessionIdOf(ctx))) return;
+    rollbackPendingStats(per);
+    if (!per) return;
+    per.pendingDisplay = undefined;
+    clearPendingAttempt(per);
+    setPendingFollowUpPrompt(pi, null);
+  });
   pi.on("session_compact", async (event, ctx) => {
     const per = getPerPi(pi);
     const generation = per?.generation ?? 0;
@@ -1859,27 +1957,9 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const pendingDisplay = per?.pendingDisplay;
     const followUpPrompt = getPendingFollowUpPrompt(pi);
     if (per) {
-      if (!ownsCompaction && pendingFingerprint && per.pendingStatsHistorySnapshot) {
-        // Restore the exact pre-compaction contents. Truncating to the old
-        // LENGTH cannot undo the push once the history is at its 50-entry cap:
-        // setLastStats pushes and shifts, so the length is unchanged and the
-        // "rollback" both kept the phantom entry and lost the oldest real one.
-        const phantom = per.lastStats;
-        per.statsHistory.splice(0, per.statsHistory.length, ...per.pendingStatsHistorySnapshot);
-        if (per.pendingGlobalHistorySnapshot) {
-          globalHistory.splice(0, globalHistory.length, ...per.pendingGlobalHistorySnapshot);
-        }
-        per.lastStats = per.pendingPreviousStats;
-        // `lastStats` is a process-global mirror pointing at whichever session
-        // called setLastStats most recently; only rewind it when it is the
-        // object this rollback is undoing.
-        if (phantom !== undefined && lastStats === phantom) lastStats = per.pendingPreviousStats;
-      }
+      if (!ownsCompaction) rollbackPendingStats(per);
       per.pendingDisplay = undefined;
-      per.pendingCompactionFingerprint = undefined;
-      per.pendingPreviousStats = undefined;
-      per.pendingStatsHistorySnapshot = undefined;
-      per.pendingGlobalHistorySnapshot = undefined;
+      clearPendingAttempt(per);
     }
     setPendingFollowUpPrompt(pi, null);
     if (!ownsCompaction) return;

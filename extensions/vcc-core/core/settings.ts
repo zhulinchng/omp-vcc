@@ -228,35 +228,6 @@ const normalizeSettings = (value: Record<string, unknown> | undefined): PiVccSet
   return merged;
 };
 
-const tryGetSetting = (ctx: unknown, key: string): unknown => {
-  try {
-    const root = asRecord(ctx);
-    if (!root) return undefined;
-    for (const containerKey of ["settings", "config"] as const) {
-      const container = asRecord(root[containerKey]);
-      if (!container) continue;
-      const getter = container.get;
-      if (typeof getter === "function") return getter.call(container, key);
-      if (key in container) return container[key];
-    }
-  } catch {}
-  return undefined;
-};
-
-const contextOverlay = (ctx: unknown): Partial<PiVccSettings> => {
-  const overlay: Partial<PiVccSettings> = {};
-  for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {
-    // Namespaced forms only. A bare `<key>` probe would let an unrelated global
-    // host setting of the same name (e.g. `debug`) hijack an omp-vcc key.
-    const value = tryGetSetting(ctx, `plugins.@zhulinchng/omp-vcc.${key}`)
-      ?? tryGetSetting(ctx, `plugins.omp-vcc.${key}`)
-      ?? tryGetSetting(ctx, `omp-vcc.${key}`);
-    if (value !== undefined) Object.assign(overlay, { [key]: value });
-  }
-  return overlay;
-};
-
-
 const readFileSettings = (ctx?: unknown): { values: PiVccSettings; parsed: Record<string, unknown> | null; readPath: string | null; filePresent: boolean; fileValid: boolean } => {
   const primary = settingsPath();
   const primaryStatus = readJsonStatus(primary);
@@ -311,10 +282,7 @@ const applyValidOverlay = (
 };
 
 export function loadSettings(ctx?: unknown): PiVccSettings {
-  const file = readFileSettings(ctx).values;
-  if (!ctx) return file;
-  const overlay = contextOverlay(ctx);
-  return Object.keys(overlay).length ? applyValidOverlay(file, overlay as Record<string, unknown>).values : file;
+  return readFileSettings(ctx).values;
 }
 
 const pluginSettingsCwd = (ctx: unknown): string | undefined => {
@@ -327,25 +295,75 @@ const pluginSettingsCwd = (ctx: unknown): string | undefined => {
  *
  * `getPluginSettings()` is the documented bridge, but it needs
  * `@oh-my-pi/pi-coding-agent` resolvable at runtime — which it is not from a
- * plugin install: the package is ESM-only, its `./*` export maps to a source
- * FILE (`./src/*.ts`, so `.../extensibility/plugins` points at a non-existent
- * `plugins.ts`), and the plugin's install directory has no `node_modules` entry
- * for it. Every resolution base the plugin can reach returns MODULE_NOT_FOUND,
- * so the bridge never fired and every setting declared in the manifest was
+ * plugin install. The package DOES expose an explicit
+ * `./extensibility/plugins` subpath (its package.json maps that key to
+ * `src/extensibility/plugins/index.ts`, which re-exports `getPluginSettings`),
+ * but the plugin's install directory has no `node_modules` entry for it, so
+ * every resolution base the plugin can reach returns MODULE_NOT_FOUND and the
+ * bridge never fires — making every setting declared in the manifest
  * unreachable. Read the same files the host itself reads instead:
  *   <pluginsDir>/omp-plugins.lock.json       → settings[<plugin name>]
- *   <cwd>/{.omp,.pi}/plugin-overrides.json   → settings[<plugin name>]
+ *   <cwd>/{.omp,.claude,.codex,.gemini}/plugin-overrides.json
+ *                                            → settings[<plugin name>], first
+ *                                              existing file wins, as the host does
  * Strictly best-effort: a missing or malformed file is ignored, never fatal.
  */
 const HOST_PLUGIN_NAMES = ["omp-vcc", "@zhulinchng/omp-vcc", "pi-vcc"];
 
-const pluginsDirCandidates = (): string[] => {
+/** omp's PROFILE_NAME_RE (utils/src/dirs.ts:42). An invalid value is SKIPPED
+ *  rather than interpolated: a path segment like "../.." would escape the
+ *  config root. */
+const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+/**
+ * Every directory the host may hold an `omp-plugins.lock.json` in.
+ *
+ * omp's `getPluginsDir()` is `dirs.rootSubdir("plugins","data")`, whose root is
+ * the PROFILE config root — `<configRoot>/profiles/<name>` under
+ * OMP_PROFILE/PI_PROFILE — and therefore moves with `$PI_CONFIG_DIR`. Only the
+ * unprofiled XDG form was covered before, so under a named profile the host
+ * settings overlay silently stopped working.
+ *
+ * Roots are injectable so the resolved list is auditable without spawning a
+ * host: production callers pass nothing. Candidates are deduplicated and read
+ * best-effort — a missing file is ignored, never fatal.
+ */
+export const pluginsDirCandidates = (
+  env: Record<string, string | undefined> = process.env,
+  home: string = homedir(),
+  configBase: string = configRoot ?? join(home, ".omp"),
+  ompBase: string | undefined = ompDirBase,
+): string[] => {
+  // omp consults PI_PROFILE only when OMP_PROFILE is UNDEFINED; an explicitly
+  // empty OMP_PROFILE deliberately selects the default profile rather than
+  // inheriting the legacy variable, so `??` on the non-empty test would read an
+  // inactive profile's store.
+  const profile = env.OMP_PROFILE !== undefined ? nonEmptyEnv(env.OMP_PROFILE) : nonEmptyEnv(env.PI_PROFILE);
+  const validProfile = profile && PROFILE_NAME_RE.test(profile) ? profile : undefined;
+  const dataHome = nonEmptyEnv(env.XDG_DATA_HOME);
+
+  // Order is precedence for `hostStoreOverlay` (last write wins), so it runs
+  // lowest -> highest. The host resolves `getPluginsDir()` to the PROFILE config
+  // root, so every profile-scoped root must outrank the unscoped ones — a stale
+  // default-profile lock file must not override the active profile's. The
+  // unscoped roots stay as read FALLBACKS (never orphan an existing store).
   const dirs: string[] = [];
-  const dataHome = nonEmptyEnv(process.env.XDG_DATA_HOME);
+  // Legacy/no-opinion roots first.
+  dirs.push(join(home, ".omp", "plugins"));
+  if (ompBase) dirs.push(join(ompBase, "plugins"));
+  dirs.push(join(configBase, "plugins"));
   if (dataHome) dirs.push(join(dataHome, "omp", "plugins"));
-  if (ompDirBase) dirs.push(join(ompDirBase, "plugins"));
-  dirs.push(join(homedir(), ".omp", "plugins"));
-  return dirs;
+  // Profile-scoped roots last (highest precedence). omp prefers the XDG profile
+  // path when it exists, so it goes after the config-root one.
+  if (validProfile) {
+    dirs.push(join(configBase, "profiles", validProfile, "plugins"));
+    if (dataHome) dirs.push(join(dataHome, "omp", "profiles", validProfile, "plugins"));
+  }
+  // The host's XDG check requires `$XDG_DATA_HOME/omp` to exist, and disables
+  // XDG for named profiles unless the profile path exists. Both are still worth
+  // probing: reading a missing directory is a no-op and ignoring an existing one
+  // is the failure this list exists to prevent.
+  return [...new Set(dirs)];
 };
 
 const readJsonObject = (path: string): Record<string, unknown> | null => {
@@ -372,14 +390,26 @@ const mergeHostSettings = (target: Record<string, unknown>, document: Record<str
   }
 };
 
+/**
+ * omp's PROJECT_CONFIG_BASES order (coding-agent/src/config.ts `priorityList`).
+ * `loadProjectOverrides` RETURNS the first path that parses (a JSON error just
+ * continues to the next), so merging every directory inverted precedence: on omp
+ * `.pi` used to override `.omp`, and `.claude`/`.codex`/`.gemini` — which the
+ * host does read — were never consulted. No host reads `.pi`.
+ */
+const PROJECT_OVERRIDE_DIRS = [".omp", ".claude", ".codex", ".gemini"] as const;
+
 const hostStoreOverlay = (cwd?: string): Record<string, unknown> => {
   const overlay: Record<string, unknown> = {};
   for (const dir of pluginsDirCandidates()) {
     mergeHostSettings(overlay, readJsonObject(join(dir, "omp-plugins.lock.json")));
   }
   if (cwd) {
-    for (const name of [".omp", ".pi"]) {
-      mergeHostSettings(overlay, readJsonObject(join(cwd, name, "plugin-overrides.json")));
+    for (const name of PROJECT_OVERRIDE_DIRS) {
+      const document = readJsonObject(join(cwd, name, "plugin-overrides.json"));
+      if (!document) continue;
+      mergeHostSettings(overlay, document);
+      break;
     }
   }
   return overlay;
@@ -408,9 +438,10 @@ export function loadSettingsWithSources(ctx?: unknown): VccConfigView {
       ? "file"
       : "default";
   }
-  // Host store first, then the ctx bridge, so the more specific source wins.
+  // Host store only: the plugin-settings module bridge is a separate mechanism
+  // (see loadSettingsWithPluginOverlay) and a ctx-provided overlay does not
+  // exist on either host, so advertising it as a tier was misleading.
   const overlay: Record<string, unknown> = { ...hostStoreOverlay(pluginSettingsCwd(ctx)) };
-  if (ctx) Object.assign(overlay, contextOverlay(ctx));
   if (Object.keys(overlay).length > 0) {
     const merged = applyValidOverlay(values, overlay);
     for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof PiVccSettings)[]) {

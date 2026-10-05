@@ -2,7 +2,7 @@
 export type RecallScope = "lineage" | "all";
 export type RecallMode = "hybrid" | "touched" | "file";
 
-const SCOPE_RE = /\bscope:(lineage|all)\b/i;
+const SCOPE_RE = /\bscope:(lineage|all|active)\b/i;
 
 const VALID_MODES: Record<string, true> = { hybrid: true, touched: true, file: true };
 
@@ -30,7 +30,7 @@ export const parseRecallMode = (text: string): { mode?: RecallMode; text: string
   };
 };
 
-const SCOPE_RE_ALL = /\bscope:(lineage|all)\b/gi;
+const SCOPE_RE_ALL = /\bscope:(lineage|all|active)\b/gi;
 
 export const parseRecallScope = (text: string): { scope: RecallScope; text: string } => {
   const match = text.match(SCOPE_RE);

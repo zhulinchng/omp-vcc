@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, expect, test, beforeEach } from "bun:test";
-import { existsSync, unlinkSync, writeFileSync, readFileSync } from "fs";
+import { existsSync, unlinkSync, writeFileSync, readFileSync, mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import {
@@ -519,5 +519,134 @@ describe("hook integration savings + details", () => {
     const { rmSync } = await import("fs");
     try { rmSync(dir, { recursive: true, force: true }); } catch {}
     clearCompactionHistoryForTests();
+  });
+});
+
+// The debugLog write path (logMetrics -> <config dir>/debug-metrics.jsonl) had
+// no coverage at all: no test set debugLog:true and ran a compaction, so file
+// creation, the size probe, the METRICS_MAX_BYTES rotate, and every event
+// payload were unexercised.
+describe("debug metrics log", () => {
+  const MAX_BYTES = 10 * 1024 * 1024;
+  const entries = [
+    msg("u0", "user", "first turn"),
+    msg("a0", "assistant", "reply"),
+    msg("u1", "user", "second turn"),
+    msg("a1", "assistant", "reply two"),
+  ];
+
+  const withMetricsDir = async (settings: Record<string, unknown>, fn: (metricsPath: string) => Promise<void>) => {
+    const dir = mkdtempSync(join(tmpdir(), "vcc-metrics-"));
+    const cfg = join(dir, "config.json");
+    writeFileSync(cfg, JSON.stringify({ overrideDefaultCompaction: true, ...settings }));
+    const origOmp = process.env.OMP_VCC_CONFIG_PATH;
+    const origPi = process.env.PI_VCC_CONFIG_PATH;
+    process.env.OMP_VCC_CONFIG_PATH = cfg;
+    process.env.PI_VCC_CONFIG_PATH = cfg;
+    try {
+      // logMetrics derives its path from dirname(getSettingsPath()).
+      await fn(join(dir, "debug-metrics.jsonl"));
+    } finally {
+      if (origOmp === undefined) delete process.env.OMP_VCC_CONFIG_PATH;
+      else process.env.OMP_VCC_CONFIG_PATH = origOmp;
+      if (origPi === undefined) delete process.env.PI_VCC_CONFIG_PATH;
+      else process.env.PI_VCC_CONFIG_PATH = origPi;
+      try { rmSync(dir, { recursive: true, force: true }); } catch {}
+      clearCompactionHistoryForTests();
+    }
+  };
+
+  const console_ctx = () => ({
+    settings: { get: () => undefined },
+    config: { get: () => undefined },
+    ui: { notify: () => {} },
+    sessionManager: { getEntries: () => entries, getBranch: () => entries, getSessionId: () => "s-metrics" },
+  });
+
+  const readEvents = (metricsPath: string) => {
+    const raw = readFileSync(metricsPath, "utf8");
+    expect(raw.endsWith("\n")).toBe(true);
+    // Every line must be independently parseable JSONL.
+    return raw.trimEnd().split("\n").map((line) => JSON.parse(line));
+  };
+
+  test("a compaction appends a parseable append-decision event", async () => {
+    await withMetricsDir({ debugLog: true }, async (metricsPath) => {
+      const pi: any = { on: (ev: string, fn: any) => { pi[ev] = fn; }, sendMessage: () => {} };
+      registerBeforeCompactHook(pi);
+      const res: any = await pi["session_before_compact"](makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION), console_ctx());
+      expect(res?.compaction).toBeDefined();
+
+      expect(existsSync(metricsPath)).toBe(true);
+      const events = readEvents(metricsPath);
+      expect(events.length).toBeGreaterThan(0);
+      for (const event of events) expect(typeof event.timestamp).toBe("number");
+
+      const append = events.find((e) => e.event === "append-decision");
+      expect(append).toBeDefined();
+      expect(typeof append.mode).toBe("string");
+      expect(append.chainStart).toBe(true);
+      expect(append.retainedTokens).toBe(0);
+      expect(append.omittedTokens).toBe(0);
+      expect(append.pendingCount).toBe(0);
+    });
+  });
+
+  test("auto_compaction_start/end records the end event payload", async () => {
+    await withMetricsDir({ debugLog: true }, async (metricsPath) => {
+      const pi: any = { on: (ev: string, fn: any) => { pi[ev] = fn; }, sendMessage: () => {} };
+      registerBeforeCompactHook(pi);
+      pi["auto_compaction_start"]({ type: "auto_compaction_start", reason: "threshold", action: "compact" }, console_ctx());
+      pi["auto_compaction_end"]({ type: "auto_compaction_end", action: "compact", aborted: false, willRetry: false }, console_ctx());
+
+      const end = readEvents(metricsPath).find((e) => e.event === "auto-compaction-end");
+      expect(end).toBeDefined();
+      expect(end.action).toBe("compact");
+      expect(end.aborted).toBe(false);
+      expect(end.willRetry).toBe(false);
+    });
+  });
+
+  test("a failing native-memory lookup records native-memory instead of throwing", async () => {
+    await withMetricsDir({ debugLog: true, nativeMemory: true }, async (metricsPath) => {
+      const pi: any = { on: (ev: string, fn: any) => { pi[ev] = fn; }, sendMessage: () => {} };
+      registerBeforeCompactHook(pi);
+      const ctx: any = console_ctx();
+      ctx.memory = { search: () => { throw new TypeError("memory backend down"); } };
+
+      const res: any = await pi["session_before_compact"](makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION), ctx);
+      // A memory failure must degrade to no memory block, not cancel or throw.
+      expect(res?.compaction).toBeDefined();
+      expect(res.compaction.summary).not.toContain("[Host Memory]");
+
+      const event = readEvents(metricsPath).find((e) => e.event === "native-memory");
+      expect(event).toBeDefined();
+      expect(event.status).toBe("error");
+      expect(event.errorClass).toBe("TypeError");
+    });
+  });
+
+  test("rotates to .1 rather than growing past METRICS_MAX_BYTES", async () => {
+    await withMetricsDir({ debugLog: true }, async (metricsPath) => {
+      writeFileSync(metricsPath, "x".repeat(MAX_BYTES + 1));
+      const pi: any = { on: (ev: string, fn: any) => { pi[ev] = fn; }, sendMessage: () => {} };
+      registerBeforeCompactHook(pi);
+      await pi["session_before_compact"](makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION), console_ctx());
+
+      expect(existsSync(`${metricsPath}.1`)).toBe(true);
+      expect(readFileSync(`${metricsPath}.1`, "utf8").length).toBe(MAX_BYTES + 1);
+      // The live file restarted with just the new events.
+      expect(readFileSync(metricsPath, "utf8").length).toBeLessThan(MAX_BYTES);
+      expect(readEvents(metricsPath).some((e) => e.event === "append-decision")).toBe(true);
+    });
+  });
+
+  test("writes nothing when debugLog is false", async () => {
+    await withMetricsDir({ debugLog: false }, async (metricsPath) => {
+      const pi: any = { on: (ev: string, fn: any) => { pi[ev] = fn; }, sendMessage: () => {} };
+      registerBeforeCompactHook(pi);
+      await pi["session_before_compact"](makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION), console_ctx());
+      expect(existsSync(metricsPath)).toBe(false);
+    });
   });
 });

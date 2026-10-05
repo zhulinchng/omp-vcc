@@ -74,8 +74,8 @@ describe("step 7: the context handler degrades gracefully on malformed projectio
   });
 });
 
-describe("step 7: lookup maps are built only for omission ids", () => {
-  test("a whole-branch JSON.stringify pass does not happen when nothing is omitted", () => {
+describe("step 7: a large branch with nothing omitted is a no-op passthrough", () => {
+  test("returns undefined and never rewrites the payload", () => {
     const pi: any = { on: (n: string, h: any) => { pi[n] = h; }, sendMessage(){}, sendUserMessage(){} };
     registerBeforeCompactHook(pi);
     const msgs = Array.from({ length: 500 }, (_, i) => ({
@@ -101,15 +101,12 @@ describe("step 7: lookup maps are built only for omission ids", () => {
     ];
     const ctx: any = { sessionManager: { getEntries: () => entries, getBranch: () => entries }, ui: { notify(){} } };
 
-    const realStringify = JSON.stringify;
-    let calls = 0;
-    JSON.stringify = (...a: unknown[]) => { calls++; return (realStringify as any)(...a); };
-    try {
-      pi["context"]({ messages: [{ role: "user", content: "x" }] }, ctx);
-    } finally {
-      JSON.stringify = realStringify;
-    }
-    // The handler used to stringify all 500 entries on every provider request.
-    expect(calls).toBe(0);
+    // The observable contract: with nothing to filter and no omissions to
+    // re-apply, the handler is a PURE passthrough (undefined), so the provider
+    // payload is the host's own array, unrewritten. This replaces a test that
+    // counted JSON.stringify calls through a patched GLOBAL: that pinned an
+    // implementation strategy rather than behaviour.
+    const payload = { messages: [{ role: "user", content: "x" }] };
+    expect(pi["context"](payload, ctx)).toBeUndefined();
   });
 });

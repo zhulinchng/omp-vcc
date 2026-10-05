@@ -941,3 +941,50 @@ describe("registerBeforeCompactHook: focus text never bypasses as an explicit mo
     expect(result?.compaction).toBeDefined();
   });
 });
+
+// `showPreCompactionMessage` defaults to TRUE, and its notify
+// ("[Previous output — display only]") had no assertions anywhere.
+describe("showPreCompactionMessage", () => {
+  const turns = () => [
+    msg("u0", "user", "first request"),
+    msg("a0", "assistant", "alpha output"),
+    msg("u1", "user", "second request"),
+    msg("a1", "assistant", "OMEGA display text"),
+    msg("u2", "user", "third request"),
+    msg("a2", "assistant", "tail reply"),
+  ];
+
+  const runOnce = async (show: boolean) => {
+    setConfig({ overrideDefaultCompaction: true, showPreCompactionMessage: show });
+    const { pi, invokeBefore, invokeCompact, notifyCalls, customMessages } = createMockPi();
+    registerBeforeCompactHook(pi);
+    // keep:1 summarizes up to (not including) the last user turn, so `a1` is the
+    // last assistant output inside the summarized range.
+    const res: any = await invokeBefore(makeEvent(turns(), `${PI_VCC_COMPACT_INSTRUCTION} keep:1`));
+    expect(res?.compaction).toBeDefined();
+    await invokeCompact({
+      type: "session_compact",
+      fromExtension: true,
+      compactionEntry: {
+        id: "c1",
+        summary: res.compaction.summary,
+        firstKeptEntryId: res.compaction.firstKeptEntryId,
+        details: res.compaction.details,
+      },
+    });
+    return { notifyCalls, customMessages };
+  };
+
+  test("notifies the dropped output when enabled", async () => {
+    const { notifyCalls } = await runOnce(true);
+    const shown = notifyCalls.find((n) => n.msg.startsWith("[Previous output — display only]"));
+    expect(shown).toBeDefined();
+    expect(shown.msg).toBe("[Previous output — display only]\nOMEGA display text");
+    expect(shown.level).toBe("info");
+  });
+
+  test("stays silent when disabled", async () => {
+    const { notifyCalls } = await runOnce(false);
+    expect(notifyCalls.some((n) => n.msg.includes("display only"))).toBe(false);
+  });
+});

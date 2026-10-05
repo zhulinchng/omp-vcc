@@ -87,8 +87,14 @@ export const FILE_CATEGORY_TOTAL_CAP = 100;
  * merge re-parses that list. A literal comma in a path must therefore be
  * escaped, or `a,b.ts` splits into two bogus paths (`a`, `b.ts`) that then
  * persist in every later summary.
+ *
+ * Embedded newlines are NORMALISED rather than escaped: the section grammar is
+ * line-delimited (a continuation line must be indented), so a path containing
+ * one flushed the entry, discarded the tail, and left a truncated fabricated
+ * path in its place. No supported host allows a newline in a path, and
+ * corrupting the neighbouring entries is strictly worse than flattening it.
  */
-export const escapePathCommas = (p: string): string => p.replace(/,/g, "\\,");
+export const escapePathCommas = (p: string): string => p.replace(/[\r\n]+/g, " ").replace(/,/g, "\\,");
 
 /** Inverse of {@link escapePathCommas}: split a rendered path list on unescaped
  *  commas and restore escaped ones. */

@@ -1,9 +1,9 @@
 // @ts-nocheck
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, unlinkSync, writeFileSync, mkdtempSync, rmSync } from "fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { loadSettings, loadSettingsWithSources, DEFAULT_SETTINGS } from "../extensions/vcc-core/core/settings";
+import { loadSettings, loadSettingsWithPluginOverlay, loadSettingsWithSources, DEFAULT_SETTINGS } from "../extensions/vcc-core/core/settings";
 import { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION } from "../extensions/vcc-core/hook";
 
 let tmpRoot: string;
@@ -24,6 +24,16 @@ afterEach(() => {
 });
 
 const writeCfg = (path: string, cfg: Record<string, unknown>) => writeFileSync(path, JSON.stringify(cfg));
+
+/**
+ * Write a project-level host override for `cwd`. This is the ONLY overlay tier
+ * either host can reach — neither ExtensionContext exposes `settings`/`config`
+ * — and `.omp` is the host's highest-priority project directory.
+ */
+const writeProjectOverride = (cwd: string, settings: Record<string, unknown>) => {
+  mkdirSync(join(cwd, ".omp"), { recursive: true });
+  writeFileSync(join(cwd, ".omp", "plugin-overrides.json"), JSON.stringify({ settings: { "omp-vcc": settings } }));
+};
 
 const msg = (id: string, role: "user" | "assistant" | "toolResult", content = "x") => ({
   id, type: "message", message: { role, content },
@@ -219,17 +229,30 @@ describe("settings overlay — pi-shaped ctx (no host settings channel)", () => 
     expect(view.sources.debug).toBe("file");
   });
 
-  test("omp-style ctx.settings overlay still applies on top of file", () => {
+  test("a ctx settings channel no longer overlays the file", () => {
     const cfgPath = join(tmpRoot, "overlay.json");
     writeCfg(cfgPath, { debug: false });
     process.env.OMP_VCC_CONFIG_PATH = cfgPath;
+    // Neither host's ExtensionContext exposes `settings`/`config`; the tier is
+    // gone, so a ctx that stubs one leaves the file value untouched.
     const ompCtx = {
       hasUI: true,
       ui: { notify: () => {} },
       settings: { get: (k: string) => (k === "omp-vcc.debug" ? true : undefined) },
     };
-    expect(loadSettings(ompCtx).debug).toBe(true);
-    expect(loadSettingsWithSources(ompCtx).sources.debug).toBe("overlay");
+    expect(loadSettings(ompCtx).debug).toBe(false);
+    expect(loadSettingsWithSources(ompCtx).sources.debug).toBe("file");
+  });
+
+  test("the on-disk store still overlays the file", () => {
+    const cfgPath = join(tmpRoot, "overlay-store.json");
+    writeCfg(cfgPath, { debug: false });
+    process.env.OMP_VCC_CONFIG_PATH = cfgPath;
+    const cwd = join(tmpRoot, "proj-store");
+    writeProjectOverride(cwd, { debug: true });
+    const ctx = { hasUI: true, ui: { notify: () => {} }, cwd };
+    expect(loadSettingsWithPluginOverlay(ctx).debug).toBe(true);
+    expect(loadSettingsWithSources(ctx).sources.debug).toBe("overlay");
   });
 
   test("handler honors file config with a pi-shaped ctx", () => {
@@ -266,19 +289,25 @@ describe("settings hygiene: unknown keys and invalid overlays", () => {
     const cfg = join(tmpRoot, "overlay-invalid.json");
     writeCfg(cfg, { debug: true });
     process.env.OMP_VCC_CONFIG_PATH = cfg;
-    const ctx = { settings: { get: (key: string) => (key === "omp-vcc.debug" ? "yes" : undefined) } };
+    // The store is the only overlay a host can reach; its value is out of
+    // contract, so the file value must stand and the source must stay "file".
+    const cwd = join(tmpRoot, "proj-invalid");
+    writeProjectOverride(cwd, { debug: "yes" });
+    const ctx = { cwd };
     expect(loadSettings(ctx).debug).toBe(true);
     const view = loadSettingsWithSources(ctx);
     expect(view.values.debug).toBe(true);
     expect(view.sources.debug).toBe("file");
   });
 
-  test("a valid overlay value still wins and is reported as overlay", () => {
+  test("a valid store value wins and is reported as overlay", () => {
     const cfg = join(tmpRoot, "overlay-valid.json");
     writeCfg(cfg, { debug: false });
     process.env.OMP_VCC_CONFIG_PATH = cfg;
-    const ctx = { settings: { get: (key: string) => (key === "plugins.omp-vcc.debug" ? true : undefined) } };
-    expect(loadSettings(ctx).debug).toBe(true);
+    const cwd = join(tmpRoot, "proj-valid");
+    writeProjectOverride(cwd, { debug: true });
+    const ctx = { cwd };
+    expect(loadSettingsWithPluginOverlay(ctx).debug).toBe(true);
     const view = loadSettingsWithSources(ctx);
     expect(view.values.debug).toBe(true);
     expect(view.sources.debug).toBe("overlay");

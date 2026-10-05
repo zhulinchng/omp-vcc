@@ -19,7 +19,7 @@ import { homedir, tmpdir } from "os";
 import { join } from "path";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { getSettingsPath } from "../extensions/vcc-core/core/settings";
+import { getSettingsPath, loadSettings, loadSettingsWithSources, loadSettingsWithPluginOverlay, pluginsDirCandidates, DEFAULT_SETTINGS } from "../extensions/vcc-core/core/settings";
 import { searchEntriesDetailed } from "../extensions/vcc-core/core/search-entries";
 
 const ENV_KEYS = ["OMP_VCC_CONFIG_PATH", "PI_VCC_CONFIG_PATH", "OMP_DIR", "PI_CODING_AGENT_DIR"];
@@ -224,6 +224,186 @@ describe("settings: config resolution and corrupt-file recovery", () => {
       expect(r.primaryCreated).toBe(true);
       expect(existsSync(primary)).toBe(true);
     } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // `pluginsDirCandidates` takes injectable roots so the resolved store list is
+  // auditable without spawning a host. Modules are imported in this process, so
+  // the module-load `configRoot` is passed explicitly as `configBase`.
+  const candidates = (
+    env: Record<string, string | undefined>,
+    configBase = "/u/.omp",
+    ompBase?: string,
+  ) => pluginsDirCandidates(env, "/u", configBase, ompBase);
+
+  // Precedence, not just membership: `hostStoreOverlay` merges in array order
+  // with last-write-wins, so the LAST entry outranks the earlier ones. The host
+  // resolves getPluginsDir() to the PROFILE root, so every profile-scoped root
+  // must come last.
+  test("with no overrides the store is <configRoot>/plugins", () => {
+    expect(candidates({})).toEqual(["/u/.omp/plugins"]);
+  });
+
+  test("XDG_DATA_HOME adds the migrated store at higher precedence than the legacy root", () => {
+    expect(candidates({ XDG_DATA_HOME: "/xdg" }))
+      .toEqual(["/u/.omp/plugins", "/xdg/omp/plugins"]);
+  });
+
+  // omp's getPluginsDir() is the PROFILE config root, so a named profile moves
+  // the store under profiles/<name>; only the unprofiled XDG form was covered.
+  test("a named profile adds <configRoot>/profiles/<name>/plugins at top precedence", () => {
+    expect(candidates({ OMP_PROFILE: "work" }))
+      .toEqual(["/u/.omp/plugins", "/u/.omp/profiles/work/plugins"]);
+  });
+
+  test("a profiled XDG root is probed too, and outranks the config-root one", () => {
+    expect(candidates({ OMP_PROFILE: "work", XDG_DATA_HOME: "/xdg" })).toEqual([
+      "/u/.omp/plugins",
+      "/xdg/omp/plugins",
+      "/u/.omp/profiles/work/plugins",
+      "/xdg/omp/profiles/work/plugins",
+    ]);
+  });
+
+  test("PI_PROFILE is the legacy fallback and OMP_PROFILE wins over it", () => {
+    expect(candidates({ PI_PROFILE: "legacy" }))
+      .toContain("/u/.omp/profiles/legacy/plugins");
+    const both = candidates({ OMP_PROFILE: "canon", PI_PROFILE: "legacy" });
+    expect(both).toContain("/u/.omp/profiles/canon/plugins");
+    expect(both).not.toContain("/u/.omp/profiles/legacy/plugins");
+  });
+
+  // omp consults PI_PROFILE only when OMP_PROFILE is UNDEFINED: an explicitly
+  // empty OMP_PROFILE selects the default profile on purpose rather than
+  // inheriting the legacy variable. `??` on a non-empty test collapsed "" to
+  // undefined and read an INACTIVE profile's store.
+  test("an explicitly empty OMP_PROFILE selects the default profile", () => {
+    expect(candidates({ OMP_PROFILE: "", PI_PROFILE: "work" }))
+      .toEqual(["/u/.omp/plugins"]);
+  });
+
+  test("an invalid profile name is skipped instead of escaping the config root", () => {
+    for (const bad of ["../../etc", "/abs", "", ".", "UPPER", "a".repeat(65)]) {
+      const dirs = candidates({ OMP_PROFILE: bad });
+      expect(dirs).toEqual(["/u/.omp/plugins"]);
+      expect(dirs.some((d) => d.includes("profiles"))).toBe(false);
+    }
+  });
+
+  test("PI_CONFIG_DIR relocates the store and keeps the legacy read fallback", () => {
+    expect(candidates({}, "/x/custom")).toEqual(["/u/.omp/plugins", "/x/custom/plugins"]);
+  });
+
+  test("a profile inside a relocated config root moves with it", () => {
+    expect(candidates({ OMP_PROFILE: "work" }, "/x/custom"))
+      .toEqual(["/u/.omp/plugins", "/x/custom/plugins", "/x/custom/profiles/work/plugins"]);
+  });
+
+  test("duplicate roots are collapsed", () => {
+    // $OMP_DIR, the config root and the legacy fallback all resolve to the same
+    // directory here, so the candidate list must not carry it three times.
+    expect(candidates({}, "/u/.omp", "/u/.omp")).toEqual(["/u/.omp/plugins"]);
+  });
+
+  // The reviewer's counterexample: both the base and the profile root hold a
+  // lock file, and the ACTIVE profile's value must win for every key it defines
+  // — not only the keys the base root leaves undefined.
+  //
+  // Uses the XDG roots because XDG_DATA_HOME and OMP_PROFILE are read at CALL
+  // time, so no module-load env (and therefore no subprocess) is needed. Both
+  // files set the SAME key to two DIFFERENT non-default values, so the
+  // assertion cannot pass by default.
+  test("the active profile's lock file outranks the default-profile one", () => {
+    const dataHome = mkdtempSync(join(tmpdir(), "vcc-profprec-"));
+    const saved = {
+      XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+      OMP_PROFILE: process.env.OMP_PROFILE,
+      PI_PROFILE: process.env.PI_PROFILE,
+    };
+    try {
+      process.env.XDG_DATA_HOME = dataHome;
+      process.env.OMP_PROFILE = "work";
+      delete process.env.PI_PROFILE;
+      const writeLock = (dir: string, settings: Record<string, unknown>) => {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "omp-plugins.lock.json"), JSON.stringify({ plugins: {}, settings: { "omp-vcc": settings } }));
+      };
+      writeLock(join(dataHome, "omp", "plugins"), { retainedToolOutputMaxTokens: 11111, debug: true });
+      writeLock(join(dataHome, "omp", "profiles", "work", "plugins"), { retainedToolOutputMaxTokens: 22222 });
+
+      const v = loadSettingsWithPluginOverlay({ cwd: dataHome });
+      expect(v.retainedToolOutputMaxTokens).toBe(22222);  // profile beats base
+      expect(v.debug).toBe(true);                         // base still read as a fallback
+    } finally {
+      for (const [k, val] of Object.entries(saved)) {
+        if (val === undefined) delete process.env[k]; else process.env[k] = val;
+      }
+      rmSync(dataHome, { recursive: true, force: true });
+    }
+  });
+
+  // The host walks .omp → .claude → .codex → .gemini and RETURNS the first file
+  // that parses. Merging every directory inverted precedence (on omp `.pi`
+  // overrode `.omp`) and skipped the dirs the host actually reads.
+  const overlayWithProject = (project: Record<string, unknown>) => {
+    const home = mkdtempSync(join(tmpdir(), "vcc-proj-"));
+    try {
+      for (const [dir, document] of Object.entries(project)) {
+        mkdirSync(join(home, dir), { recursive: true });
+        writeFileSync(join(home, dir, "plugin-overrides.json"), JSON.stringify(document));
+      }
+      return loadSettingsWithPluginOverlay({ cwd: home });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  };
+
+  test("project overrides resolve first-wins, .omp before .claude", () => {
+    const v = overlayWithProject({
+      ".omp": { settings: { "omp-vcc": { vccEnabled: false, overrideDefaultCompaction: true } } },
+      ".claude": { settings: { "omp-vcc": { vccEnabled: true, overrideDefaultCompaction: false } } },
+    });
+    expect(v.vccEnabled).toBe(false);
+    expect(v.overrideDefaultCompaction).toBe(true);
+  });
+
+  test("a project override in .claude is read when .omp has none", () => {
+    const v = overlayWithProject({ ".claude": { settings: { "omp-vcc": { vccEnabled: false } } } });
+    expect(v.vccEnabled).toBe(false);
+  });
+
+  test("a project override in .codex is read when .omp and .claude have none", () => {
+    const v = overlayWithProject({ ".codex": { settings: { "omp-vcc": { vccEnabled: false } } } });
+    expect(v.vccEnabled).toBe(false);
+  });
+
+  test("a .pi/plugin-overrides.json is ignored — no host reads .pi", () => {
+    const v = overlayWithProject({ ".pi": { settings: { "omp-vcc": { vccEnabled: false } } } });
+    expect(v.vccEnabled).toBe(DEFAULT_SETTINGS.vccEnabled);
+  });
+
+  // Neither host exposes `ctx.settings` or `ctx.config`, so the documented
+  // ctx-overlay tier could never fire. It is gone; a ctx that stubs one must
+  // not change the result, and every key must still report its real source.
+  test("a ctx-provided settings object no longer overlays the file", () => {
+    const home = mkdtempSync(join(tmpdir(), "vcc-ctx-tier-"));
+    const saved = process.env.OMP_VCC_CONFIG_PATH;
+    const savedPi = process.env.PI_VCC_CONFIG_PATH;
+    try {
+      const cfg = join(home, "config.json");
+      writeFileSync(cfg, JSON.stringify({ vccEnabled: false }));
+      process.env.OMP_VCC_CONFIG_PATH = cfg;
+      process.env.PI_VCC_CONFIG_PATH = cfg;
+      const ctx = { cwd: home, settings: { get: () => true }, config: { get: () => true } };
+      expect(loadSettings(ctx).vccEnabled).toBe(false);
+      expect(loadSettingsWithSources(ctx).values.vccEnabled).toBe(false);
+      expect(loadSettingsWithSources(ctx).sources.vccEnabled).toBe("file");
+    } finally {
+      if (saved === undefined) delete process.env.OMP_VCC_CONFIG_PATH;
+      else process.env.OMP_VCC_CONFIG_PATH = saved;
+      if (savedPi === undefined) delete process.env.PI_VCC_CONFIG_PATH;
+      else process.env.PI_VCC_CONFIG_PATH = savedPi;
       rmSync(home, { recursive: true, force: true });
     }
   });

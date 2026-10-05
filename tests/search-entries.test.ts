@@ -1,7 +1,9 @@
 // @ts-nocheck
 import { describe, it, expect } from "bun:test";
-import { searchEntries, searchEntriesDetailed } from "../extensions/vcc-core/core/search-entries";
+import { searchEntries, searchEntriesDetailed, getTouchedFiles, getFileIndicators } from "../extensions/vcc-core/core/search-entries";
 import type { RenderedEntry } from "../extensions/vcc-core/core/render-entries";
+import { renderMessage } from "../extensions/vcc-core/core/render-entries";
+import { PATH_KEYS, extractPath } from "../extensions/vcc-core/core/tool-args";
 import type { Message } from "@oh-my-pi/pi-ai";
 
 const entries: RenderedEntry[] = [
@@ -881,5 +883,147 @@ describe("literal and CJK query fallbacks", () => {
     const rows: RenderedEntry[] = [{ index: 0, role: "user", summary: "确定！" }];
     const messages: Message[] = [{ role: "user", content: "确定！" } as any];
     expect(searchEntriesDetailed(rows, messages, "！").hits).toHaveLength(1);
+  });
+});
+
+// The retry union deduped the literal pass against an ALREADY-CAPPED first
+// pass, so when the first 50 regex hits also matched the literal reading,
+// every literal-only match sat past position 50 of the literal pass and was
+// sliced right back off — making the union a no-op while still reporting the
+// truncated total as if those hits had been returned.
+describe("searchEntriesDetailed: literal-retry union survives the cap", () => {
+  // `log\d` reads as the regex "log + digit" (the common case) and as the
+  // literal string "log\d" (what a user pasting a log pattern means).
+  const QUERY = "log\\d";
+  const build = () => {
+    const rows: RenderedEntry[] = [];
+    const messages: Message[] = [];
+    // 0-59 match BOTH readings
+    for (let i = 0; i < 60; i++) {
+      rows.push({ index: i, role: "user", summary: `entry ${i} log5 and log\\d` });
+      messages.push({ role: "user", content: `entry ${i} log5 and log\\d` } as any);
+    }
+    // 60-109 match ONLY the literal reading
+    for (let i = 60; i < 110; i++) {
+      rows.push({ index: i, role: "user", summary: `entry ${i} log\\d` });
+      messages.push({ role: "user", content: `entry ${i} log\\d` } as any);
+    }
+    return { rows, messages };
+  };
+
+  it("returns literal-only hits that live past position 50 of the literal pass", () => {
+    const { rows, messages } = build();
+    const result = searchEntriesDetailed(rows, messages, QUERY);
+    expect(result.hits.length).toBe(50);
+    expect(result.hits.some((hit) => hit.index >= 60)).toBe(true);
+  });
+
+  it("reports the distinct-match total under either reading", () => {
+    const { rows, messages } = build();
+    const result = searchEntriesDetailed(rows, messages, QUERY);
+    expect(result.totalBeforeCap).toBe(110);
+    expect(result.truncated).toBe(true);
+  });
+
+  it("still caps the non-backslash path", () => {
+    const { rows, messages } = build();
+    const result = searchEntriesDetailed(rows, messages, "entry");
+    expect(result.hits.length).toBe(50);
+    expect(result.truncated).toBe(true);
+  });
+
+  it("still reports no hits when neither reading matches", () => {
+    const rows: RenderedEntry[] = [{ index: 0, role: "user", summary: "nothing here" }];
+    const messages: Message[] = [{ role: "user", content: "nothing here" } as any];
+    const result = searchEntriesDetailed(rows, messages, "C:\\temp\\build.log");
+    expect(result.hits).toHaveLength(0);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("honours an explicit tuning cap on the union", () => {
+    const { rows, messages } = build();
+    const result = searchEntriesDetailed(rows, messages, QUERY, { cap: 7 });
+    expect(result.hits.length).toBe(7);
+    expect(result.truncated).toBe(true);
+  });
+});
+
+// `fullText` -> `toolCallArgsText` had the same unguarded `.filter(part =>
+// part.type === "toolCall")` as renderMessage, so a session with one null
+// content part threw straight out of the vcc_recall tool.
+describe("searchEntriesDetailed: search text tolerates a malformed content part", () => {
+  const malformed = (content: unknown): Message =>
+    ({ role: "assistant", content }) as unknown as Message;
+
+  it("still indexes tool-call arguments alongside a null part", () => {
+    const rows: RenderedEntry[] = [
+      { index: 0, role: "user", summary: "unrelated" },
+      { index: 1, role: "assistant", summary: "" },
+    ];
+    const messages: Message[] = [
+      { role: "user", content: "unrelated" } as Message,
+      malformed([null, { type: "toolCall", name: "Write", arguments: { path: "/repo/needle.ts", content: "x" } }]),
+    ];
+    const result = searchEntriesDetailed(rows, messages, "needle");
+    expect(result.hits.map((hit) => hit.index)).toEqual([1]);
+  });
+
+  it("does not throw when every part is malformed", () => {
+    const rows: RenderedEntry[] = [{ index: 0, role: "assistant", summary: "" }];
+    const messages: Message[] = [malformed([null, "stray"])];
+    expect(() => searchEntriesDetailed(rows, messages, "anything")).not.toThrow();
+  });
+
+  // The non-array leg of the same guard: a truthy non-array content reached
+  // `content.filter` and threw out of the vcc_recall tool (which has no catch).
+  it("does not throw on a truthy non-array content", () => {
+    const rows: RenderedEntry[] = [{ index: 0, role: "user", summary: "" }];
+    for (const bad of [{}, 42, true, { type: "text" }]) {
+      expect(() => searchEntriesDetailed(rows, [malformed(bad)], "anything")).not.toThrow();
+    }
+  });
+
+  // `name` is not guaranteed to be a string in a persisted line, and
+  // `42?.toLowerCase()` throws where every other tool-name read in the file
+  // coerces.
+  it("does not throw on a non-string tool name", () => {
+    const rows: RenderedEntry[] = [{ index: 0, role: "assistant", summary: "" }];
+    const calls = [malformed([{ type: "toolCall", name: 42, arguments: { path: "a.ts" } }])];
+    expect(() => searchEntriesDetailed(rows, calls, "a.ts")).not.toThrow();
+    expect(() => searchEntriesDetailed(rows, calls, "anything")).not.toThrow();
+  });
+
+  it("getFileIndicators tolerates non-array content and non-string names", () => {
+    for (const bad of [{}, 42, true, null, "str"]) {
+      expect(getFileIndicators(malformed(bad))).toEqual([]);
+    }
+    expect(() => getFileIndicators(malformed([{ type: "toolCall", name: 42 }]))).not.toThrow();
+  });
+});
+
+// The touched index and the search hit index must name the same file when both
+// spellings are present; two divergent literal arrays made them disagree.
+describe("path key order is a single source", () => {
+  const bothSpellings = [
+    // isContentBearing() gates the touched index on the call carrying content.
+    { type: "toolCall", name: "Write", arguments: { filePath: "/w/camel", file_path: "/w/snake", path: "/w/path", content: "x" } },
+  ];
+  // `as unknown as Message` is deliberate: the host Message union forbids
+  // carrying two spellings of the same path key in one arguments object.
+  const message = { role: "assistant", content: bothSpellings } as unknown as Message;
+
+  it("extractPath prefers the first key of PATH_KEYS", () => {
+    expect(PATH_KEYS[0]).toBe("path");
+    expect(extractPath(bothSpellings[0].arguments)).toBe("/w/path");
+    expect(extractPath({ filePath: "/w/camel", file_path: "/w/snake" })).toBe("/w/snake");
+  });
+
+  it("agrees with the touched index", () => {
+    const rendered = [renderMessage(message, 0)];
+    const touched = getTouchedFiles([message], rendered);
+    expect(touched.map((t) => t.path)).toEqual([
+      extractPath(bothSpellings[0].arguments) as string,
+    ]);
+    expect(rendered[0].files).toEqual([extractPath(bothSpellings[0].arguments) as string]);
   });
 });

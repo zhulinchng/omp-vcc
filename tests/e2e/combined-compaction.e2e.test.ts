@@ -67,6 +67,32 @@ function makeEvent(branchEntries: any[], customInstructions?: string, tokensBefo
   };
 }
 
+// The host ALWAYS emits `session_compact` for a compaction it accepted; a bare
+// `session_before_compact` with no commit is unreachable. The hook treats such
+// a still-pending attempt as uncommitted and rolls its stats row back at the
+// next attempt (hook.ts rollbackPendingStats). Accumulating tests must commit
+// each attempt, and the entry must carry the same `{summary, firstKeptEntryId,
+// details}` triple — key order included — or `ownsCompaction` reads false.
+const commitCompaction = (
+  compact: (event: any, ctx: any) => Promise<unknown>,
+  res: any,
+  ctx: any,
+  tokensBefore: number,
+  tokensAfter = 25000,
+) =>
+  compact({
+    type: "session_compact",
+    fromExtension: true,
+    compactionEntry: {
+      id: "committed",
+      tokensBefore,
+      tokensAfter,
+      summary: res?.compaction?.summary,
+      firstKeptEntryId: res?.compaction?.firstKeptEntryId,
+      details: res?.compaction?.details,
+    },
+  }, ctx);
+
 beforeAll(() => {
   isolated = createIsolatedOmpDir();
 });
@@ -90,11 +116,12 @@ describe("combined-compaction E2E — usual sequential and additive", () => {
   test("manual VCC keep:1 then second VCC on grown history both succeed (sequential)", async () => {
     writeFileSync(isolated.configPath, JSON.stringify({ overrideDefaultCompaction: true, vccEnabled: true, smartKeepTail: false, debug: true }));
     process.env.OMP_VCC_CONFIG_PATH = isolated.configPath;
-    const { pi, ctx, getBefore } = createMockPi();
+    const { pi, ctx, getBefore, getCompact } = createMockPi();
     registerBeforeCompactHook(pi);
     const entries1 = buildSession({ turns: 5, charsPerTurn: 700 });
     const r1: any = await getBefore()(makeEvent(entries1, OMP_VCC_COMPACT_INSTRUCTION, 90000), ctx);
     expect(r1.compaction).toBeDefined();
+    await commitCompaction(getCompact(), r1, ctx, 90000);
     expect(r1.compaction.summary.length).toBeGreaterThan(100);
     const kept1 = r1.compaction.firstKeptEntryId as string;
     expect(kept1).toBeTruthy();
@@ -106,6 +133,7 @@ describe("combined-compaction E2E — usual sequential and additive", () => {
     }
     const r2: any = await getBefore()(makeEvent(entries2, OMP_VCC_COMPACT_INSTRUCTION, 90000), ctx);
     expect(r2.compaction).toBeDefined();
+    await commitCompaction(getCompact(), r2, ctx, 90000);
     expect(r2.compaction.details.version).toBe(2);
     expect(r2.compaction.firstKeptEntryId).not.toBe(kept1);
     expect(getCompactionHistory(pi).length).toBe(2);
@@ -159,11 +187,14 @@ describe("combined-compaction E2E — usual sequential and additive", () => {
     registerBeforeCompactHook(piB);
     const entries = buildSession({ turns: 5 });
     const ctx: any = { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } };
-    await (piA as any)["session_before_compact"](makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 90000), ctx);
-    await (piA as any)["session_before_compact"](makeEvent([...entries, comp("c1", (await (piA as any)["session_before_compact"] ? "" : ""))], OMP_VCC_COMPACT_INSTRUCTION, 90000), ctx);
+    const rA1: any = await (piA as any)["session_before_compact"](makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 90000), ctx);
+    await commitCompaction((piA as any)["session_compact"], rA1, ctx, 90000);
+    const rA2: any = await (piA as any)["session_before_compact"](makeEvent([...entries, comp("c1", rA1.compaction.firstKeptEntryId)], OMP_VCC_COMPACT_INSTRUCTION, 90000), ctx);
+    await commitCompaction((piA as any)["session_compact"], rA2, ctx, 90000);
     // Simpler: just check each pi's history via getCompactionHistory isolation using the earlier two manual VCCs on piA vs piB single
     const entries2 = buildSession({ turns: 5 });
-    await (piB as any)["session_before_compact"](makeEvent(entries2, OMP_VCC_COMPACT_INSTRUCTION, 90000), ctx);
+    const rB: any = await (piB as any)["session_before_compact"](makeEvent(entries2, OMP_VCC_COMPACT_INSTRUCTION, 90000), ctx);
+    await commitCompaction((piB as any)["session_compact"], rB, ctx, 90000);
     const histA = getCompactionHistory(piA);
     const histB = getCompactionHistory(piB);
     expect(histA.length).toBeGreaterThanOrEqual(1);
@@ -235,9 +266,11 @@ describe("combined-compaction E2E — edge cases", () => {
     const entries1 = buildSession({ turns: 4 });
     const r1: any = await getBefore()(makeEvent(entries1, OMP_VCC_COMPACT_INSTRUCTION, 90000), ctx);
     expect(r1.compaction).toBeDefined();
+    await commitCompaction(getCompact(), r1, ctx, 90000);
     const entries2: any[] = [...entries1, comp("c1", r1.compaction.firstKeptEntryId), msg("uX", "user", "redis cache hook"), msg("aX", "assistant", "inject")];
     const r2: any = await getBefore()(makeEvent(entries2, OMP_VCC_COMPACT_INSTRUCTION, 80000), ctx);
     expect(r2.compaction).toBeDefined();
+    await commitCompaction(getCompact(), r2, ctx, 80000);
     const history = getCompactionHistory(pi);
     expect(history.length).toBe(2);
     // recall scope still works (via direct searchEntriesDetailed parity, not via tool)

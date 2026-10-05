@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from "bun:test";
-import { formatRecallOutput, formatTouchedOutput } from "../extensions/vcc-core/core/format-recall";
+import { formatRecallOutput, formatTouchedOutput, normalizePageNumber } from "../extensions/vcc-core/core/format-recall";
 import type { RenderedEntry } from "../extensions/vcc-core/core/render-entries";
 
 describe("formatRecallOutput", () => {
@@ -46,5 +46,46 @@ describe("formatTouchedOutput pagination", () => {
   it("pages within range", () => {
     const touched = Array.from({ length: 7 }, (_, i) => ({ path: `/tmp/f${i}.ts`, entries: [{ index: i, toolName: "Read" }] }));
     expect(formatTouchedOutput(touched, 2)).toContain("Page 2/2 (7 total files)");
+  });
+});
+
+// A non-numeric page made Math.floor NaN and Math.max(1, NaN) NaN, so the
+// out-of-range guard compared false, slice(NaN, NaN) was empty, and the header
+// still printed "Page NaN/N" over a blank body.
+describe("normalizePageNumber", () => {
+  it("accepts only finite numeric input", () => {
+    expect(normalizePageNumber(3)).toBe(3);
+    expect(normalizePageNumber(3.9)).toBe(3);
+    expect(normalizePageNumber(0)).toBe(1);
+    expect(normalizePageNumber(-2)).toBe(1);
+    expect(normalizePageNumber("2")).toBe(1);
+    expect(normalizePageNumber({ page: 1 })).toBe(1);
+    expect(normalizePageNumber(Number.NaN)).toBe(1);
+    expect(normalizePageNumber(Number.POSITIVE_INFINITY)).toBe(1);
+    expect(normalizePageNumber(undefined)).toBe(1);
+  });
+});
+
+describe("formatTouchedOutput: non-numeric page", () => {
+  const touched = Array.from({ length: 7 }, (_, i) => ({ path: `/tmp/f${i}.ts`, entries: [{ index: i, toolName: "Read" }] }));
+  // `as unknown as number` is deliberate: this test exists precisely because a
+  // provider can deliver a string where the schema declares a number.
+  const asPage = (v: unknown): number => v as unknown as number;
+
+  it("falls back to page 1 instead of emitting NaN", () => {
+    const out = formatTouchedOutput(touched, asPage("two"));
+    expect(out).not.toContain("NaN");
+    expect(out).toContain("Page 1/2 (7 total files)");
+    expect(out).toContain("f0.ts");
+  });
+
+  it("falls back for NaN, Infinity and a fractional page above the range", () => {
+    expect(formatTouchedOutput(touched, asPage(Number.NaN))).toContain("Page 1/2");
+    expect(formatTouchedOutput(touched, asPage(Number.POSITIVE_INFINITY))).toContain("Page 1/2");
+    expect(formatTouchedOutput(touched, asPage(-3))).toContain("Page 1/2");
+  });
+
+  it("still reports a genuinely out-of-range numeric page", () => {
+    expect(formatTouchedOutput(touched, 9)).toContain("Page 9 is outside the available range 1-2");
   });
 });

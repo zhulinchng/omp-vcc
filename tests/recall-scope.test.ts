@@ -41,3 +41,21 @@ describe("repeated selector tokens", () => {
     expect(parseRecallMode("auth mode:file mode:file")).toEqual({ mode: "file", text: "auth" });
   });
 });
+
+// `active` is advertised in the vcc_recall `scope` enum and mapped to
+// `lineage`, but the command parser only stripped `lineage|all` — so the token
+// stayed in the query text and `/vcc-recall auth scope:active` searched for
+// the literal string "auth scope:active".
+describe("scope:active aliases the active lineage", () => {
+  it("parses and strips the active alias", () => {
+    expect(parseRecallScope("auth scope:active")).toEqual({ scope: "lineage", text: "auth" });
+  });
+
+  it("parses it case-insensitively and strips every occurrence", () => {
+    expect(parseRecallScope("auth scope:ACTIVE scope:active")).toEqual({ scope: "lineage", text: "auth" });
+  });
+
+  it("leaves an unknown scope token in the query text", () => {
+    expect(parseRecallScope("auth scope:branch")).toEqual({ scope: "lineage", text: "auth scope:branch" });
+  });
+});

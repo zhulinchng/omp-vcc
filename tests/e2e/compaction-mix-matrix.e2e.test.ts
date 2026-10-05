@@ -99,6 +99,39 @@ function writeTempSession(entries: any[]): string {
   return file;
 }
 
+// Real hosts always emit `session_compact` for a compaction they accepted: the
+// plugin marks the attempt committed there, and rolls a still-pending attempt
+// back when the next one starts (the host aborted or failed it). Fixtures must
+// fire the commit with the SAME ctx for every compaction they accept, or the
+// stats history they assert is not what a live host produces.
+interface AcceptedCompaction {
+  compaction: { summary: unknown; firstKeptEntryId: unknown; details: unknown };
+}
+interface CompactHost {
+  ctx: unknown;
+  getCompact: () => (event: unknown, ctx: unknown) => unknown;
+}
+
+async function commitCompaction(
+  cap: CompactHost,
+  res: AcceptedCompaction,
+  tokensBefore: number,
+  ctx: unknown = cap.ctx,
+): Promise<void> {
+  await cap.getCompact()({
+    type: "session_compact",
+    fromExtension: true,
+    compactionEntry: {
+      id: "committed",
+      tokensBefore,
+      tokensAfter: 25000,
+      summary: res.compaction.summary,
+      firstKeptEntryId: res.compaction.firstKeptEntryId,
+      details: res.compaction.details,
+    },
+  }, ctx);
+}
+
 beforeAll(() => { isolated = createIsolatedOmpDir(); });
 afterAll(() => { try { isolated.cleanup(); } catch {} });
 beforeEach(() => {
@@ -132,6 +165,7 @@ describe("mix-matrix — omp-vcc command matrix via real handlers", () => {
       const ci = typeof opts === "string" ? opts : opts?.customInstructions;
       const r: any = await before(makeEvent(live, ci, 90000), cap.ctx);
       if (!r || !r.compaction) throw new Error("Compaction cancelled");
+      await commitCompaction(cap, r, 90000);
     };
 
     // /omp-vcc default
@@ -237,6 +271,7 @@ describe("mix-matrix — omp-vcc command matrix via real handlers", () => {
       const ci = typeof opts === "string" ? opts : opts?.customInstructions;
       const r: any = await before(makeEvent(live, ci, tokens), cap.ctx);
       if (!r || !r.compaction) throw new Error("Compaction cancelled");
+      await commitCompaction(cap, r, tokens);
     };
     await cap.commands["omp-vcc"].handler("", { ...cap.ctx, compact: runCompactWith(entries) });
     await cap.commands["omp-vcc"].handler("keep:2", { ...cap.ctx, compact: runCompactWith(entries) });
@@ -265,6 +300,7 @@ describe("mix-matrix — omp-vcc command matrix via real handlers", () => {
     // isolated orphan session also recovers via hook directly
     const r: any = await before(makeEvent(buildOrphanSession() as any[], OMP_VCC_COMPACT_INSTRUCTION, 90000), cap.ctx);
     expect(r.compaction).toBeDefined();
+    await commitCompaction(cap, r, 90000);
   });
 });
 
@@ -280,6 +316,7 @@ describe("mix-matrix — 3-pass VCC chain with growth and keep rotation", () => 
     const r1: any = await before(makeEvent(entries1, OMP_VCC_COMPACT_INSTRUCTION, 90000), cap.ctx);
     expect(r1.compaction).toBeDefined();
     expect(r1.compaction.summary.length).toBeGreaterThan(100);
+    await commitCompaction(cap, r1, 90000);
     const kept1 = r1.compaction.firstKeptEntryId as string;
     expect(kept1).toBeTruthy();
     expect(getLastCompactionStats(cap.pi)!.keptUserTurns).toBe(1);
@@ -300,6 +337,7 @@ describe("mix-matrix — 3-pass VCC chain with growth and keep rotation", () => 
     expect(r2.compaction.details.version).toBe(2);
     expect(r2.compaction.firstKeptEntryId).not.toBe(kept1);
     expect(getLastCompactionStats(cap.pi)!.requestedKeepUserTurns).toBe(2);
+    await commitCompaction(cap, r2, 90000);
 
     const kept2 = r2.compaction.firstKeptEntryId as string;
     const entries3: any[] = [...entries2, comp("c2", kept2)];
@@ -315,6 +353,7 @@ describe("mix-matrix — 3-pass VCC chain with growth and keep rotation", () => 
       signal: new AbortController().signal,
     }, cap.ctx);
     expect(r3.compaction).toBeDefined();
+    await commitCompaction(cap, r3, 90000);
     expect(getCompactionHistory(cap.pi).length).toBe(3);
     expect(r3.compaction.summary.length).toBeLessThan(r1.compaction.summary.length + r2.compaction.summary.length + 5000);
     // Recall hint survives chaining exactly once (no per-cycle duplication).
@@ -334,6 +373,7 @@ describe("mix-matrix — VCC + snapcompact multi-turn multi-attempt", () => {
     const entries1 = buildSession({ turns: 5, charsPerTurn: 500 }) as any[];
     const r1: any = await before(makeEvent(entries1, OMP_VCC_COMPACT_INSTRUCTION, 90000), cap.ctx);
     expect(r1.compaction).toBeDefined();
+    await commitCompaction(cap, r1, 90000);
     const kept1 = r1.compaction.firstKeptEntryId as string;
 
     // grow 10 turns, host takes explicit snapcompact (hook voids)
@@ -353,6 +393,7 @@ describe("mix-matrix — VCC + snapcompact multi-turn multi-attempt", () => {
     expect(r3.compaction).toBeDefined();
     const ids = postSnap.map((e: any) => e.id);
     expect(ids.indexOf(r3.compaction.firstKeptEntryId)).toBeGreaterThan(ids.indexOf("c-snap"));
+    await commitCompaction(cap, r3, 90000);
     expect(getCompactionHistory(cap.pi).length).toBe(2);
   });
 
@@ -377,6 +418,7 @@ describe("mix-matrix — VCC + snapcompact multi-turn multi-attempt", () => {
     const full = buildSession({ turns: 5, charsPerTurn: 500 }) as any[];
     const r1: any = await before(makeEvent(full, OMP_VCC_COMPACT_INSTRUCTION, 90000), cap.ctx);
     expect(r1.compaction).toBeDefined();
+    await commitCompaction(cap, r1, 90000);
 
     // overflow retry on too-few session falls through to host (void, not cancel)
     const few = buildTooFewSession() as any[];
@@ -387,7 +429,9 @@ describe("mix-matrix — VCC + snapcompact multi-turn multi-attempt", () => {
       grown.push(msg(`r_${i}`, "user", "retry follow-up ".repeat(12)));
       grown.push(msg(`s_${i}`, "assistant", "reply ".repeat(12)));
     }
-    expect((await before(makeEvent(grown, OMP_VCC_COMPACT_INSTRUCTION, 90000), cap.ctx))?.compaction).toBeDefined();
+    const r2: any = await before(makeEvent(grown, OMP_VCC_COMPACT_INSTRUCTION, 90000), cap.ctx);
+    expect(r2?.compaction).toBeDefined();
+    await commitCompaction(cap, r2, 90000);
     expect(getCompactionHistory(cap.pi).length).toBe(2);
   });
 });

@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll } from "bun:test";
 import { existsSync, unlinkSync, writeFileSync } from "fs";
-import { registerBeforeCompactHook, OMP_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, getCompactionHistory, clearCompactionHistoryForTests, OVERSIZED_TAIL_FACTOR, MIN_SMART_TAIL_TOKENS, MAX_SMART_TAIL_TOKENS } from "../../extensions/vcc-core/hook";
+import { registerBeforeCompactHook, OMP_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, getCompactionHistory, clearCompactionHistoryForTests, MIN_SMART_TAIL_TOKENS, MAX_SMART_TAIL_TOKENS } from "../../extensions/vcc-core/hook";
 import { buildSession, msg, comp } from "./support/session-builder";
 import { createIsolatedOmpDir } from "./support/e2e-harness";
 
@@ -177,7 +177,6 @@ describe("auto-compaction E2E — override, vccEnabled, smartKeep, oversized_tai
         expect(["oversized_tail", "no_anchor"]).toContain(oversized.budgetCut);
       }
     }
-    expect(OVERSIZED_TAIL_FACTOR).toBe(2.5);
   });
 
   test("budget rescue snaps off toolResult boundary", async () => {

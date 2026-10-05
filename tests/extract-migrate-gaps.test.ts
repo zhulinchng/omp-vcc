@@ -236,6 +236,33 @@ describe("migrateStalePluginEntries gaps", () => {
     expect(lstatOk(join(nm, "omp-vcc"))).toBe(true);
   });
 
+  // The `isHistoric` disjunct `|| k !== CURRENT` was true for every scoped key
+  // that reached the block, so the HISTORIC allowlist never applied and any
+  // aliased live install was deleted on EVERY extension load — a fork the user
+  // deliberately installed under a different link key.
+  test("an aliased live install of this plugin is not deleted", () => {
+    const { home, pluginsDir, nm } = mkHome();
+    writeLock(pluginsDir, { plugins: { "@acme/omp-vcc": { v: 1 } } });
+    // The link key differs from the package name inside the target: exactly the
+    // shape the tautology classified as historic.
+    linkTarget(nm, home, "@acme/omp-vcc", "omp-vcc");
+    expect(migrateStalePluginEntries(home)).toBe("no-stale");
+    expect(lstatOk(join(nm, "@acme/omp-vcc"))).toBe(true);
+    const lock = JSON.parse(fsSync.readFileSync(join(pluginsDir, "omp-plugins.lock.json"), "utf8"));
+    expect(Object.keys(lock.plugins)).toEqual(["@acme/omp-vcc"]);
+  });
+
+  test("the plugin's own historic aliases are still removed", () => {
+    const { home, pluginsDir, nm } = mkHome();
+    writeLock(pluginsDir, { plugins: { "@zhu/omp-vcc": { v: 1 }, "@zhulinchng/omp-vcc": { v: 1 } } });
+    linkTarget(nm, home, "@zhu/omp-vcc", "omp-vcc");
+    linkTarget(nm, home, "@zhulinchng/omp-vcc", "omp-vcc");
+    const out = migrateStalePluginEntries(home);
+    expect(out).toContain("migrated");
+    expect(lstatOk(join(nm, "@zhu/omp-vcc"))).toBe(false);
+    expect(lstatOk(join(nm, "@zhulinchng/omp-vcc"))).toBe(false);
+  });
+
   test("scoped duplicate loser is removed with its scope dir", () => {
     const { home, pluginsDir, nm } = mkHome();
     writeLock(pluginsDir, { plugins: { "@zhu/omp-vcc": { v: 1 }, "@old/omp-vcc": { v: 1 } } });

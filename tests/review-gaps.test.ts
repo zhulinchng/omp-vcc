@@ -1,11 +1,11 @@
 // @ts-nocheck
 import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll } from "bun:test";
-import { existsSync, unlinkSync, writeFileSync, mkdtempSync, rmSync } from "fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { buildOwnCut, registerBeforeCompactHook, getLastCompactionStats } from "../extensions/vcc-core/hook";
 import { loadAllMessages } from "../extensions/vcc-core/core/load-messages";
-import { loadSettings } from "../extensions/vcc-core/core/settings";
+import { loadSettings, loadSettingsWithPluginOverlay } from "../extensions/vcc-core/core/settings";
 import extension from "../extensions/main.ts";
 
 let tmpDir: string;
@@ -157,12 +157,28 @@ describe("review gaps: approval tier", () => {
 });
 
 describe("review gaps: manifest overlay", () => {
-  test("loadSettings overlays ctx.settings", () => {
+  test("loadSettings ignores a ctx settings channel — the file is authoritative", () => {
     setConfig({ vccEnabled: true, overrideDefaultCompaction: true, smartKeepTail: true, continueAfterThresholdCompact: true, debug: false });
-    const withCtx = loadSettings({ settings: { get: (k: string) => k === "plugins.@zhulinchng/omp-vcc.debug" ? true : undefined } } as any);
-    expect(withCtx.debug).toBe(true);
+    // Neither host's ExtensionContext exposes `settings` or `config`, so this
+    // channel could never fire. A ctx that stubs one must not change the result.
+    const withCtx = loadSettings({ settings: { get: (k: string) => (k === "plugins.@zhulinchng/omp-vcc.debug" ? true : undefined) } } as any);
+    expect(withCtx.debug).toBe(false);
     const withoutCtx = loadSettings();
     expect(withoutCtx.debug).toBe(false);
+  });
+  test("the host's on-disk store is the overlay that applies", () => {
+    setConfig({ debug: false });
+    const cwd = mkdtempSync(join(tmpdir(), "vcc-manifest-overlay-"));
+    try {
+      mkdirSync(join(cwd, ".omp"), { recursive: true });
+      writeFileSync(
+        join(cwd, ".omp", "plugin-overrides.json"),
+        JSON.stringify({ settings: { "omp-vcc": { debug: true } } }),
+      );
+      expect(loadSettingsWithPluginOverlay({ cwd }).debug).toBe(true);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
   test("loadSettings without ctx returns file", () => {
     setConfig({ vccEnabled: false });

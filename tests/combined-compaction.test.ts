@@ -13,6 +13,7 @@ import {
   buildOwnCut,
   applyTailBudget,
   findBudgetCutIndex,
+  OVERSIZED_TAIL_FACTOR,
   __setHostKindForTests,
 } from "../extensions/vcc-core/hook";
 import { calibrateCharsPerToken } from "../extensions/vcc-core/core/token-estimate";
@@ -305,27 +306,47 @@ describe("combined-compaction: edge cases preserved", () => {
     expect(r2.compaction).toBeDefined();
   });
 
-  test("applyTailBudget at exactly 2.5× boundary does not cut vs +1 does", () => {
-    // Build a session with enough live messages to avoid too_few guard
+  test("applyTailBudget rescues only past maxTokens x OVERSIZED_TAIL_FACTOR", () => {
+    // The tail is [small last user turn, giant assistant reply]. That is the
+    // ONLY shape where the rescue is reachable: with a single giant tail
+    // message `findBudgetCutIndex` crosses exactly AT the user boundary, and
+    // `idx <= tailStart` returns the cut unchanged.
     const base = buildSession(5);
-    // Make the last user turn huge (25000 tokens at 4cpt => 100k chars)
-    const largeContent = "x".repeat(25000 * 4);
-    const entriesAt: any[] = [...base.slice(0, -2), msg("u_last", "user", largeContent), msg("a_last", "assistant", "small")];
-    const cut = buildOwnCut(entriesAt as any, 1);
-    expect(cut.ok).toBe(true);
-    if (cut.ok) {
-      const atBoundary = applyTailBudget(entriesAt as any, cut, { maxTokens: 10000, charsPerToken: 4 });
-      expect(typeof atBoundary.ok).toBe("boolean");
-      // Now oversized by +1 char -> should trigger budgetCut
-      const oversizedEntries: any[] = [...base.slice(0, -2), msg("u_last2", "user", largeContent + "x"), msg("a_last2", "assistant", "small")];
-      const cut2 = buildOwnCut(oversizedEntries as any, 1);
-      expect(cut2.ok).toBe(true);
-      if (cut2.ok) {
-        const over = applyTailBudget(oversizedEntries as any, cut2, { maxTokens: 10000, charsPerToken: 4 });
-        expect(typeof over.ok).toBe("boolean");
-        // At boundary no budgetCut, over should have budgetCut when oversized
-        // We don't assert exact equality because tailTokens calculation may differ, but at least both are valid
-      }
+    const head = base.slice(0, -2);
+    const tailWith = (chars: number) => [
+      ...head,
+      msg("u_last", "user", "prompt"),
+      msg("a_last", "assistant", "x".repeat(chars)),
+    ];
+
+    const MAX_TOKENS = 10_000;
+    const CPT = 4;
+    // Derived, not pinned: retuning the factor must move this boundary.
+    const boundaryChars = Math.floor(MAX_TOKENS * OVERSIZED_TAIL_FACTOR * CPT);
+
+    const under: any[] = tailWith(boundaryChars - 1000);
+    const underCut = buildOwnCut(under as any, 1);
+    expect(underCut.ok).toBe(true);
+    if (underCut.ok) {
+      const res = applyTailBudget(under as any, underCut, { maxTokens: MAX_TOKENS, charsPerToken: CPT });
+      expect(res.ok).toBe(true);
+      expect(res.budgetCut).toBeUndefined();
+      expect(res.firstKeptEntryId).toBe("u_last");
+      expect(res.keptUserTurns).toBe(1);
+    }
+
+    const over: any[] = tailWith(boundaryChars + 4);
+    const overCut = buildOwnCut(over as any, 1);
+    expect(overCut.ok).toBe(true);
+    if (overCut.ok) {
+      const res = applyTailBudget(over as any, overCut, { maxTokens: MAX_TOKENS, charsPerToken: CPT });
+      expect(res.ok).toBe(true);
+      expect(res.budgetCut).toBe("oversized_tail");
+      // The rescue re-cuts to the token budget, so the giant reply is
+      // summarized away rather than kept.
+      expect(res.firstKeptEntryId).toBe("a_last");
+      expect(res.keptUserTurns).toBe(0);
+      expect(res.compactAll).toBe(false);
     }
   });
 

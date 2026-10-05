@@ -264,13 +264,19 @@ export function expandEntryFile(
   offset?: number,
   limit?: number,
 ): string {
-  const { rawMessages } = loadAllMessages(sessionFile, true);
+  const { rendered, rawMessages } = loadAllMessages(sessionFile, true);
 
-  if (entryIndex < 0 || entryIndex >= rawMessages.length) {
+  // `rendered` is built by loadAllMessages, which advances its global index for
+  // every `type: "message"` entry but only pushes when the entry actually
+  // carries a `message`. A message entry without one therefore desynchronises
+  // `rendered[i]` from `RenderedEntry.index`, so the array position is NOT the
+  // `#N` ref — resolve by global index instead.
+  const pos = entryIndex < 0 ? -1 : rendered.findIndex((m) => m.index === entryIndex);
+  if (pos < 0) {
     return `Entry #${entryIndex} not found in session history.`;
   }
 
-  const msg = rawMessages[entryIndex];
+  const msg = rawMessages[pos];
   const content = msg.content as unknown[];
   const calls = findContentBearingCalls(content);
 
@@ -365,10 +371,11 @@ export function expandEntry(
   limit?: number,
 ): string {
   const { rendered } = loadAllMessages(sessionFile, true);
-  if (entryIndex < 0 || entryIndex >= rendered.length) {
+  const pos = entryIndex < 0 ? -1 : rendered.findIndex((m) => m.index === entryIndex);
+  if (pos < 0) {
     return `Entry #${entryIndex} not found in session history.`;
   }
-  const e = rendered[entryIndex];
+  const e = rendered[pos];
   const header = `#${entryIndex} [${e.role}]`;
   const body = e.summary;
   if (full) return `${header}\n\n${body}`;

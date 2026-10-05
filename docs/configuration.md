@@ -31,11 +31,12 @@ omp config set plugins."@zhulinchng/omp-vcc".overrideDefaultCompaction false
 See harness impact for when overrideDefaultCompaction defers to host methodOrder: [harness.md §8](harness.md#8-working-with-existing-compaction-strategies) and [setup.md](setup.md#working-with-existing-compaction-strategies) for practical toggling.
 
 
-Runtime bridge: `loadSettingsWithPluginOverlay(ctx)` reads the valid primary file, then overlays the host's plugin-settings store. That store is read **straight off disk** (`<pluginsDir>/omp-plugins.lock.json` → `settings["omp-vcc"]`, plus the project `.omp/plugin-overrides.json`), because the documented `getPluginSettings("omp-vcc", ctx.cwd)` module bridge cannot resolve at runtime from a plugin install — the package is ESM-only and its `./*` export maps to a source file, so `require()` never finds `extensibility/plugins`. The module bridge is still tried first when a host does expose it. Older `ctx.settings`/`ctx.config` bridges remain supported for **namespaced** keys (`plugins.@zhulinchng/omp-vcc.<key>`, `plugins.omp-vcc.<key>`, `omp-vcc.<key>`) — a bare `<key>` probe is deliberately not used, so an unrelated global host setting of the same name cannot hijack an omp-vcc key; an out-of-contract overlay value falls through to the file value instead of resetting it to the default. An invalid primary blocks fallback and uses normalized defaults with one warning per path/session. File remains the restart source of truth; `/settings` takes effect immediately. Numeric and boolean values are bounded and malformed values fall back to the next source (file, then defaults). Unknown keys are dropped from the effective settings object.
+Runtime bridge: `loadSettingsWithPluginOverlay(ctx)` reads the valid primary file, then overlays the host's plugin-settings store. That store is read **straight off disk** (`<pluginsDir>/omp-plugins.lock.json` → `settings["omp-vcc"]`, plus the project `plugin-overrides.json`), because the documented `getPluginSettings("omp-vcc", ctx.cwd)` module bridge cannot resolve at runtime from a plugin install: the package DOES expose an explicit `./extensibility/plugins` subpath, but the plugin's install directory has no `node_modules` entry for `@oh-my-pi/pi-coding-agent`, so every resolution base the plugin can reach returns MODULE_NOT_FOUND and the bridge never fires. The module bridge is still tried first when a host does expose it. The only other tier is the on-disk store: neither host's `ExtensionContext` exposes `settings` or `config`, so there is no ctx-provided overlay to fall back to.
 
 ```mermaid
 flowchart TB
-  CTX["public plugin settings\ngetPluginSettings('omp-vcc', ctx.cwd)\nlegacy ctx.settings/config bridge"] --> OVERLAY["loadSettingsWithPluginOverlay(ctx)\nread file → overlay host settings"]
+  CTX["host plugin settings\ngetPluginSettings('omp-vcc', ctx.cwd)\n(module bridge; unreachable from a plugin install)"] --> OVERLAY["loadSettingsWithPluginOverlay(ctx)\nread file → overlay host store"]
+  STORE["<configRoot>/plugins/omp-plugins.lock.json\n(<configRoot>/profiles/<name>/plugins\nunder OMP_PROFILE)\n+ <cwd>/{.omp,.claude,.codex,.gemini}/\nplugin-overrides.json (first wins)"] --> OVERLAY
   FILE["~/.omp/omp-vcc/config.json\nXDG file"] --> OVERLAY
   OVERLAY --> MERGED["normalized PiVccSettings\n12 documented settings"]
   MERGED --> HOOK["hook.ts reads per-compaction\nin session_before_compact handler"]
@@ -110,7 +111,8 @@ Edit file directly or via `omp config`; `scaffoldSettings()` auto-creates missin
 ## `/vcc-config`
 
 Shows the effective configuration without leaving the TUI — same merge as
-`loadSettings` (defaults ← config file ← `/settings` host overlay), rendered by
+`loadSettingsWithPluginOverlay` (defaults ← config file ← host plugin-settings store),
+rendered by
 `formatVccConfigCard` (`hook.ts`) from `loadSettingsWithSources(ctx)`:
 
 ```text
@@ -126,8 +128,10 @@ Source: file ~/.omp/omp-vcc/config.json
   `Source: fallback file <path>` (XDG/legacy fallback read),
   `No config file found — showing defaults.`, `Config file unparseable — showing defaults.`
 - Source tags: `(file)` key present in the parsed file (even when it equals the
-  default), `(host overlay)` a `/settings` toggle is active, `(default)` fallback.
-  Use this to confirm a `/settings` toggle took effect without restart.
+  default), `(host overlay)` a key came from the host plugin-settings store
+  (`<pluginsDir>/omp-plugins.lock.json` or a project `plugin-overrides.json`),
+  `(default)` fallback. Use this to confirm a `/settings` toggle took effect
+  without restart.
 - Arguments are ignored — `/vcc-config anything` shows the same card.
 - Read-only: never creates or repairs files (`scaffoldSettings` owns that).
   Delivery is `pi.sendMessage({customType:"vcc-config", display:true})` + a
@@ -202,7 +206,7 @@ omp config list | grep -E "vcc|compaction"
 
 ### `smartKeepTail` (5 k → 25 k)
 
-Resolver `resolveSmartKeepUserTurns({branchEntries, requestedKeepUserTurns:null, explicit:false, smartKeepTail:true, charsPerToken})`:
+Resolver `resolveSmartKeepUserTurns({branchEntries, requestedKeepUserTurns:null, explicit:false, smartKeepTail:true, charsPerToken, live})` (`live` is the prebuilt live window a caller may pass to avoid rebuilding it per candidate):
 
 - `explicit===true` or `smartKeepTail===false` → return `baseKeep` unchanged.
 - `tailTokensForKeep(baseKeep)` (live-window chars incl. `custom_message`) → if `null` (compact-all/cancel/empty-prefix) or `> minTokens 5k` → return base.

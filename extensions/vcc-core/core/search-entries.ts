@@ -4,6 +4,7 @@ import type { RenderedEntry } from "./render-entries";
 import { textOf, thinkingOf, isContentBearing, extractToolCallText, extractToolCallArgsText, clip } from "./content";
 import { scoreToProbability, estimateLikelihoodParams } from "./bayesian-probability.ts";
 import type { RecallMode } from "./recall-scope";
+import { PATH_KEYS } from "./tool-args";
 
 export interface FileMatch {
   path: string;
@@ -362,7 +363,7 @@ const clipLineAroundMatch = (
 };
 
 const filePathFromArgs = (args: Record<string, unknown>): string | undefined =>
-  ["path", "filePath", "file_path", "file"]
+  PATH_KEYS
     .map((key) => args[key])
     .find((value): value is string => typeof value === "string");
 
@@ -462,10 +463,16 @@ const RECALL_TOOL_NAME = "vcc_recall";
  *  bounded once, in aggregate, by TOOL_ARGS_BUDGET. Excludes the recall
  *  tool's own arguments (see RECALL_TOOL_NAME). */
 const toolCallArgsText = (content: Message["content"]): string => {
-  if (!content || typeof content === "string") return "";
+  if (!Array.isArray(content)) return "";
   const raw = content
-    .filter((part) => part.type === "toolCall")
-    .filter((part) => part.name?.toLowerCase() !== RECALL_TOOL_NAME)
+    // A content array may hold a null/non-object element (persisted sessions do
+    // carry them), and `part.type` on it throws. Same guard as the other
+    // text-bearing branches in content.ts / render-entries.ts.
+    .filter((part) => part !== null && typeof part === "object" && part.type === "toolCall")
+    // Coerced, like every other tool-name read in this file: `name` is not
+    // guaranteed to be a string in a persisted line, and `42?.toLowerCase()`
+    // throws.
+    .filter((part) => String(part.name ?? "").toLowerCase() !== RECALL_TOOL_NAME)
     .map((part) => extractToolCallArgsText(part.arguments))
     .filter(Boolean)
     .join("\n");
@@ -490,7 +497,7 @@ const fullText = (msg: Message): string => {
   if ((msg as any).role === "bashExecution") {
     return `${(msg as any).command ?? ""} ${(msg as any).output ?? ""}`;
   }
-  if (msg.role === "toolResult" && msg.toolName?.toLowerCase() === RECALL_TOOL_NAME) {
+  if (msg.role === "toolResult" && String(msg.toolName ?? "").toLowerCase() === RECALL_TOOL_NAME) {
     return "";
   }
   const text = textOf(msg.content);
@@ -507,13 +514,13 @@ const fullText = (msg: Message): string => {
  * k0valik — a pi-vcc derivative.
  */
 export function getFileIndicators(msg: Message): { toolName: string; path: string; lineCount: number }[] {
-  if (!msg?.content || typeof msg.content === "string") return [];
+  if (!Array.isArray(msg?.content)) return [];
   const indicators: { toolName: string; path: string; lineCount: number }[] = [];
   for (const part of msg.content) {
     if (!part || typeof part !== "object" || part.type !== "toolCall") continue;
     const args = part.arguments as Record<string, unknown>;
     if (!isContentBearing(args)) continue;
-    const path = ["path", "filePath", "file_path", "file"]
+    const path = PATH_KEYS
       .map((k) => args[k])
       .find((v): v is string => typeof v === "string")!;
     const totalText = extractToolCallText(args);
@@ -807,14 +814,21 @@ export const searchEntriesDetailed = (
   query?: string,
   tuning?: SearchTuning,
 ): SearchResult => {
-  const result = searchDetailed(entries, messages, query, tuning);
+  const cap = tuning?.cap ?? SEARCH_RESULT_CAP;
+  // Both internal passes run UNCAPPED so the dedup below sees each reading's
+  // true hit set. Capping them first would let the first pass fill all `cap`
+  // slots with hits the literal pass also matches, leaving `literalOnly` empty
+  // and silently dropping every literal-only match — the union became a no-op
+  // in exactly the large-corpus case this retry exists to fix.
+  const uncapped: SearchTuning = { ...tuning, cap: Number.MAX_SAFE_INTEGER };
+  const result = searchDetailed(entries, messages, query, uncapped);
   const rawQuery = query?.trim() ?? "";
-  if (!rawQuery.includes("\\")) return result;
+  if (!rawQuery.includes("\\")) return capHits(result.hits, cap, result.totalBeforeCap);
   const literal = escapeRegex(rawQuery);
-  if (literal === rawQuery) return result;
-  const retry = searchDetailed(entries, messages, literal, tuning);
-  if (retry.hits.length === 0) return result;
-  if (result.hits.length === 0) return retry;
+  if (literal === rawQuery) return capHits(result.hits, cap, result.totalBeforeCap);
+  const retry = searchDetailed(entries, messages, literal, uncapped);
+  if (retry.hits.length === 0) return capHits(result.hits, cap, result.totalBeforeCap);
+  if (result.hits.length === 0) return capHits(retry.hits, cap, retry.totalBeforeCap);
 
   // Literal-only hits must SURVIVE the cap. Appending them after an already
   // capped first pass put them at position 51+, where capHits sliced them right
@@ -823,7 +837,6 @@ export const searchEntriesDetailed = (
   // dropping the lowest-ranked first-pass hits instead.
   const firstPass = new Set(result.hits.map((hit) => hit.index));
   const literalOnly = retry.hits.filter((hit) => !firstPass.has(hit.index));
-  const cap = tuning?.cap ?? SEARCH_RESULT_CAP;
   // Reserve at most HALF the cap. An unclamped reservation is fine while the
   // literal pass is small, but when literal-only hits alone reach the cap it
   // leaves `keptFirstPass` empty and silently discards every ordinary-word
@@ -834,9 +847,10 @@ export const searchEntriesDetailed = (
   // `keptFirstPass` is only what survived the reservation, so letting capHits
   // re-derive the total from the concatenated list would hide the first pass's
   // own truncation — `truncated` would read false and callers would drop the
-  // "showing N of M matches, refine your query" footer entirely. Carry the
-  // first pass's real count forward and add the hits only the literal pass found.
-  return capHits([...keptFirstPass, ...literalOnly], cap, result.totalBeforeCap + literalOnly.length);
+  // "showing N of M matches, refine your query" footer entirely. The two
+  // passes are disjoint after the dedup above, so their sizes sum to the true
+  // distinct-match count under either reading.
+  return capHits([...keptFirstPass, ...literalOnly], cap, result.hits.length + literalOnly.length);
 };
 
 export const searchEntries = (

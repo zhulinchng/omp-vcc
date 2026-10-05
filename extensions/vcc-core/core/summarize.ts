@@ -3,6 +3,7 @@ import type { Message } from "@oh-my-pi/pi-ai";
 import type { FileOps } from "../types";
 import { normalize } from "./normalize";
 import { filterNoise } from "./filter-noise";
+import { collapseSkillTagsInLine } from "./skill-collapse";
 import { buildSections } from "./build-sections";
 import { formatSummary, capBrief, BRIEF_MAX_LINES, RECALL_NOTE, wrapLongLines } from "./format";
 import { selectRankedBriefBlocks, type BriefRankingOptions } from "./rank";
@@ -97,13 +98,26 @@ const mergeHeaderSection = (header: string, prev: string, fresh: string): string
     return mergeFileLines(prev, fresh);
   }
 
-  if (!prev) return fresh;
-  if (!fresh) return prev;
+  // Collapse skill tags on BOTH inputs before anything is returned. A summary
+  // written before the writers collapsed can still carry a raw mid-line tag,
+  // and the early returns below would otherwise pass it straight through — the
+  // removed content-blind guard was the only thing that had scrubbed it.
+  // Structure-preserving (one line in, one line out) and LINE-scoped, because
+  // an unterminated tag must not consume the rest of its bullet.
+  const prevCollapsed = prev.split("\n").map(collapseSkillTagsInLine).join("\n");
+  const freshCollapsed = fresh.split("\n").map(collapseSkillTagsInLine).join("\n");
 
-  // Session Goal, User Preferences: line-level dedup, cap
-  const isClean = (l: string) => l.startsWith("- ") && !l.includes("<skill") && !l.includes("</skill");
-  const prevLines = joinContinuations(prev).filter(isClean);
-  const freshLines = joinContinuations(fresh).filter(isClean);
+  if (!prev) return freshCollapsed;
+  if (!fresh) return prevCollapsed;
+
+  // Session Goal, User Preferences: line-level dedup, cap.
+  // Structure only — the filter must NOT inspect content. It used to also
+  // reject any line merely containing "<skill", but the writer's collapse is
+  // line-ANCHORED, so an ordinary instruction that happens to mention a skill
+  // mid-line survived extraction and was then silently deleted here on the
+  // next merge cycle. Mid-line tags are collapsed instead, on both sides.
+  const prevLines = joinContinuations(prevCollapsed).filter((l) => l.startsWith("- "));
+  const freshLines = joinContinuations(freshCollapsed).filter((l) => l.startsWith("- "));
   const combined = [...new Set([...prevLines, ...freshLines])];
   const CAP = header === "Session Goal" ? 8 : header === "Commits" ? 8 : 15;
   const capped = combined.length > CAP ? combined.slice(-CAP) : combined;

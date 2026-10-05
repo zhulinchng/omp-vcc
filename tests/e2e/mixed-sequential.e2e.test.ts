@@ -44,6 +44,32 @@ function makeEvent(branchEntries: any[], ci?: string, tokensBefore = 80000, extr
   return { type: "session_before_compact", customInstructions: ci, branchEntries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore, ...extra }, signal: new AbortController().signal, ...extra };
 }
 
+// The host ALWAYS emits `session_compact` for a compaction it accepted; a bare
+// `session_before_compact` with no commit is unreachable. The hook treats such
+// a still-pending attempt as uncommitted and rolls its stats row back at the
+// next attempt (hook.ts rollbackPendingStats). Accumulating tests must commit
+// each attempt, and the entry must carry the same `{summary, firstKeptEntryId,
+// details}` triple — key order included — or `ownsCompaction` reads false.
+const commitCompaction = (
+  compact: (event: any, ctx: any) => Promise<unknown>,
+  res: any,
+  ctx: any,
+  tokensBefore: number,
+  tokensAfter = 25000,
+) =>
+  compact({
+    type: "session_compact",
+    fromExtension: true,
+    compactionEntry: {
+      id: "committed",
+      tokensBefore,
+      tokensAfter,
+      summary: res?.compaction?.summary,
+      firstKeptEntryId: res?.compaction?.firstKeptEntryId,
+      details: res?.compaction?.details,
+    },
+  }, ctx);
+
 beforeAll(() => { isolated = createIsolatedOmpDir(); });
 afterAll(() => { try { isolated.cleanup(); } catch {} });
 beforeEach(() => {
@@ -65,16 +91,18 @@ describe("mixed sequential — multi-feature interplay", () => {
   test("sequence: manual keep:1 -> second with previousSummary -> recall -> stats", async () => {
     writeFileSync(isolated.configPath, JSON.stringify({ debug: true, overrideDefaultCompaction: true, smartKeepTail: false }));
     process.env.OMP_VCC_CONFIG_PATH = isolated.configPath;
-    const { pi, ctx, getBefore } = capturePi();
+    const { pi, ctx, getBefore, getCompact } = capturePi();
     registerBeforeCompactHook(pi);
     const entries1 = buildSession({ turns: 5, charsPerTurn: 500 }) as any[];
     const r1: any = await getBefore()(makeEvent(entries1, OMP_VCC_COMPACT_INSTRUCTION, 80000), ctx);
     expect(r1.compaction).toBeDefined();
+    await commitCompaction(getCompact(), r1, ctx, 80000);
     const summary1 = r1.compaction.summary;
     // second compaction with previousSummary
     const entries2 = [...entries1, comp("c1", r1.compaction.firstKeptEntryId), msg("m_new1", "user", "sequential follow up after first compaction"), msg("m_new2", "assistant", "reply"), msg("m_new3", "user", "another turn"), msg("m_new4", "assistant", "reply2")] as any[];
     const r2: any = await getBefore()({ type: "session_before_compact", customInstructions: OMP_VCC_COMPACT_INSTRUCTION, branchEntries: entries2, preparation: { previousSummary: summary1, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 70000 }, signal: new AbortController().signal }, ctx);
     expect(r2.compaction).toBeDefined();
+    await commitCompaction(getCompact(), r2, ctx, 70000);
     expect(r2.compaction.summary.length).toBeLessThan(summary1.length * 2 + 5000);
     // write combined session to file and recall
     const dir = mkdtempSync(join(tmpdir(), "mixed-recall-"));
@@ -98,9 +126,11 @@ describe("mixed sequential — multi-feature interplay", () => {
     const entries = buildSession({ turns: 4, charsPerTurn: 400 }) as any[];
     await getBefore()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 60000), ctx);
     expect(existsSync(DEBUG_PATH)).toBe(false);
-    // overlay debug true via ctx (simulate /settings toggle without restart)
-    const ctxOverlay: any = { ...ctx, settings: { get: (k: string) => (k.includes("debug") ? true : undefined) }, config: { get: (k: string) => (k.includes("debug") ? true : undefined) } };
-    await getBefore()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 60000), ctxOverlay);
+    // Toggle debug true mid-session. Neither host exposes ctx.settings/ctx.config,
+    // so the only reachable tier is the config file itself; the dead ctx overlay
+    // must not be asserted here.
+    writeFileSync(isolated.configPath, JSON.stringify({ debug: true, overrideDefaultCompaction: true, smartKeepTail: false }));
+    await getBefore()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 60000), ctx);
     expect(existsSync(DEBUG_PATH)).toBe(true);
     delete process.env.OMP_VCC_CONFIG_PATH;
   });
@@ -203,13 +233,17 @@ describe("mixed sequential — multi-feature interplay", () => {
   test("sequence: compaction then stats history capping and perPi isolation", async () => {
     writeFileSync(isolated.configPath, JSON.stringify({ debug: false, overrideDefaultCompaction: true, smartKeepTail: false }));
     process.env.OMP_VCC_CONFIG_PATH = isolated.configPath;
-    const { pi: piA, ctx: ctxA, getBefore: gbA } = capturePi();
-    const { pi: piB, ctx: ctxB, getBefore: gbB } = capturePi();
+    const { pi: piA, ctx: ctxA, getBefore: gbA, getCompact: gcA } = capturePi();
+    const { pi: piB, ctx: ctxB, getBefore: gbB, getCompact: gcB } = capturePi();
     registerBeforeCompactHook(piA);
     registerBeforeCompactHook(piB);
     const entries = buildSession({ turns: 3, charsPerTurn: 200 }) as any[];
-    for (let i = 0; i < 3; i++) await gbA()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 50000 + i), ctxA);
-    await gbB()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 60000), ctxB);
+    for (let i = 0; i < 3; i++) {
+      const r: any = await gbA()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 50000 + i), ctxA);
+      await commitCompaction(gcA(), r, ctxA, 50000 + i);
+    }
+    const rB: any = await gbB()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 60000), ctxB);
+    await commitCompaction(gcB(), rB, ctxB, 60000);
     expect(getCompactionHistory(piA).length).toBe(3);
     expect(getCompactionHistory(piB).length).toBe(1);
     clearCompactionHistoryForTests();
@@ -245,7 +279,7 @@ describe("mixed sequential — multi-feature interplay", () => {
   test("sequence: multiple keep values in row, verify requestedKeep vs effective keep and history", async () => {
     writeFileSync(isolated.configPath, JSON.stringify({ debug: false, overrideDefaultCompaction: true, smartKeepTail: false }));
     process.env.OMP_VCC_CONFIG_PATH = isolated.configPath;
-    const { pi, ctx, getBefore } = capturePi();
+    const { pi, ctx, getBefore, getCompact } = capturePi();
     registerBeforeCompactHook(pi);
     const entries = buildSession({ turns: 6, charsPerTurn: 300 }) as any[];
     for (const keep of [1, 2, 0, 1]) {
@@ -254,6 +288,7 @@ describe("mixed sequential — multi-feature interplay", () => {
       const useCi = `${OMP_VCC_COMPACT_INSTRUCTION} keep:${keep}`;
       const r: any = await getBefore()(makeEvent(entries, useCi, 70000), ctx);
       expect(r.compaction).toBeDefined();
+      await commitCompaction(getCompact(), r, ctx, 70000);
     }
     expect(getCompactionHistory(pi).length).toBe(4);
     const last = getLastCompactionStats(pi);

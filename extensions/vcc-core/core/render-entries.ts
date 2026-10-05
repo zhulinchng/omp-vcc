@@ -12,18 +12,23 @@ export interface RenderedEntry {
 }
 
 const toolCalls = (content: Message["content"]): string => {
-  if (!content || typeof content === "string") return "";
+  // Same three-legged guard as content.ts's textParts: falsy, string, or a
+  // truthy NON-array (`{}`, `42`) each take their own path. Only rejecting
+  // null/non-object ELEMENTS left the non-array leg throwing
+  // `content.filter is not a function`, which loadAllMessages swallows into an
+  // empty session — the exact failure this guard exists to prevent.
+  if (!Array.isArray(content)) return "";
   return content
-    .filter((c) => c.type === "toolCall")
-    .map((c) => `${c.name}(${summarizeToolArgs(c.arguments)})`)
+    .filter((c) => c !== null && typeof c === "object" && c.type === "toolCall")
+    .map((c) => `${c.name}(${summarizeToolArgs(c.arguments ?? {})})`)
     .join(", ");
 };
 
 const extractFilesFromContent = (content: Message["content"]): string[] => {
-  if (!content || typeof content === "string") return [];
+  if (!Array.isArray(content)) return [];
   return content
-    .filter((c) => c.type === "toolCall")
-    .map((c) => extractPath(c.arguments))
+    .filter((c) => c !== null && typeof c === "object" && c.type === "toolCall")
+    .map((c) => extractPath(c.arguments ?? {}))
     .filter((p): p is string => p !== null);
 };
 

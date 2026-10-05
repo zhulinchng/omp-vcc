@@ -32,6 +32,15 @@ export function shortPath(fullPath: string): string {
 export const TOUCHED_PAGE_SIZE = 5;
 
 /**
+ * Coerce a caller-supplied page selector to a usable 1-based page number.
+ * No equivalent existed: `formatTouchedOutput` and the recall tool each
+ * open-coded `Math.max(1, Math.floor(page ?? 1))`, which yields NaN for a
+ * non-numeric page — NaN then fails every range guard and slices to nothing.
+ */
+export const normalizePageNumber = (page?: unknown): number =>
+  typeof page === "number" && Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1;
+
+/**
  * Format aggregated "files touched" output.
  *
  * Ported from pi-blackhole (https://github.com/k0valik/pi-blackhole, MIT) by
@@ -48,7 +57,7 @@ export function formatTouchedOutput(
 
   const ps = pageSize ?? TOUCHED_PAGE_SIZE;
   const totalPages = Math.ceil(touched.length / ps);
-  const currentPage = Math.max(1, Math.floor(page ?? 1));
+  const currentPage = normalizePageNumber(page);
   if (currentPage > totalPages) {
     return `Page ${currentPage} is outside the available range 1-${totalPages} (${touched.length} total files). Use page:N with N between 1 and ${totalPages}.`;
   }

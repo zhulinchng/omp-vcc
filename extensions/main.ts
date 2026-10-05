@@ -24,7 +24,7 @@ import {
   getCompactForm,
 } from "./vcc-core/hook";
 import { searchEntriesDetailed, getTouchedFiles } from "./vcc-core/core/search-entries";
-import { formatRecallOutput, formatTouchedOutput } from "./vcc-core/core/format-recall";
+import { formatRecallOutput, formatTouchedOutput, normalizePageNumber } from "./vcc-core/core/format-recall";
 import { getActiveLineageEntryIds } from "./vcc-core/core/lineage";
 import { normalizeRecallScope, normalizeRecallMode, parseRecallScope, parseRecallMode } from "./vcc-core/core/recall-scope";
 import { parseDrillDown, expandEntryFile, parseEntryRef, expandEntry } from "./vcc-core/core/drill-down";
@@ -121,9 +121,15 @@ export default function (pi: ExtensionAPI): void {
       const scope = normalizeRecallScope(rawScope);
       const lineageEntryIds = scope === "lineage" ? getActiveLineageEntryIds(c.sessionManager as unknown as { getBranch: () => { id?: string }[] }) : undefined;
 
-      const q = p.query?.trim();
+      const rawQuery = p.query;
+      // `== null` covers both undefined and null: the schema declares `query` a
+      // string, so a nullish value means "no query" (list recent entries), and
+      // stringifying null would search for the literal text "null". Only a real
+      // non-string value is coerced, because it may still carry the user's text.
+      const q = rawQuery == null ? undefined : typeof rawQuery === "string" ? rawQuery.trim() : String(rawQuery);
       const mode = normalizeRecallMode(p.mode);
-      const bounded = (text: string, id: string | number, kind = "entry"): string => capModelRecall(settings, [{ id, text }], kind);
+      const bounded = (text: string, id: string | number, kind = "entry", label?: string): string =>
+        capModelRecall(settings, [{ id, ...(label !== undefined && { label }), text }], kind);
 
       const entryRef = q ? parseEntryRef(q) : null;
       if (entryRef) {
@@ -179,15 +185,16 @@ export default function (pi: ExtensionAPI): void {
       if (mode === "touched") {
         const { rendered, rawMessages } = loadRecallMessages(ctx, sessionFile, false, lineageEntryIds);
         const touched = getTouchedFiles(rawMessages as unknown[], rendered);
-        const text = formatTouchedOutput(touched, p.page);
-        return { content: [{ type: "text", text: bounded(text, `page:${p.page ?? 1}`, "page") }], details: undefined };
+        const page = normalizePageNumber(p.page);
+        const text = formatTouchedOutput(touched, page);
+        return { content: [{ type: "text", text: bounded(text, `page:${page}`, "page", `page ${page}`) }], details: undefined };
       }
       if (mode === "file" && !q) {
         const { rendered, rawMessages } = loadRecallMessages(ctx, sessionFile, false, lineageEntryIds);
         const { hits, totalBeforeCap, truncated } = searchEntriesDetailed(rendered, rawMessages as unknown[], undefined, { mode });
         const note = truncated ? `Showing ${hits.length} of ${totalBeforeCap} file entries.\n\n` : "";
         const output = (scope === "all" ? "Scope: all\n\n" : "") + note + formatRecallOutput(hits);
-        return { content: [{ type: "text", text: capModelRecall(settings, [{ id: "file", text: output }], "file") }], details: undefined };
+        return { content: [{ type: "text", text: capModelRecall(settings, [{ label: "file entries", text: output }], "file") }], details: undefined };
       }
 
       const expandSet = new Set(p.expand ?? []);
@@ -212,21 +219,21 @@ export default function (pi: ExtensionAPI): void {
       const { rendered: msgs, rawMessages } = loadRecallMessages(ctx, sessionFile, false, lineageEntryIds);
       if (q) {
         const { hits, totalBeforeCap, truncated } = searchEntriesDetailed(msgs, rawMessages as unknown[], q, { mode });
-        const page = Math.max(1, Math.floor(p.page ?? 1));
+        const page = normalizePageNumber(p.page);
         const totalPages = Math.ceil(hits.length / PAGE_SIZE);
         const scopeSuffix = scope === "all" ? " (scope: all)" : "";
         const truncationNote = truncated ? ` — showing ${hits.length} of ${totalBeforeCap} matches, refine your query for more precise results` : "";
         if (hits.length > 0 && page > totalPages) {
           const guidance = truncated ? `Use a page between 1 and ${totalPages}.` : `Use a page between 1 and ${totalPages}, or refine your query.`;
           const text = `Page ${page} is outside the available range 1-${totalPages} (${hits.length} matches${scopeSuffix}${truncationNote}). ${guidance}`;
-          return { content: [{ type: "text", text: bounded(text, `page:${page}`, "page") }], details: undefined };
+          return { content: [{ type: "text", text: bounded(text, `page:${page}`, "page", `page ${page}`) }], details: undefined };
         }
         const start = (page - 1) * PAGE_SIZE;
         const pageResults = hits.slice(start, start + PAGE_SIZE);
         const header = totalPages > 1 ? `Page ${page}/${totalPages} (${hits.length} total matches${scopeSuffix}${truncationNote})` : `${hits.length} matches${scopeSuffix}${truncationNote}`;
         const footer = page < totalPages ? `\n--- Use page:${page + 1}${scope === "all" ? " with scope:'all'" : ""} for more results ---` : "";
         const output = formatRecallOutput(pageResults, q, header, { truncated, totalBeforeCap }) + footer;
-        return { content: [{ type: "text", text: bounded(output, `page:${page}`, "page") }], details: undefined };
+        return { content: [{ type: "text", text: bounded(output, `page:${page}`, "page", `page ${page}`) }], details: undefined };
       }
       const recent = msgs.slice(-DEFAULT_RECENT);
       const blocks = recent.map((entry) => ({ id: `#${entry.index}`, text: formatRecallOutput([entry]) }));

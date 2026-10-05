@@ -425,3 +425,45 @@ describe("drill-down gaps: single-line overflow", () => {
     expect(out).toContain("line paging cannot advance");
   });
 });
+
+// loadAllMessages advances its global index for every `type: "message"` entry
+// but only pushes when the entry carries a `message`, so an entry without one
+// desynchronises `rendered[i]` from `RenderedEntry.index`. Indexing by array
+// position then returned a neighbour's content under the wrong #N — or
+// "not found" for a ref that recall had just printed.
+describe("drill-down gaps: #N is a global index, not an array position", () => {
+  const noMessageEntry = { type: "message", id: "m0" };
+
+  it("resolves a bare #N by global index when an earlier entry has no message", () => {
+    const file = makeSession([noMessageEntry, userMsg("m1", "u1"), userMsg("m2", "u2")]);
+    expect(expandEntry(file, 1, true)).toContain("u1");
+    expect(expandEntry(file, 1, true)).not.toContain("u2");
+    expect(expandEntry(file, 2, true)).toContain("u2");
+  });
+
+  it("reports an unresolvable #N rather than a neighbour's content", () => {
+    const file = makeSession([noMessageEntry, userMsg("m1", "u1"), userMsg("m2", "u2")]);
+    // #0 is the entry that was skipped at load time.
+    expect(expandEntry(file, 0, true)).toContain("Entry #0 not found");
+    expect(expandEntry(file, 3, true)).toContain("Entry #3 not found");
+    expect(expandEntry(file, -1, true)).toContain("Entry #-1 not found");
+  });
+
+  it("resolves #N:path by global index too", () => {
+    const file = makeSession([
+      noMessageEntry,
+      toolMsg("m1", "write", { path: "a.ts", content: "a-line" }),
+      toolMsg("m2", "write", { path: "b.ts", content: "b-line" }),
+    ]);
+    expect(expandEntryFile(file, 2, "b.ts", true)).toContain("b-line");
+    expect(expandEntryFile(file, 1, "a.ts", true)).toContain("a-line");
+    expect(expandEntryFile(file, 1, "b.ts", true)).not.toContain("b-line");
+    expect(expandEntryFile(file, 2, "a.ts", true)).not.toContain("a-line");
+  });
+
+  it("keeps #N and #N:path pointing at the same entry", () => {
+    const file = makeSession([noMessageEntry, toolMsg("m1", "write", { path: "a.ts", content: "a-line" })]);
+    expect(expandEntry(file, 1, true)).toContain("a.ts");
+    expect(expandEntryFile(file, 1, "a.ts", true)).toContain("a-line");
+  });
+});

@@ -1,10 +1,11 @@
 // @ts-nocheck
-import { describe, expect, it, test } from "bun:test";
+import { describe, expect, it, test, vi } from "bun:test";
 import {
   registerBeforeCompactHook,
   triggerInvisibleContinue,
   buildOwnCut,
   AUTO_CONTINUE_CUSTOM_TYPE,
+  OMP_VCC_COMPACT_INSTRUCTION,
 } from "../extensions/vcc-core/hook";
 
 describe("invisible auto-continue: trigger + context filter", () => {
@@ -102,5 +103,81 @@ describe("invisible auto-continue: summarize-path noise", () => {
       ? custom.content.length
       : String(custom.content ?? "").length;
     expect(contentLen).toBe(0);
+  });
+});
+// scheduleManaged's stale-session guard compared the RAW `state.sessionId`,
+// while its sibling `isCurrentGeneration` used `?? sessionIdOf(ctx)`. Until
+// something initialised `state.sessionId` (only advanceSessionGeneration does),
+// the guard called every deferred callback stale — so the stats toast and the
+// auto-continue were silently dropped for a session the sibling predicate
+// called current.
+describe("scheduleManaged agrees with isCurrentGeneration", () => {
+  const T = Date.now();
+  const msg = (id: string, role: string, content: string) => ({ id, type: "message", message: { role, content, timestamp: T } });
+  const entries = [
+    msg("u0", "user", "do the thing"),
+    msg("a0", "assistant", "working"),
+    msg("u1", "user", "more"),
+    msg("a1", "assistant", "done"),
+  ];
+
+  const makePi = () => {
+    const sent: any[] = [];
+    const pi: any = {
+      on: (e: string, f: any) => { pi[e] = f; },
+      sent,
+      sendMessage: (m: any) => sent.push(m),
+      sendUserMessage: (m: any) => sent.push(m),
+    };
+    registerBeforeCompactHook(pi);
+    return pi;
+  };
+
+  // A ctx that REPORTS a session id but has never fired a session event, so the
+  // per-pi state still has sessionId === undefined.
+  const ctxWithSessionId = () => ({
+    settings: { get: () => undefined },
+    config: { get: () => undefined },
+    ui: { notify: () => {} },
+    sessionManager: { getSessionId: () => "s-123", getEntries: () => entries, getBranch: () => entries },
+  });
+
+  it("fires the auto-continue after a threshold compaction", async () => {
+    vi.useFakeTimers();
+    try {
+      const pi = makePi();
+      const ctx = ctxWithSessionId();
+      const res = await pi["session_before_compact"]({
+        type: "session_before_compact",
+        branchEntries: entries,
+        preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 100_000 },
+        // No sentinel: this is the automatic threshold path, the only one where
+        // `lastCompactWasPiVcc` stays false and the continue is live.
+        customInstructions: "",
+        signal: new AbortController().signal,
+      }, ctx);
+      expect(res?.compaction).toBeDefined();
+
+      await pi["session_compact"]({
+        type: "session_compact",
+        fromExtension: true,
+        reason: "threshold",
+        willRetry: false,
+        compactionEntry: {
+          id: "c1",
+          tokensBefore: 100_000,
+          tokensAfter: 25_000,
+          summary: res.compaction.summary,
+          firstKeptEntryId: res.compaction.firstKeptEntryId,
+          details: res.compaction.details,
+        },
+      }, ctx);
+
+      // The continue is scheduled through scheduleManaged with delay 0.
+      vi.advanceTimersByTime(1);
+      expect(pi.sent.some((m) => m?.customType === AUTO_CONTINUE_CUSTOM_TYPE)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -351,6 +351,20 @@ describe("user interaction: stats surface edges", () => {
       const entries = [hmsg(`${pfx}1`, "user", "goal one"), hmsg(`${pfx}2`, "assistant", "did one"), hmsg(`${pfx}3`, "user", "goal two"), hmsg(`${pfx}4`, "assistant", "did two")];
       const r: any = await before(beforeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION), hookCtx);
       expect(r?.compaction).toBeDefined();
+      // The host always emits session_compact for a compaction it accepted, so
+      // each attempt is committed before the next one starts.
+      await handlers.get("session_compact")({
+        type: "session_compact",
+        fromExtension: true,
+        compactionEntry: {
+          id: "committed",
+          tokensBefore: 90000,
+          tokensAfter: 30000,
+          summary: r.compaction.summary,
+          firstKeptEntryId: r.compaction.firstKeptEntryId,
+          details: r.compaction.details,
+        },
+      }, hookCtx);
     }
     const notify: any[] = [];
     // "small" contains "all" -> history table; "latest" contains neither

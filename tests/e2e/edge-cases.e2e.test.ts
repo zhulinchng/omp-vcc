@@ -50,6 +50,36 @@ function makeEvent(branchEntries: any[], ci?: string, tokensBefore = 80000): any
   return { type: "session_before_compact", customInstructions: ci, branchEntries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore }, signal: new AbortController().signal };
 }
 
+/**
+ * The host ALWAYS emits `session_compact` for a compaction it accepted. A bare
+ * run of `session_before_compact` calls is not a reachable state: the plugin
+ * treats a still-pending attempt as uncommitted and rolls its stats back (the
+ * host aborted or failed it). Suites that accumulate history must therefore
+ * commit each attempt, and the entry must carry the same
+ * `{summary, firstKeptEntryId, details}` triple — key order included — that the
+ * handler fingerprinted, or `ownsCompaction` reads false and forces a rollback.
+ */
+function commitCompaction(
+  pi: Record<string, (event: unknown, ctx: unknown) => unknown>,
+  ctx: unknown,
+  res: { compaction?: { summary?: unknown; firstKeptEntryId?: unknown; details?: unknown } } | undefined,
+  tokensBefore: number,
+  tokensAfter = 25000,
+) {
+  return pi["session_compact"]({
+    type: "session_compact",
+    fromExtension: true,
+    compactionEntry: {
+      id: "committed",
+      tokensBefore,
+      tokensAfter,
+      summary: res?.compaction?.summary,
+      firstKeptEntryId: res?.compaction?.firstKeptEntryId,
+      details: res?.compaction?.details,
+    },
+  }, ctx);
+}
+
 beforeAll(() => { isolated = createIsolatedOmpDir(); });
 afterAll(() => { try { isolated.cleanup(); } catch {} });
 beforeEach(() => {
@@ -228,12 +258,13 @@ describe("edge cases — buildOwnCut, budget, smartKeep, calibrate, savings", ()
     for (let i = 0; i < 55; i++) await (mockPi().getBefore ? null : null); // placeholder
     // Instead test via direct history manipulation: trigger 55 compactions on piA, ensure cap 50
     let beforeA: any;
-    const piRealA: any = { on: (n: string, h: any) => { if (n === "session_before_compact") beforeA = h; if (n === "session_compact" || n === "before_agent_start" || n === "context") {} }, sendMessage: () => {}, sendUserMessage: () => {} };
+    const piRealA: any = { on: (n: string, h: any) => { piRealA[n] = h; if (n === "session_before_compact") beforeA = h; if (n === "session_compact" || n === "before_agent_start" || n === "context") {} }, sendMessage: () => {}, sendUserMessage: () => {} };
     const ctxReal: any = { hasUI: true, ui: { notify: () => {} }, logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }, mode: "tui" };
     registerBeforeCompactHook(piRealA);
     for (let i = 0; i < 55; i++) {
       const e = buildSession({ turns: 3, charsPerTurn: 200 }) as any[];
-      await beforeA({ type: "session_before_compact", customInstructions: OMP_VCC_COMPACT_INSTRUCTION, branchEntries: e, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 50000 + i }, signal: new AbortController().signal }, ctxReal);
+      const res = await beforeA({ type: "session_before_compact", customInstructions: OMP_VCC_COMPACT_INSTRUCTION, branchEntries: e, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 50000 + i }, signal: new AbortController().signal }, ctxReal);
+      await commitCompaction(piRealA, ctxReal, res, 50000 + i);
     }
     expect(getCompactionHistory(piRealA).length).toBe(50);
     // copy isolation
@@ -264,11 +295,13 @@ describe("edge cases — buildOwnCut, budget, smartKeep, calibrate, savings", ()
     process.env.OMP_VCC_CONFIG_PATH = alt;
     expect(loadSettings().vccEnabled).toBe(false);
     delete process.env.OMP_VCC_CONFIG_PATH;
-    // ctx overlay
+    // No `ctx.settings`/`ctx.config` overlay tier exists: neither host's
+    // ExtensionContext exposes either member, so the file on disk is the only
+    // source. (D3 removed the dead tier; asserting it would test a path no host
+    // can reach.)
     process.env.OMP_VCC_CONFIG_PATH = isolated.configPath;
     writeFileSync(isolated.configPath, JSON.stringify({ debug: false }));
-    const ctxOverlay: any = { settings: { get: (k: string) => (k.includes("debug") ? true : undefined) }, config: { get: () => undefined } };
-    expect(loadSettings(ctxOverlay).debug).toBe(true);
+    expect(loadSettings().debug).toBe(false);
     delete process.env.OMP_VCC_CONFIG_PATH;
   });
   test("parseKeepAndPrompt edges: keep at start, at end, with prompt, invalid", () => {

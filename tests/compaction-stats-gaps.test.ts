@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, expect, test, beforeEach } from "bun:test";
-import { writeFileSync, unlinkSync, existsSync, mkdtempSync, rmSync } from "fs";
+import { writeFileSync, readFileSync, unlinkSync, existsSync, mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import {
@@ -20,6 +20,29 @@ import extension from "../extensions/main.ts";
 
 const DEBUG_PATH = "/tmp/omp-vcc-debug.json";
 const msg = (id: string, role: any, content = "x") => ({ id, type: "message", message: { role, content } });
+
+/**
+ * The host ALWAYS emits `session_compact` for a compaction it accepted. A bare
+ * run of `session_before_compact` calls is not a reachable state: the plugin
+ * treats a still-pending attempt as uncommitted and rolls its stats back (the
+ * host aborted or failed it). Tests that accumulate history must therefore
+ * commit each attempt, and the entry must carry the same
+ * `{summary, firstKeptEntryId, details}` triple — key order included — that the
+ * handler fingerprinted, or `ownsCompaction` reads false and forces a rollback.
+ */
+const commitCompaction = (pi: any, res: any, ctx: any, tokensBefore: number, tokensAfter = 25_000) =>
+  pi["session_compact"]({
+    type: "session_compact",
+    fromExtension: true,
+    compactionEntry: {
+      id: "committed",
+      tokensBefore,
+      tokensAfter,
+      summary: res?.compaction?.summary,
+      firstKeptEntryId: res?.compaction?.firstKeptEntryId,
+      details: res?.compaction?.details,
+    },
+  }, ctx);
 
 // helpers for tmp config
 function withTmpConfig<T>(fn: (pi: any) => Promise<T>): Promise<T> {
@@ -201,9 +224,16 @@ describe("gap: history perPi isolation + clear + copy + capping + timestamp", ()
     registerBeforeCompactHook(piB);
 
     const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
-    await piA["session_before_compact"]({ branchEntries: entries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 90000 }, customInstructions: PI_VCC_COMPACT_INSTRUCTION, signal: new AbortController().signal }, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
-    await piA["session_before_compact"]({ branchEntries: entries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 80000 }, customInstructions: PI_VCC_COMPACT_INSTRUCTION, signal: new AbortController().signal }, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
-    await piB["session_before_compact"]({ branchEntries: entries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 70000 }, customInstructions: PI_VCC_COMPACT_INSTRUCTION, signal: new AbortController().signal }, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
+    const ctxA: any = { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } };
+    const ctxB: any = { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } };
+    const before = (tokensBefore: number) => ({ branchEntries: entries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore }, customInstructions: PI_VCC_COMPACT_INSTRUCTION, signal: new AbortController().signal });
+
+    const r1 = await piA["session_before_compact"](before(90000), ctxA);
+    await commitCompaction(piA, r1, ctxA, 90000);
+    const r2 = await piA["session_before_compact"](before(80000), ctxA);
+    await commitCompaction(piA, r2, ctxA, 80000);
+    const r3 = await piB["session_before_compact"](before(70000), ctxB);
+    await commitCompaction(piB, r3, ctxB, 70000);
 
     expect(getCompactionHistory(piA).length).toBe(2);
     expect(getCompactionHistory(piB).length).toBe(1);
@@ -251,11 +281,13 @@ describe("gap: history perPi isolation + clear + copy + capping + timestamp", ()
     const pi: any = { on: (ev: string, fn: any) => pi[ev] = fn, sendMessage: () => {} };
     registerBeforeCompactHook(pi);
     const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
+    const ctx: any = { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } };
     for (let i = 0; i < 51; i++) {
-      await pi["session_before_compact"]({
+      const res = await pi["session_before_compact"]({
         branchEntries: entries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 10000 + i },
         customInstructions: OMP_VCC_COMPACT_INSTRUCTION, signal: new AbortController().signal,
-      }, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
+      }, ctx);
+      await commitCompaction(pi, res, ctx, 10000 + i);
     }
     const h = getCompactionHistory(pi);
     expect(h.length).toBe(50);
@@ -363,23 +395,34 @@ describe("gap: session_compact enrichment edge cases", () => {
     if (existsSync(DEBUG_PATH)) unlinkSync(DEBUG_PATH);
     const pi: any = { on: (ev: string, fn: any) => pi[ev] = fn, sendMessage: () => {} };
     registerBeforeCompactHook(pi);
+    const ctx: any = { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } };
     const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
-    await pi["session_before_compact"]({ branchEntries: entries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 70000 }, customInstructions: OMP_VCC_COMPACT_INSTRUCTION, signal: new AbortController().signal }, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
-    // debug after before should have savings but not authoritativeSavings yet
-    let dbg = JSON.parse((await import("fs")).readFileSync(DEBUG_PATH, "utf8"));
+    await pi["session_before_compact"]({ branchEntries: entries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 70000 }, customInstructions: OMP_VCC_COMPACT_INSTRUCTION, signal: new AbortController().signal }, ctx);
+
+    // Before the host commits, the snapshot carries the plugin's own estimate
+    // and has no authoritative numbers yet.
+    let dbg = JSON.parse(readFileSync(DEBUG_PATH, "utf8"));
     expect(dbg.savings).toBeDefined();
+    expect(dbg.savings.tokensBefore).toBe(70000);
     expect(dbg.authoritativeSavings).toBeUndefined();
-    await pi["session_compact"]({ type: "session_compact", fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 70000, tokensAfter: 15000 } }, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } } as any, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
-    // session_compact debug is via loadSettings(ctx) where ctx has debug? It reads from ctx.settings; we passed undefined so it falls back to file debug true via loadSettings(ctx) which reads file
-    // need to pass ctx with settings that loadSettings will overlay; simplest: set OMP_VCC_CONFIG_PATH and ensure ctx.settings.get returns undefined -> file still used
-    await new Promise((r) => setTimeout(r, 10));
-    // trigger again with proper ctx that allows debug
-    // our earlier call already did; check file again
-    dbg = JSON.parse((await import("fs")).readFileSync(DEBUG_PATH, "utf8"));
-    // after session_compact, file may have been overwritten? dbg in session_before_compact already wrote; session_compact dbg writes authoritativeSavings via dbg() helper which also writes file
-    // just ensure file still exists and has authoritativeSavings if our handler ran
-    // If not, at least ensure no crash
-    expect(existsSync(DEBUG_PATH)).toBe(true);
+
+    // `legacyCompletionShape` (no summary/details on the entry) is what lets
+    // this minimal entry be treated as this extension's own commit.
+    await pi["session_compact"]({ type: "session_compact", fromExtension: true, compactionEntry: { id: "c1", tokensBefore: 70000, tokensAfter: 15000 } }, ctx);
+
+    dbg = JSON.parse(readFileSync(DEBUG_PATH, "utf8"));
+    expect(dbg.authoritativeSavings).toEqual({
+      tokensBefore: 70000,
+      tokensAfter: 15000,
+      tokensSaved: 55000,
+      savedPercent: 79,
+    });
+    expect(dbg.eventEntry).toEqual({ id: "c1", tokensBefore: 70000, tokensAfter: 15000 });
+
+    // The same numbers reach both history views.
+    expect(getCompactionHistory(pi)[0].tokensSaved).toBe(55000);
+    expect(getCompactionHistory()[0].savedPercent).toBe(79);
+
     process.env.OMP_VCC_CONFIG_PATH = orig;
     try { rmSync(dir, { recursive: true, force: true }); unlinkSync(DEBUG_PATH); } catch {}
     clearCompactionHistoryForTests();
@@ -415,14 +458,18 @@ describe("gap: vcc_stats tool schema and history variants", () => {
       zod: { object: (o: any) => o, boolean: () => ({ optional: () => ({ describe: () => ({}) }) }) },
     };
     registerBeforeCompactHook(piHook);
-    await piHook["session_before_compact"]({ branchEntries: entries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 60000 }, customInstructions: PI_VCC_COMPACT_INSTRUCTION, signal: new AbortController().signal }, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
+    const ctx: any = { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } };
+    const attempt = (tokensBefore: number) => ({ branchEntries: entries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore }, customInstructions: PI_VCC_COMPACT_INSTRUCTION, signal: new AbortController().signal });
+    const first = await piHook["session_before_compact"](attempt(60000), ctx);
+    await commitCompaction(piHook, first, ctx, 60000);
     registerVccStatsTool(piHook);
     const tool = piHook._tool;
     const resSingle = await tool.execute("id", {}, null, null, {});
     expect(resSingle.content[0].text).toContain("Last compaction");
     expect(resSingle.content[0].text).not.toContain("History:"); // only 1 entry
     // add second
-    await piHook["session_before_compact"]({ branchEntries: entries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 70000 }, customInstructions: PI_VCC_COMPACT_INSTRUCTION, signal: new AbortController().signal }, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
+    const second = await piHook["session_before_compact"](attempt(70000), ctx);
+    await commitCompaction(piHook, second, ctx, 70000);
     const resTwo = await tool.execute("id", {}, null, null, {});
     expect(resTwo.content[0].text).toContain("History:");
     const resHistTrue = await tool.execute("id", { history: true }, null, null, {});
@@ -587,11 +634,15 @@ describe("gap: formatStatsTable with both global and perPi after 50+ global", ()
     registerBeforeCompactHook(pi1);
     registerBeforeCompactHook(pi2);
     const entries = [msg("m1", "user"), msg("m2", "assistant"), msg("m3", "user"), msg("m4", "assistant")];
+    const ctx: any = { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } };
+    const attempt = (tokensBefore: number) => ({ branchEntries: entries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore }, customInstructions: OMP_VCC_COMPACT_INSTRUCTION, signal: new AbortController().signal });
     for (let i = 0; i < 30; i++) {
-      await pi1["session_before_compact"]({ branchEntries: entries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 10000 + i }, customInstructions: OMP_VCC_COMPACT_INSTRUCTION, signal: new AbortController().signal }, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
+      const res = await pi1["session_before_compact"](attempt(10000 + i), ctx);
+      await commitCompaction(pi1, res, ctx, 10000 + i);
     }
     for (let i = 0; i < 30; i++) {
-      await pi2["session_before_compact"]({ branchEntries: entries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 20000 + i }, customInstructions: OMP_VCC_COMPACT_INSTRUCTION, signal: new AbortController().signal }, { settings: { get: () => undefined }, config: { get: () => undefined }, ui: { notify: () => {} } });
+      const res = await pi2["session_before_compact"](attempt(20000 + i), ctx);
+      await commitCompaction(pi2, res, ctx, 20000 + i);
     }
     expect(getCompactionHistory(pi1).length).toBe(30);
     expect(getCompactionHistory(pi2).length).toBe(30);

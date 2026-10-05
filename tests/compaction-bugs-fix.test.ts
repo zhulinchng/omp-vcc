@@ -198,9 +198,28 @@ describe("bug fix: vcc_stats per-pi (was global last)", () => {
     const ctx = { ui: { notify: () => {} } } as any;
     const beforeA = handlersA.get("session_before_compact");
     const beforeB = handlersB.get("session_before_compact");
-    await beforeA({ customInstructions: "__omp_vcc__", branchEntries: branch, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 10000 } }, ctx);
-    await beforeA({ customInstructions: "__omp_vcc__", branchEntries: branch, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 20000 } }, ctx);
-    await beforeB({ customInstructions: "__omp_vcc__", branchEntries: branch, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 90000 } }, ctx);
+    // The host always commits a compaction it accepted, so every attempt that
+    // returned content is followed by its `session_compact`.
+    const commit = (after, tokensBefore, tokensAfter, res) => after({
+      type: "session_compact",
+      fromExtension: true,
+      compactionEntry: {
+        id: "committed",
+        tokensBefore,
+        tokensAfter,
+        summary: res.compaction.summary,
+        firstKeptEntryId: res.compaction.firstKeptEntryId,
+        details: res.compaction.details,
+      },
+    }, ctx);
+    const afterA = handlersA.get("session_compact");
+    const afterB = handlersB.get("session_compact");
+    const resA1 = await beforeA({ customInstructions: "__omp_vcc__", branchEntries: branch, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 10000 } }, ctx);
+    await commit(afterA, 10000, 5000, resA1);
+    const resA2 = await beforeA({ customInstructions: "__omp_vcc__", branchEntries: branch, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 20000 } }, ctx);
+    await commit(afterA, 20000, 9000, resA2);
+    const resB1 = await beforeB({ customInstructions: "__omp_vcc__", branchEntries: branch, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 90000 } }, ctx);
+    await commit(afterB, 90000, 30000, resB1);
     const toolA = handlersA.get("tool:vcc_stats");
     const toolB = handlersB.get("tool:vcc_stats");
     const resA = await toolA.execute("id", {}, null, null, null);

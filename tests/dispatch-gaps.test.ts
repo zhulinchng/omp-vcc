@@ -490,3 +490,165 @@ describe("dispatch gaps: recall pagination and file-mode truncation", () => {
     }
   });
 });
+
+// ── Commands: the query-less mode arms and the #N:text suffixes ──────────
+
+// Both recall commands deliver their body through `pi.sendMessage` with
+// `customType: "vcc-recall"`; `ui.notify` only carries load diagnostics.
+describe("dispatch gaps: query-less mode arms via the real commands", () => {
+  const session = () => makeSession([
+    toolMsg("w0", "Write", { path: "/repo/src/a.ts", content: "line one\nline two\nline three" }),
+    umsg("u0", "unrelated chatter"),
+  ]);
+
+  const runCommand = async (cmd: string, args: string, file: string, ids: string[]) => {
+    const { commands, sent } = makePi();
+    const notify: any[] = [];
+    await commands.get(cmd).handler(args, cmdCtx(file, ids, notify));
+    expect(sent).toHaveLength(1);
+    return { body: sent[0].msg.content as string, notify };
+  };
+
+  for (const cmd of ["vcc-recall", "pi-vcc-recall"]) {
+    test(`/${cmd} mode:file lists file-carrying entries`, async () => {
+      const { dir, file, ids } = session();
+      try {
+        const { body } = await runCommand(cmd, "mode:file", file, ids);
+        expect(body).toContain("a.ts");
+        // `truncated` false for one hit, so the "Showing N of M" note is absent.
+        expect(body).not.toContain("Showing");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test(`/${cmd} mode:touched aggregates files by path`, async () => {
+      const { dir, file, ids } = session();
+      try {
+        const { body } = await runCommand(cmd, "mode:touched", file, ids);
+        expect(body).toContain("a.ts");
+        // One file -> the un-paginated header form.
+        expect(body).toContain("1 files touched");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  test("/vcc-recall mode:file reports the truncation note when capped", async () => {
+    const rows = Array.from({ length: 60 }, (_, i) => toolMsg(`w${i}`, "Write", { path: `/repo/f${i}.ts`, content: `body ${i}` }));
+    const { dir, file, ids } = makeSession(rows);
+    try {
+      const { body } = await runCommand("vcc-recall", "mode:file", file, ids);
+      expect(body).toContain("Showing 50 of 60 file entries.");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("/vcc-recall still searches normally when a query is present", async () => {
+    const { dir, file, ids } = session();
+    try {
+      const { body } = await runCommand("vcc-recall", "chatter", file, ids);
+      expect(body).toContain("chatter");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("/vcc-recall mode:touched pages past the first five files", async () => {
+    const rows = Array.from({ length: 7 }, (_, i) => toolMsg(`w${i}`, "Write", { path: `/repo/f${i}.ts`, content: `body ${i}` }));
+    const { dir, file, ids } = makeSession(rows);
+    try {
+      const first = await runCommand("vcc-recall", "mode:touched", file, ids);
+      expect(first.body).toContain("Page 1/2 (7 total files)");
+      const second = await runCommand("vcc-recall", "mode:touched page:2", file, ids);
+      expect(second.body).toContain("Page 2/2 (7 total files)");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("dispatch gaps: #N:text window suffixes", () => {
+  const BODY = Array.from({ length: 40 }, (_, i) => `body line ${i}`).join("\n");
+  const session = () => makeSession([umsg("m0", BODY)]);
+
+  test("#N:text returns the preview window", async () => {
+    const { dir, file, ids } = session();
+    try {
+      const { tool } = makePi();
+      const out = await toolText(tool, { query: "#0:text" }, toolCtx(file, ids));
+      expect(out).toContain("#0 [user]");
+      expect(out).toContain("body line 0");
+      expect(out).toContain("more lines");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("#N:text:full returns the whole body", async () => {
+    const { dir, file, ids } = session();
+    try {
+      const { tool } = makePi();
+      const out = await toolText(tool, { query: "#0:text:full" }, toolCtx(file, ids));
+      expect(out).toContain("#0 [user]");
+      expect(out).toContain("body line 39");
+      expect(out).not.toContain("more lines");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("#N:text:offset windows from the offset", async () => {
+    const { dir, file, ids } = session();
+    try {
+      const { tool } = makePi();
+      const out = await toolText(tool, { query: "#0:text:30" }, toolCtx(file, ids));
+      expect(out).toContain("Lines 31-40 (of 40)");
+      expect(out).toContain("body line 30");
+      expect(out).toContain("(End of entry)");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("#N:text:offset:limit honours the limit", async () => {
+    const { dir, file, ids } = session();
+    try {
+      const { tool } = makePi();
+      const out = await toolText(tool, { query: "#0:text:10:5" }, toolCtx(file, ids));
+      expect(out).toContain("Lines 11-15 (of 40)");
+      expect(out).toContain("body line 10");
+      expect(out).toContain("body line 14");
+      expect(out).not.toContain("body line 15");
+      expect(out).toContain("Use #0:15 or #0:15:5");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("#N:text:offset beyond the body explains the range", async () => {
+    const { dir, file, ids } = session();
+    try {
+      const { tool } = makePi();
+      const out = await toolText(tool, { query: "#0:text:99" }, toolCtx(file, ids));
+      expect(out).toContain("beyond entry length 40");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("#N:text outside the active lineage is rejected", async () => {
+    const { dir, file, ids } = session();
+    try {
+      const { tool } = makePi();
+      // A non-empty branch that does NOT contain m0, so the lineage filter is
+      // active and m0 is unreachable.
+      const out = await toolText(tool, { query: "#0:text" }, toolCtx(file, ["other-entry"], ids));
+      expect(out).toContain("Cannot expand indices outside active lineage: 0");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

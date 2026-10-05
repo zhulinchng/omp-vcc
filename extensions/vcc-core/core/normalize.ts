@@ -20,10 +20,19 @@ const normalizeOne = (msg: Message, msgIndex: number, sourceIndex: number | unde
   }
 
   if (msg.role === "bashExecution") {
-    const cmd = (msg as any).command ?? "";
-    const out = (msg as any).output ?? "";
-    const exit = (msg as any).exitCode;
-    return [{ kind: "bash", command: cmd, output: out, exitCode: exit, sourceIndex }];
+    // The command and its output are the ONLY un-sanitized text-bearing branch
+    // of normalize: a carriage return or a live escape sequence here reached
+    // the brief line and the persisted summary verbatim.
+    const rawCmd = msg.command;
+    const rawOut = msg.output;
+    const rawExit = msg.exitCode;
+    return [{
+      kind: "bash",
+      command: typeof rawCmd === "string" ? sanitize(rawCmd) : "",
+      output: typeof rawOut === "string" ? sanitize(rawOut) : "",
+      exitCode: typeof rawExit === "number" ? rawExit : undefined,
+      sourceIndex,
+    }];
   }
 
   if (msg.role === "toolResult") {
@@ -46,17 +55,31 @@ const normalizeOne = (msg: Message, msgIndex: number, sourceIndex: number | unde
     for (const part of msg.content) {
       if (!part || typeof part !== "object") continue;
       if (part.type === "text") {
-        blocks.push({ kind: "assistant", text: sanitize(part.text), sourceIndex });
+        // `part.text` is not guaranteed to be a string in a persisted line;
+        // sanitize() calls .replace on it, so a non-string would throw out of
+        // the compaction handler. Same coercion as content.ts's textParts.
+        blocks.push({ kind: "assistant", text: sanitize(typeof part.text === "string" ? part.text : ""), sourceIndex });
       } else if (part.type === "thinking") {
-        const thinkingText = sanitize(part.text ?? part.thinking ?? "");
+        const rawThinking = part.text ?? part.thinking ?? "";
+        const thinkingText = sanitize(typeof rawThinking === "string" ? rawThinking : "");
         if (thinkingText) blocks.push({ kind: "thinking", text: thinkingText, sourceIndex });
       } else if (part.type === "toolCall") {
+        // Downstream extractors read `b.args.<key>` directly; a toolCall part
+        // with no arguments object must not become an undefined `args`.
+        const rawArgs = part.arguments && typeof part.arguments === "object" ? part.arguments : {};
+        // Argument strings are persisted into the summary ([Commits] reads
+        // `command`, the file extractors read `path`/`content`), so they need
+        // the same sanitize pass as every other text-bearing branch. Matched
+        // escapes are removed per value; non-string values pass through by
+        // reference so array/object shapes downstream extractors parse survive.
+        const args: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(rawArgs)) {
+          args[key] = typeof value === "string" ? sanitize(value) : value;
+        }
         blocks.push({
           kind: "tool_call",
           name: part.name,
-          // Downstream extractors read `b.args.<key>` directly; a toolCall part
-          // with no arguments object must not become an undefined `args`.
-          args: part.arguments && typeof part.arguments === "object" ? part.arguments : {},
+          args,
           sourceIndex,
         });
       }

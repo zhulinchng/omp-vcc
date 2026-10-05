@@ -6,4 +6,4 @@ skills-lock.json
 **/*.d.ts.map
 .DS_Store
 coverage/
-
+.pi

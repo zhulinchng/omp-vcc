@@ -73,28 +73,30 @@ export function migrateStalePluginEntries(home?: string): string {
   for (const k of [...ompKeys]) {
     if (k in deps) continue;
     const pkgName = getPkgName(k);
-    if (pkgName && pkgName !== k) {
-      const isHistoric = HISTORIC.includes(k) || k !== CURRENT;
-      if (isHistoric) {
-        const p = join(nm, k);
-        if (isSymlink(p)) {
-          try {
-            fsSync.rmSync(p, { force: true });
-            removedLinks.push(k);
-            if (k.startsWith("@")) {
-              const scopeDir = join(nm, k.split("/")[0]!);
-              try {
-              if (fsSync.readdirSync(scopeDir).length === 0) fsSync.rmSync(scopeDir, { force: true, recursive: true });
-              } catch {}
-            }
-          } catch {}
-        }
-        if (lockRaw.plugins && (lockRaw.plugins as Record<string, unknown>)[k]) {
-          delete (lockRaw.plugins as Record<string, unknown>)[k];
-          removedLocks.push(k);
-        }
-        if (lockRaw.settings && (lockRaw.settings as Record<string, unknown>)[k]) delete (lockRaw.settings as Record<string, unknown>)[k];
+    // Delete ONLY this plugin's own historic aliases. The old
+    // `HISTORIC.includes(k) || k !== CURRENT` made the allowlist inert — the
+    // second disjunct is true for every scoped key that reaches here — so any
+    // aliased live install not declared in `dependencies` was deleted on every
+    // extension load.
+    if (pkgName && pkgName !== k && HISTORIC.includes(k)) {
+      const p = join(nm, k);
+      if (isSymlink(p)) {
+        try {
+          fsSync.rmSync(p, { force: true });
+          removedLinks.push(k);
+          if (k.startsWith("@")) {
+            const scopeDir = join(nm, k.split("/")[0]!);
+            try {
+            if (fsSync.readdirSync(scopeDir).length === 0) fsSync.rmSync(scopeDir, { force: true, recursive: true });
+            } catch {}
+          }
+        } catch {}
       }
+      if (lockRaw.plugins && (lockRaw.plugins as Record<string, unknown>)[k]) {
+        delete (lockRaw.plugins as Record<string, unknown>)[k];
+        removedLocks.push(k);
+      }
+      if (lockRaw.settings && (lockRaw.settings as Record<string, unknown>)[k]) delete (lockRaw.settings as Record<string, unknown>)[k];
     }
   }
 

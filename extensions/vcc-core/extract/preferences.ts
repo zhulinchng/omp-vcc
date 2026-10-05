@@ -1,6 +1,7 @@
 // @ts-nocheck
 import type { NormalizedBlock } from "../types";
 import { clip, nonEmptyLines } from "../core/content";
+import { collapseSkillTagsInLine } from "../core/skill-collapse";
 
 // Tightened patterns: require a clear preference construction, not bare keywords.
 const PREF_PATTERNS = [
@@ -21,7 +22,11 @@ export const extractPreferences = (blocks: NormalizedBlock[]): string[] => {
 
     let perBlock = 0;
     for (const line of nonEmptyLines(b.text)) {
-      const trimmed = line.trim();
+      // Collapse BEFORE the length gate and pattern test: an instruction that
+      // wraps a skill block can exceed 200 chars only because of the block, and
+      // a raw tag must not reach the stage that re-parses the summary.
+      // Line-scoped so an unterminated tag cannot delete the rest of the line.
+      const trimmed = collapseSkillTagsInLine(line.trim());
       if (!trimmed || trimmed.length < 5) continue;
       if (trimmed.length > 200) continue;
       // Reject questions.

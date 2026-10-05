@@ -13,6 +13,9 @@ function createMockPi() {
   let compactHandler: any;
   const pi: any = {
     on: (name: string, h: any) => {
+      // Mirror the real host, which invokes handlers through the `pi[event]`
+      // method so tests can fire the commit event with the same object.
+      pi[name] = h;
       if (name === "session_before_compact") beforeHandler = h;
       if (name === "session_compact") compactHandler = h;
       if (name === "before_agent_start" || name === "context") {}
@@ -25,6 +28,36 @@ function createMockPi() {
 }
 function makeEvent(branchEntries: any[], customInstructions?: string, tokensBefore = 90000): any {
   return { type: "session_before_compact", customInstructions, branchEntries, preparation: { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore }, signal: new AbortController().signal };
+}
+
+/**
+ * The host ALWAYS emits `session_compact` for a compaction it accepted. A bare
+ * run of `session_before_compact` calls is not a reachable state: the plugin
+ * treats a still-pending attempt as uncommitted and rolls its stats back (the
+ * host aborted or failed it). Suites that accumulate history must therefore
+ * commit each attempt, and the entry must carry the same
+ * `{summary, firstKeptEntryId, details}` triple — key order included — that the
+ * handler fingerprinted, or `ownsCompaction` reads false and forces a rollback.
+ */
+function commitCompaction(
+  pi: Record<string, (event: unknown, ctx: unknown) => unknown>,
+  ctx: unknown,
+  res: { compaction?: { summary?: unknown; firstKeptEntryId?: unknown; details?: unknown } } | undefined,
+  tokensBefore: number,
+  tokensAfter = 25000,
+) {
+  return pi["session_compact"]({
+    type: "session_compact",
+    fromExtension: true,
+    compactionEntry: {
+      id: "committed",
+      tokensBefore,
+      tokensAfter,
+      summary: res?.compaction?.summary,
+      firstKeptEntryId: res?.compaction?.firstKeptEntryId,
+      details: res?.compaction?.details,
+    },
+  }, ctx);
 }
 
 beforeAll(() => { isolated = createIsolatedOmpDir(); });
@@ -73,8 +106,10 @@ describe("stats E2E — vcc_stats tool, commands, inline --stats, table edges, h
     const { pi, ctx, getBefore } = createMockPi();
     registerBeforeCompactHook(pi);
     const entries = buildSession({ turns: 5, charsPerTurn: 500 }) as any[];
-    await getBefore()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 80000), ctx);
-    await getBefore()(makeEvent([...entries, { id: "c1", type: "compaction", firstKeptEntryId: "m1" }, msg("m_new1", "user", "new turn"), msg("m_new2", "assistant", "reply")].concat(buildSession({ turns: 3, charsPerTurn: 500 }) as any[]), OMP_VCC_COMPACT_INSTRUCTION, 70000), ctx);
+    const first = await getBefore()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 80000), ctx);
+    await commitCompaction(pi, ctx, first, 80000);
+    const second = await getBefore()(makeEvent([...entries, { id: "c1", type: "compaction", firstKeptEntryId: "m1" }, msg("m_new1", "user", "new turn"), msg("m_new2", "assistant", "reply")].concat(buildSession({ turns: 3, charsPerTurn: 500 }) as any[]), OMP_VCC_COMPACT_INSTRUCTION, 70000), ctx);
+    await commitCompaction(pi, ctx, second, 70000);
     const history = getCompactionHistory(pi);
     expect(history.length).toBe(2);
     const table = formatStatsTable(history);
@@ -112,7 +147,8 @@ describe("stats E2E — vcc_stats tool, commands, inline --stats, table edges, h
     // trigger 55 compactions
     for (let i = 0; i < 55; i++) {
       const entries = buildSession({ turns: 4, charsPerTurn: 300 }) as any[];
-      await getBefore()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 50000 + i), ctx);
+      const res = await getBefore()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 50000 + i), ctx);
+      await commitCompaction(pi, ctx, res, 50000 + i);
     }
     const history = getCompactionHistory(pi);
     expect(history.length).toBe(50);
@@ -133,9 +169,12 @@ describe("stats E2E — vcc_stats tool, commands, inline --stats, table edges, h
     registerBeforeCompactHook(a.pi);
     registerBeforeCompactHook(b.pi);
     const entries = buildSession({ turns: 4, charsPerTurn: 400 }) as any[];
-    await a.getBefore()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 80000), a.ctx);
-    await a.getBefore()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 80000), a.ctx);
-    await b.getBefore()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 80000), b.ctx);
+    const a1 = await a.getBefore()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 80000), a.ctx);
+    await commitCompaction(a.pi, a.ctx, a1, 80000);
+    const a2 = await a.getBefore()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 80000), a.ctx);
+    await commitCompaction(a.pi, a.ctx, a2, 80000);
+    const b1 = await b.getBefore()(makeEvent(entries, OMP_VCC_COMPACT_INSTRUCTION, 80000), b.ctx);
+    await commitCompaction(b.pi, b.ctx, b1, 80000);
     expect(getCompactionHistory(a.pi).length).toBe(2);
     expect(getCompactionHistory(b.pi).length).toBe(1);
     clearCompactionHistoryForTests();

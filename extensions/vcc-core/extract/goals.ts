@@ -1,7 +1,7 @@
 // @ts-nocheck
 import type { NormalizedBlock } from "../types";
 import { nonEmptyLines, clip } from "../core/content";
-import { collapseSkillLines } from "../core/skill-collapse";
+import { collapseSkillLines, collapseSkillTagsInLine } from "../core/skill-collapse";
 
 const SCOPE_CHANGE_RE =
   /\b(instead|actually|change of plan|forget that|new task|switch to|now I want|pivot|let'?s do|stop .* and)\b/i;
@@ -55,6 +55,12 @@ export const extractGoals = (blocks: NormalizedBlock[]): string[] => {
     const truncated = truncateAtTemplate(rawLines);
     const lines = collapseSkillLines(truncated.filter(isSubstantiveGoal))
       .map(stripLeadingBullet)
+      // collapseSkillLines is line-anchored, so a tag that appears mid-line in
+      // an ordinary instruction reaches here raw. Collapse it now: the merge
+      // step must not be the place that drops it, and a raw tag must not leak
+      // into a section header. Line-scoped, so an unterminated tag keeps the
+      // rest of the instruction instead of eating it.
+      .map(collapseSkillTagsInLine)
       .filter((l) => l.length > 5);
     if (lines.length === 0) continue;
 

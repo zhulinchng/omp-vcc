@@ -1,7 +1,60 @@
 // @ts-nocheck
 import { describe, it, expect } from "bun:test";
-import { capBrief, formatSummary } from "../extensions/vcc-core/core/format";
+import { capBrief, formatSummary, wrapLongLines } from "../extensions/vcc-core/core/format";
 import type { SectionData } from "../extensions/vcc-core/sections";
+
+/** A lone surrogate anywhere in the output means a pair was split. */
+const hasLoneSurrogate = (s: string): boolean => {
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = s.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      i++;
+    } else if (code >= 0xdc00 && code <= 0xdfff) return true;
+  }
+  return false;
+};
+
+describe("wrapLongLines: hard breaks never split a surrogate pair", () => {
+  // 120 cols, so any unbroken run past the budget takes the hard-break branch.
+  const line = (unit: string, n: number) => unit.repeat(n);
+
+  it("keeps emoji pairs intact across every wrap position", () => {
+    for (const n of [31, 40, 41, 42, 60, 61, 80]) {
+      const text = line("😀", n);
+      const wrapped = wrapLongLines(text, 120);
+      expect(hasLoneSurrogate(wrapped)).toBe(false);
+      expect(wrapped.split("\n").every((l) => l.length <= 120)).toBe(true);
+    }
+  });
+
+  it("keeps supplementary-plane CJK pairs intact across every wrap position", () => {
+    // U+20000 is outside the BMP, so it IS a surrogate pair — unlike U+6F22.
+    for (const n of [40, 41, 80, 121]) {
+      const wrapped = wrapLongLines("\u{20000}".repeat(n), 120);
+      expect(hasLoneSurrogate(wrapped)).toBe(false);
+    }
+  });
+
+  it("keeps a mixed ASCII/emoji run intact", () => {
+    const wrapped = wrapLongLines(`path=${"a😀".repeat(70)}`, 120);
+    expect(hasLoneSurrogate(wrapped)).toBe(false);
+  });
+
+  it("still advances when the budget is barely wider than one pair", () => {
+    // Budget 22 puts the pre-fix cut at index 21 — the high half of the 11th
+    // pair — so this case is only safe with the surrogate guard.
+    const wrapped = wrapLongLines(line("😀", 15), 22);
+    expect(hasLoneSurrogate(wrapped)).toBe(false);
+    expect(wrapped.split("\n").length).toBeGreaterThan(1);
+    expect(wrapped.split("\n").every((l) => l.length <= 22)).toBe(true);
+  });
+
+  it("leaves an already-short line untouched", () => {
+    expect(wrapLongLines("😀 short", 120)).toBe("😀 short");
+  });
+});
 
 const empty: SectionData = {
   sessionGoal: [],
