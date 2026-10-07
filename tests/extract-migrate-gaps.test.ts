@@ -185,6 +185,32 @@ describe("migrateStalePluginEntries gaps", () => {
     expect(lstatOk(join(nm, "@zhu"))).toBe(false);
   });
 
+  // The migration hard-coded `<home>/.omp/plugins`, so under a named profile
+  // (or XDG / $PI_CONFIG_DIR) it read a directory with no lock file, returned
+  // "no-lock", and left the stale symlink in place on every extension load.
+  test("a profile-scoped plugin root is migrated too", () => {
+    const { home } = mkHome();
+    const profileDir = join(home, ".omp", "profiles", "work", "plugins");
+    const nm = join(profileDir, "node_modules");
+    fsSync.mkdirSync(nm, { recursive: true });
+    const lockPath = join(profileDir, "omp-plugins.lock.json");
+    fsSync.writeFileSync(lockPath, JSON.stringify({ plugins: { "@zhu/omp-vcc": { v: 1 } }, settings: { "@zhu/omp-vcc": { x: 1 } } }));
+    linkTarget(nm, home, "@zhu/omp-vcc", "omp-vcc");
+
+    const prevProfile = process.env.OMP_PROFILE;
+    process.env.OMP_PROFILE = "work";
+    try {
+      expect(migrateStalePluginEntries(home)).toContain("migrated");
+    } finally {
+      if (prevProfile === undefined) delete process.env.OMP_PROFILE;
+      else process.env.OMP_PROFILE = prevProfile;
+    }
+
+    expect(lstatOk(join(nm, "@zhu/omp-vcc"))).toBe(false);
+    const rewritten = JSON.parse(fsSync.readFileSync(lockPath, "utf8"));
+    expect(rewritten.plugins).toEqual({});
+  });
+
   test("package.json dependencies entry protects the link and lock", () => {
     const { home, pluginsDir, nm } = mkHome();
     writeLock(pluginsDir, { plugins: { "@zhu/omp-vcc": { v: 1 } } });

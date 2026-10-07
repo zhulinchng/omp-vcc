@@ -42,7 +42,7 @@ Use `vcc_recall` to search for prior work … Do not redo work already completed
 
 - **5 sections** are extraction-only (no hallucination): Session Goal, Files And Changes, Commits, Outstanding Context, User Preferences.
 - **Ranked brief**: TF-IDF-ranked tool summaries, capped at **120 lines** (`BRIEF_MAX_LINES=120`), token-budgeted **1100 → 2000 tokens** (`RANKED_BRIEF_BUDGET_TOKENS` floor, `CEILING` 2000, ~15 tok/block). `---` separates sections from brief; earlier lines beyond 120 are dropped tail-first.
-- **Every line keeps a pointer** `(#N)` or `(path:s-e)` so `V_ui → V_full[s:e]` is structural. Trust the summary's pointers; drill for verbatim.
+- **Every line keeps a pointer** `(#N)` (tool results as `(result #N)`) so `V_ui → V_full[s:e]` is structural. Trust the summary's pointers; drill for verbatim.
 
 ## Commands & Tools
 
@@ -82,11 +82,13 @@ vcc_recall({query:"auth", page:2})
 vcc_recall({query:"", mode:"touched"})
 /vcc-recall touched mode:touched
 
-# drill to verbatim lines — resolves (#N) or (path:s-e)
+# drill to verbatim lines — resolves (#N) and #N:path refs
 vcc_recall({query:"#12:src/auth.ts"})
 /vcc-recall #12:src/auth.ts
 vcc_recall({query:"#18"})                 # whole turn 18
-vcc_recall({query:"#18:src/auth.ts:40-80"}) # slice (offset/limit via drill-down)
+vcc_recall({query:"#18:src/auth.ts:40"})    # from line 40 (offset)
+vcc_recall({query:"#18:src/auth.ts:40:80"}) # 80 lines from line 40 (offset:limit)
+vcc_recall({query:"#18:src/auth.ts:full"})  # every line
 
 # expand multiple turns by index (from a prior recall's #N)
 vcc_recall({query:"", expand:[12,18,25]})
@@ -114,4 +116,4 @@ vcc_recall({query:"", expand:[12,18,25]})
 3. **Recall before synthesis.** For any question about prior work (file changed, test added, decision made), call `vcc_recall` proportionally to context size: small session → 1 recall with broad keywords; long/complex session → 2–3 targeted recalls (keywords then drill).
 4. **Create boundaries intentionally.** Before a multi-file refactor or hand-off doc: `/omp-vcc keep:2 continue auth refactor` — next turn starts from a fresh, citable `V_ui`. Verify with `/vcc-stats` (`kept 2/18 turns, 76% saved`) before continuing.
 5. **Don't stall after threshold.** Auto threshold/overflow compaction auto-continues via invisible follow-up (you'll just see the summary and your next turn proceeds). If you issued `/omp-vcc keep:2 <focus>`, that focus text arrives as the next user message — treat it as the goal.
-6. **Use pointers, don't re-derive.** When you quote prior work, cite `(#N)` or `(file:s-e)` from the brief; drill `#N:path` for verbatim to paste, not guessed content.
+6. **Use pointers, don't re-derive.** When you quote prior work, cite the `(#N)`/`(result #N)` refs from the brief; drill `#N:path` for verbatim to paste, not guessed content.

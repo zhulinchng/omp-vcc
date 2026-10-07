@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, it, expect } from "bun:test";
 import { extractFiles, longestCommonDirPrefix, renderFileCategoryLines } from "../extensions/vcc-core/extract/files";
+import { buildSections } from "../extensions/vcc-core/core/build-sections";
 import { DEFAULT_SETTINGS } from "../extensions/vcc-core/core/settings";
 import type { NormalizedBlock } from "../extensions/vcc-core/types";
 
@@ -15,7 +16,18 @@ describe("extractFiles", () => {
     const r = extractFiles(blocks);
     expect([...r.read].sort()).toEqual(["a.ts", "b.ts"]);
     expect([...r.modified].sort()).toEqual(["c.ts", "d.ts"]);
-    expect([...r.created]).toEqual(["c.ts"]);
+    // There is no create signal in either host's fileOps and the write/create
+    // tool sets were identical, so a tool-derived path is Modified only; the
+    // `Created` category is produced from fileOps.createdFiles alone.
+    expect([...r.created]).toEqual([]);
+  });
+
+  it("classifies file tool calls as Modified when rendered into sections", () => {
+    const blocks: NormalizedBlock[] = [{ kind: "tool_call", name: "write", args: { path: "src/new.ts" } }];
+    expect(buildSections({ blocks }).filesAndChanges).toEqual(["Modified: src/new.ts"]);
+    // A `created` path from the hook still renders as Created.
+    const withOps = buildSections({ blocks, fileOps: { readFiles: [], modifiedFiles: [], createdFiles: ["src/hook-new.ts"] } });
+    expect(withOps.filesAndChanges).toEqual(["Modified: src/new.ts", "Created: src/hook-new.ts"]);
   });
 
   it("records modern edit tools as modifications", () => {

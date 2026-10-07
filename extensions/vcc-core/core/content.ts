@@ -161,6 +161,88 @@ export const extractToolCallArgsText = (args: Record<string, unknown>): string =
   return parts.join("\n");
 };
 
+const stringField = (record: Record<string, unknown> | undefined, key: string): string => {
+  const value = record?.[key];
+  return typeof value === "string" ? value : "";
+};
+
+/**
+ * Text-bearing fields of the message shapes that carry NO `content` part array:
+ * `bashExecution` keeps its text in `command`/`output`, `pythonExecution` in
+ * `code`/`output`, the summary roles in `summary`, `fileMention` in
+ * `files[].content`. Returns `undefined` for every other shape, so callers can
+ * tell "this shape has its own text" from "this message realises 0 chars".
+ */
+export const messageShapeText = (message: unknown): string | undefined => {
+  const m = message as Record<string, unknown> | null | undefined;
+  switch (stringField(m ?? undefined, "role")) {
+    case "bashExecution":
+      return `${stringField(m ?? undefined, "command")}\n${stringField(m ?? undefined, "output")}`;
+    case "pythonExecution":
+      return `${stringField(m ?? undefined, "code")}\n${stringField(m ?? undefined, "output")}`;
+    case "branchSummary":
+    case "compactionSummary":
+      return stringField(m ?? undefined, "summary");
+    case "fileMention": {
+      const files = m?.files;
+      if (!Array.isArray(files)) return "";
+      return files
+        .map((file: unknown) => {
+          const f = file as Record<string, unknown> | null | undefined;
+          return `${stringField(f ?? undefined, "path")}\n${stringField(f ?? undefined, "content")}`;
+        })
+        .join("\n");
+    }
+    default:
+      return undefined;
+  }
+};
+
+/**
+ * Text of a whole message for sampling (density classification, calibration
+ * slices): shape-aware for the `content`-less roles and `textOf(content)`
+ * otherwise. Reading only `typeof content === "string"` made every array-content
+ * message sample as "" — a newline-only string that `isDenseContent` classifies
+ * as dense, so the prose-vs-dense prior was a constant.
+ */
+export const messageText = (message: unknown): string => {
+  const shape = messageShapeText(message);
+  if (shape !== undefined) return shape;
+  const content = (message as Record<string, unknown> | null | undefined)?.content;
+  return typeof content === "string" ? content : textOf(content as Message["content"]);
+};
+
+/** Aggregate character budget for ALL toolCall arguments appended to one message. */
+export const TOOL_ARGS_BUDGET = 2000;
+
+/**
+ * Aggregate, bounded text of every toolCall's arguments in a message's content.
+ * The bounded-once-in-aggregate rule and the null/non-object element guard are
+ * load-bearing (persisted sessions carry both shapes); `excludeToolNames` are
+ * compared case-insensitively, so a tool can be kept out of its own search
+ * results (see RECALL_TOOL_NAME in search-entries.ts).
+ */
+export const toolCallArgsText = (
+  content: Message["content"],
+  excludeToolNames: readonly string[] = [],
+): string => {
+  if (!Array.isArray(content)) return "";
+  const excluded = new Set(excludeToolNames.map((name) => name.toLowerCase()));
+  const raw = content
+    // A content array may hold a null/non-object element (persisted sessions do
+    // carry them), and `part.type` on it throws. Same guard as the other
+    // text-bearing branches in content.ts / render-entries.ts.
+    .filter((part) => part !== null && typeof part === "object" && part.type === "toolCall")
+    // Coerced, like every other tool-name read in this file: `name` is not
+    // guaranteed to be a string in a persisted line, and `42?.toLowerCase()`
+    // throws.
+    .filter((part) => !excluded.has(String(part.name ?? "").toLowerCase()))
+    .map((part) => extractToolCallArgsText(part.arguments))
+    .filter(Boolean)
+    .join("\n");
+  return clip(raw, TOOL_ARGS_BUDGET);
+};
+
 /** Extract a snippet of ~`radius` chars around the first match of `term` in `text`. */
 export const snippet = (text: string, term: string, radius = 60): string | null => {
   const idx = text.toLowerCase().indexOf(term.toLowerCase());

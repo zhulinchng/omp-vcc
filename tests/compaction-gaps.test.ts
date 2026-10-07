@@ -290,8 +290,11 @@ describe("compaction-gaps — headerless brief merge", () => {
     // Sessions with no goals/files/commits compile to brief-only summaries.
     // Stripping the trailing note must not orphan that brief (briefOf found
     // nothing after the only separator, so the merge went empty).
+    // Path-shaped user text: NON_GOAL_RE rejects it, so the session really has
+    // no Session Goal section (the previous fixture relied on the >200-char goal
+    // being DROPPED, which the clip fix removed — the section now renders).
     const filler = (tag: string) => [
-      userMsg(`${tag} ` + "x".repeat(200)),
+      userMsg(`/${tag}/` + "x".repeat(200)),
       assistantText(`${tag} ` + "y".repeat(200)),
     ];
     const s1 = compileRanked({ messages: filler("first") });

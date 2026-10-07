@@ -237,6 +237,35 @@ describe("dispatch gaps: vcc_recall tool (main factory)", () => {
     }
   });
 
+  test("expand output renders each entry once, without a per-entry session header", async () => {
+    const { dir, file, ids } = makeSession([umsg("m0", "expand me alpha"), umsg("m1", "expand me beta")]);
+    try {
+      const { tool } = makePi();
+      const out = await toolText(tool, { expand: [0, 1] }, toolCtx(file, ids));
+      // `formatRecallOutput` would print `Session history (1 entries):` per block.
+      expect(out).not.toContain("Session history (");
+      expect(out).toContain("#0 [");
+      expect(out).toContain("#1 [");
+      expect(out).toContain("expand me alpha");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("non-array expand values fall back to the recent listing instead of throwing", async () => {
+    const { dir, file, ids } = makeSession([umsg("m0", "expand me alpha")]);
+    try {
+      const { tool } = makePi();
+      // `new Set(3)` / `new Set({})` / `new Set(true)` all throw TypeError.
+      for (const expand of [3, {}, true]) {
+        const out = await toolText(tool, { expand }, toolCtx(file, ids));
+        expect(out).toContain("expand me alpha");
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("entry-ref and drill-down inside active lineage expand directly", async () => {
     const { dir, file, ids } = makeSession([
       umsg("m0", "lineage alpha"),
@@ -555,6 +584,21 @@ describe("dispatch gaps: query-less mode arms via the real commands", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  for (const cmd of ["vcc-recall", "pi-vcc-recall"]) {
+    test(`/${cmd} keeps the parsed mode in its pagination footer`, async () => {
+      const rows = Array.from({ length: 12 }, (_, i) => toolMsg(`w${i}`, "Write", { path: `/repo/src/f${i}.ts`, content: `needle ${i}` }));
+      const { dir, file, ids } = makeSession(rows);
+      try {
+        const { body } = await runCommand(cmd, "needle mode:file", file, ids);
+        // 12 hits at PAGE_SIZE 5 → page 1 of 3; the suggested follow-up must
+        // not silently drop back to hybrid search.
+        expect(body).toContain(`--- /${cmd} needle mode:file page:2 ---`);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
 
   test("/vcc-recall mode:touched pages past the first five files", async () => {
     const rows = Array.from({ length: 7 }, (_, i) => toolMsg(`w${i}`, "Write", { path: `/repo/f${i}.ts`, content: `body ${i}` }));

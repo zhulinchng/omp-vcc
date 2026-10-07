@@ -78,6 +78,33 @@ describe("step 8: previous-cycle brief is never silently dropped", () => {
     expect(out).not.toContain("earlier lines omitted");
   });
 
+  test("many short blocks cannot push the merged brief past BRIEF_MAX_LINES", () => {
+    // rank.ts budgets the fresh brief by CHARACTERS only, so a window of many
+    // short blocks rendered far more lines than BRIEF_MAX_LINES and drove
+    // roomForPrev to 0: the whole previous transcript disappeared and the cap
+    // did not hold (257 lines observed for 40 pairs).
+    const shortFresh = (pairs: number) => {
+      const msgs: unknown[] = [];
+      for (let i = 0; i < pairs; i++) {
+        msgs.push({ role: "user", content: `req ${i}` });
+        msgs.push({ role: "assistant", content: `ack ${i}` });
+      }
+      return msgs;
+    };
+    const out = compileRanked({
+      messages: shortFresh(40),
+      previousSummary: previousBrief(60),
+      fileOps: { files: [], edits: [] },
+    });
+    const transcript = out.split("\n\n---\n\n")[1] ?? "";
+    expect(transcript.length).toBeGreaterThan(0);
+    expect(transcript.split("\n").length).toBeLessThanOrEqual(BRIEF_MAX_LINES);
+    // The newest fresh content survives, and the loss is declared rather than silent.
+    expect(transcript).toContain("req 39");
+    expect(transcript).toContain("earlier lines omitted");
+    expect(transcript).not.toContain("prior0.ts");
+  });
+
   test("empty previous brief adds no spurious notice (no regression)", () => {
     const out = compileRanked({
       messages: freshMessages(2),

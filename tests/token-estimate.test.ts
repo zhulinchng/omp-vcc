@@ -3,8 +3,10 @@ import { describe, expect, test } from "bun:test";
 import {
   calibrateCharsPerToken,
   collectUsageStats,
+  estimateMessageChars,
   estimateMessageContentChars,
   estimateMessageContentTokens,
+  estimateScriptAwareMessageTokens,
   estimateTokensFromChars,
 } from "../extensions/vcc-core/core/token-estimate";
 
@@ -146,5 +148,48 @@ describe("collectUsageStats", () => {
     expect(s.messageCount).toBe(0);
     expect(s.byRole).toEqual({});
     expect(s.spanMs).toBeNull();
+  });
+});
+
+// The message shapes that carry no `content` part array (bashExecution,
+// pythonExecution, branchSummary/compactionSummary, fileMention) measured 0
+// tokens, so every tail/keep/growth measurement silently undercounted them.
+describe("shape-aware message estimates", () => {
+  test("counts bashExecution command + output", () => {
+    expect(estimateMessageChars({ role: "bashExecution", command: "a", output: "bb" })).toBe(4);
+    expect(estimateScriptAwareMessageTokens({ role: "bashExecution", command: "git log -p", output: "x".repeat(4000) })).toBe(1003);
+  });
+
+  test("counts pythonExecution code + output", () => {
+    expect(estimateMessageChars({ role: "pythonExecution", code: "print(1)", output: "1" })).toBe(10);
+    expect(estimateScriptAwareMessageTokens({ role: "pythonExecution", output: "y".repeat(400) })).toBe(101);
+  });
+
+  test("counts branch and compaction summaries", () => {
+    expect(estimateMessageChars({ role: "branchSummary", summary: "abc" })).toBe(3);
+    expect(estimateMessageChars({ role: "compactionSummary", summary: "" })).toBe(0);
+    expect(estimateScriptAwareMessageTokens({ role: "branchSummary", summary: "z".repeat(40) })).toBe(10);
+  });
+
+  test("counts fileMention paths and contents", () => {
+    const message = { role: "fileMention", files: [{ path: "a.ts", content: "0123456789" }, { path: "b.ts" }] };
+    expect(estimateMessageChars(message)).toBe("a.ts\n0123456789\nb.ts\n".length);
+    expect(estimateScriptAwareMessageTokens(message)).toBeGreaterThan(0);
+  });
+
+  test("falls through to the content-part estimator for content-carrying roles", () => {
+    const message = { role: "assistant", content: [{ type: "text", text: "hello" }] };
+    expect(estimateMessageChars(message)).toBe(estimateMessageContentChars(message.content));
+    expect(estimateScriptAwareMessageTokens(message)).toBe(2);
+  });
+
+  test("never throws on malformed shapes", () => {
+    for (const value of [undefined, null, 0, "text", {}, { role: 1 }, { role: "fileMention", files: "x" }]) {
+      expect(() => estimateMessageChars(value)).not.toThrow();
+      expect(() => estimateScriptAwareMessageTokens(value)).not.toThrow();
+    }
+    expect(estimateMessageChars({})).toBe(0);
+    expect(estimateMessageChars("text")).toBe(0);
+    expect(estimateScriptAwareMessageTokens(null)).toBe(0);
   });
 });

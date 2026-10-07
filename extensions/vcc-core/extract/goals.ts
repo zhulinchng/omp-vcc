@@ -9,7 +9,11 @@ const SCOPE_CHANGE_RE =
 const TASK_RE =
   /\b(fix|implement|add|create|build|refactor|debug|investigate|update|remove|delete|migrate|deploy|test|write|set up)\b/i;
 
-const NOISE_SHORT_RE = /^(ok|yes|no|sure|yeah|yep|go|hi|hey|thx|thanks|ok\b.*|y|n|k)\s*[.!?]*$/i;
+// Bare acknowledgements only. The old `ok\b.*` alternative also matched real
+// instructions that merely START with "ok" ("ok now implement the retry
+// logic"), and because filtering precedes the task/scope-change detection the
+// TASK_RE rescue could not fire either — the goal was dropped entirely.
+const NOISE_SHORT_RE = /^(ok|yes|no|sure|yeah|yep|go|hi|hey|thx|thanks|y|n|k)\s*[.!?]*$/i;
 
 // Reject lines that are clearly not user goals (pasted output, code, paths, tool dumps)
 // or meta-prompt boilerplate (command templates like `/issues` that start with "For each issue:"
@@ -35,7 +39,8 @@ const MAX_GOAL_CHARS = 200;
 const isSubstantiveGoal = (text: string): boolean => {
   const t = text.trim();
   if (t.length <= 5) return false;
-  if (t.length > MAX_GOAL_CHARS) return false;
+  // Long lines are clipped by the caller, not dropped: a one-line instruction
+  // over MAX_GOAL_CHARS used to produce an empty [Session Goal] section.
   if (NOISE_SHORT_RE.test(t)) return false;
   if (NON_GOAL_RE.test(t)) return false;
   return true;
@@ -61,6 +66,7 @@ export const extractGoals = (blocks: NormalizedBlock[]): string[] => {
       // into a section header. Line-scoped, so an unterminated tag keeps the
       // rest of the instruction instead of eating it.
       .map(collapseSkillTagsInLine)
+      .map((l) => clip(l, MAX_GOAL_CHARS))
       .filter((l) => l.length > 5);
     if (lines.length === 0) continue;
 

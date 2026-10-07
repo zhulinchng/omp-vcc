@@ -61,4 +61,32 @@ describe("sanitize", () => {
   it("passes clean text unchanged", () => {
     expect(sanitize("hello world")).toBe("hello world");
   });
+
+  // ECMA-48 parameter bytes are 0x30-0x3f (`:` included): colon-form SGR is what
+  // modern terminals emit, and it used to survive as literal text.
+  it("strips colon-form SGR parameters", () => {
+    expect(sanitize("\x1b[38:2::255:0:0mred")).toBe("red");
+    expect(sanitize("\x1b[4:3m")).toBe("");
+    expect(sanitize("a\x1b[38:5:196mB\x1b[0m")).toBe("aB");
+  });
+
+  it("strips 8-bit C1 CSI introducers", () => {
+    expect(sanitize("\x9b1;31mred")).toBe("red");
+  });
+
+  it("strips DCS/APC/PM/SOS string sequences", () => {
+    expect(sanitize("\x1bP1;2|payload\x1b\\tail")).toBe("tail");
+    expect(sanitize("\x1b_graphics;payload\x1b\\tail")).toBe("tail");
+    expect(sanitize("\x1b^private\x1b\\ok")).toBe("ok");
+    expect(sanitize("\x1bXignored\x1b\\ok")).toBe("ok");
+    expect(sanitize("\x1bPpayload\x07x")).toBe("x");
+  });
+
+  it("strips C1 OSC introducers and their ST terminator", () => {
+    expect(sanitize("\x1b]0;title\x9cbody")).toBe("body");
+  });
+
+  it("keeps the introducer text when a string sequence is unterminated", () => {
+    expect(sanitize("\x1bPpayload\nnext line")).toBe("Ppayload\nnext line");
+  });
 });

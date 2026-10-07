@@ -1,5 +1,6 @@
 // @ts-nocheck
 import type { NormalizedBlock } from "../types";
+import { heredocCloseIndex } from "../core/brief";
 
 interface CommitInfo {
   hash?: string;
@@ -11,12 +12,36 @@ interface CommitInfo {
 // ANSI-C quoted (`$'...'`), or bare. The whitespace anchor before the flag is
 // what stops a longer flag that merely ends in `m` (e.g. `--amend`) from being
 // misread as `-am`.
-const COMMIT_MSG_RE = /git\s+commit[^\n]*?\s(?:-[A-Za-z]*m|--message)[\s=]*(?:"((?:[^"\\]|\\.)*)"|\$?'((?:[^'\\]|\\.)*)'|(\S+))/;
+//
+// Anchored at a command position (`^`, `;`, `&&`, `|`, optionally after sudo) so
+// QUOTED text cannot claim a commit: the previous unanchored form matched
+// `echo "git commit -m wip"` and every `git commit -m ...` line inside a heredoc
+// body. `m` makes `^` line-anchored, so multi-line scripts still match. `g`
+// (with matchAll) itemises EVERY commit of `a && b` instead of only the first.
+const COMMIT_CMD_RE = /(?:^|[;&|]\s*)(?:sudo\s+)?git\b[^\n;&|]*?\scommit\b[^\n]*?\s(?:-[A-Za-z]*m|--message)[\s=]*(?:"((?:[^"\\]|\\.)*)"|\$?'((?:[^'\\]|\\.)*)'|(\S+))/gm;
+// Cheap early-out for the anchored scan above (it also accepts `git -c k=v commit`).
+const COMMIT_HINT_RE = /git\b[^\n;&|]*?\scommit\b/;
 // Git abbreviates to 7+ hex by default but prints the full 40-char SHA when
 // core.abbrev is raised, so allow the whole range.
 const HASH_RE = /\b([0-9a-f]{7,40})\b/;
 const BRACKET_HASH_RE = /\[\S+\s+([0-9a-f]{7,40})\]/;
 const RANGE_HASH_RE = /\b([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})\b/;
+
+/**
+ * Command lines that actually execute: a heredoc BODY (and its terminator) is
+ * data being written, not commands being run, so `cat > NOTES.md <<'EOF' …
+ * git commit -m "wip" … EOF` must not report a commit.
+ */
+const executableText = (command: string): string => {
+  const lines = command.split("\n");
+  const kept: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    kept.push(lines[i]);
+    const close = heredocCloseIndex(lines, i);
+    if (close !== -1) i = close;
+  }
+  return kept.join("\n");
+};
 
 const firstLineOf = (text: string): string => {
   const line = text.split(/\\n|\n/)[0] ?? "";
@@ -42,7 +67,11 @@ const matchHash = (text: string): string | undefined => {
   const range = text.match(RANGE_HASH_RE);
   if (range) return range[2];
   const plain = text.match(HASH_RE);
-  return plain ? plain[1] : undefined;
+  // A BARE hex-looking word only counts as a hash when it contains a letter:
+  // `wrote 12345678 bytes` is decimal prose, and [0-9a-f]{7,40} matched it. The
+  // bracket/range forms are structural (`[main <sha>]`, `<a>..<b>`) and stay
+  // trusted as-is — ~4% of 7-char abbreviations are all digits.
+  return plain && /[a-f]/.test(plain[1]) ? plain[1] : undefined;
 };
 
 /**
@@ -68,11 +97,10 @@ export const extractCommits = (blocks: NormalizedBlock[]): CommitInfo[] => {
     } else {
       continue;
     }
-    if (!/\bgit\s+commit\b/.test(cmd)) continue;
-    const m = cmd.match(COMMIT_MSG_RE);
-    if (!m) continue;
-    const message = firstLineOf(cleanMessage(m[1] ?? m[2] ?? m[3] ?? ""));
-    if (!message) continue;
+    const executable = executableText(cmd);
+    if (!COMMIT_HINT_RE.test(executable)) continue;
+    const matches = [...executable.matchAll(COMMIT_CMD_RE)];
+    if (matches.length === 0) continue;
 
     let hash: string | undefined;
     if (resultText !== undefined) {
@@ -91,10 +119,15 @@ export const extractCommits = (blocks: NormalizedBlock[]): CommitInfo[] => {
       }
     }
 
-    // Dedup by message+hash
-    const key = `${hash ?? ""}::${message}`;
-    if (!commits.some((c) => `${c.hash ?? ""}::${c.message}` === key)) {
-      commits.push({ hash, message });
+    // One entry per commit: `git commit -m a && git commit -m b` is two commits,
+    // and the old single `String.match` kept only the first. Dedup by message+hash.
+    for (const m of matches) {
+      const message = firstLineOf(cleanMessage(m[1] ?? m[2] ?? m[3] ?? ""));
+      if (!message) continue;
+      const key = `${hash ?? ""}::${message}`;
+      if (!commits.some((c) => `${c.hash ?? ""}::${c.message}` === key)) {
+        commits.push({ hash, message });
+      }
     }
   }
 

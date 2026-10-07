@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, test, expect, beforeEach } from "bun:test";
 import {
+  collectLiveMessages,
   formatCompactionStats,
   formatStatsTable,
   formatLastStatsDetail,
@@ -355,5 +356,54 @@ describe("bug fix: details.sections should not include [user]/[assistant] brief 
     expect(res.compaction.summary).toContain("[user]");
     expect(res.compaction.summary).toContain("[assistant]");
     expect(sections.length).toBeGreaterThan(0);
+  });
+});
+
+// The window used to restart at the FIRST entry whose id equalled the last
+// compaction's firstKeptEntryId. A duplicate id (the shape buildGlobalIndex
+// collapses) therefore re-included pre-compaction entries, so the next
+// compaction re-summarized already-summarized turns.
+describe("bug fix: live window anchors inside the last compaction segment", () => {
+  const entry = (id: string, role: string, content = "x") => ({ id, type: "message", message: { role, content } });
+  const compaction = (id: string, firstKeptEntryId: string) => ({ id, type: "compaction", firstKeptEntryId });
+  const idsOf = (branch: any[]) => collectLiveMessages(branch).map((e) => e.entry.id);
+
+  test("a duplicated kept id collects from after the compaction", () => {
+    const branch = [
+      entry("dup", "user", "before"),
+      entry("a1", "assistant", "before reply"),
+      compaction("c1", "dup"),
+      entry("dup", "user", "after"),
+      entry("d1", "assistant", "after reply"),
+    ];
+    expect(idsOf(branch)).toEqual(["dup", "d1"]);
+  });
+
+  test("a unique pre-compaction anchor is still honored", () => {
+    const branch = [
+      entry("k1", "user", "kept"),
+      compaction("c1", "k1"),
+      entry("u2", "user", "after"),
+    ];
+    expect(idsOf(branch)).toEqual(["k1", "u2"]);
+  });
+
+  test("an id that only exists after the compaction falls back to orphan recovery", () => {
+    const branch = [
+      entry("a1", "user", "summarized"),
+      compaction("c1", "dup"),
+      entry("dup", "user", "after"),
+      entry("d1", "assistant", "after reply"),
+    ];
+    expect(idsOf(branch)).toEqual(["dup", "d1"]);
+  });
+
+  test("the compact-all sentinel collects from the compaction onwards", () => {
+    const branch = [
+      entry("a1", "user", "summarized"),
+      compaction("c1", ""),
+      entry("b1", "assistant", "after"),
+    ];
+    expect(idsOf(branch)).toEqual(["b1"]);
   });
 });

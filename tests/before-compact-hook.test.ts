@@ -576,7 +576,7 @@ describe("applyTailBudget: token-budget tail cut (default path)", () => {
     if (!cut.ok) return;
     expect(cut.compactAll).toBe(true);
 
-    const result = applyTailBudget(entries, cut, { charsPerToken: 4 });
+    const result = applyTailBudget(entries, cut);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.compactAll).toBe(false);
@@ -596,7 +596,7 @@ describe("applyTailBudget: token-budget tail cut (default path)", () => {
     ];
     const cut = buildOwnCut(entries, 1);
     if (!cut.ok) return;
-    const result = applyTailBudget(entries, cut, { charsPerToken: 4 });
+    const result = applyTailBudget(entries, cut);
     expect(result).toBe(cut); // returned unchanged
     if (!result.ok) return;
     expect(result.compactAll).toBe(true);
@@ -618,7 +618,7 @@ describe("applyTailBudget: token-budget tail cut (default path)", () => {
     expect(cut.compactAll).toBe(false);
     expect(cut.firstKeptEntryId).toBe("u2");
 
-    const result = applyTailBudget(entries, cut, { charsPerToken: 4 });
+    const result = applyTailBudget(entries, cut);
     if (!result.ok) return;
     expect(result.budgetCut).toBe("oversized_tail");
     expect(result.compactAll).toBe(false);
@@ -638,7 +638,7 @@ describe("applyTailBudget: token-budget tail cut (default path)", () => {
     ];
     const cut = buildOwnCut(entries, 1);
     if (!cut.ok) return;
-    const result = applyTailBudget(entries, cut, { charsPerToken: 4 });
+    const result = applyTailBudget(entries, cut);
     expect(result).toBe(cut); // tolerance zone: unchanged
     if (!result.ok) return;
     expect(result.budgetCut).toBeUndefined();
@@ -655,7 +655,7 @@ describe("applyTailBudget: token-budget tail cut (default path)", () => {
     const cut = buildOwnCut(entries, 1);
     if (!cut.ok) return;
     expect(cut.compactAll).toBe(true);
-    const result = applyTailBudget(entries, cut, { charsPerToken: 4 });
+    const result = applyTailBudget(entries, cut);
     if (!result.ok) return;
     expect(result.budgetCut).toBe("no_anchor");
     expect(result.firstKeptEntryId).toBe("a2"); // snapped past the toolResult
@@ -701,6 +701,25 @@ describe("registerBeforeCompactHook: budget-cut hook integration", () => {
     const result = invokeBefore(makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION));
     expect(result.cancel).toBeUndefined();
     expect(result.compaction.firstKeptEntryId).not.toBe("");
+    expect(getLastCompactionStats()!.budgetCut).toBe("no_anchor");
+  });
+
+  test("Case A default path: a giant bashExecution tail is measured and re-cut", () => {
+    setConfig({ debug: false, overrideDefaultCompaction: false });
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    const entries = [
+      msg("u1", "user", "go"),
+      msg("a1", "assistant", "ran the log"),
+      // bashExecution carries its text in command/output, not `content`: before
+      // the shape-aware estimator this measured 0 tokens, so the compact-all
+      // fallback kept the whole window and recorded no budget cut.
+      { id: "b1", type: "message", message: { role: "bashExecution", command: "git log -p", output: "x".repeat(200_000) } },
+      msg("a2", "assistant", "wrap"),
+    ];
+    const result = invokeBefore(makeEvent(entries, PI_VCC_COMPACT_INSTRUCTION));
+    expect(result.cancel).toBeUndefined();
+    expect(result.compaction.firstKeptEntryId).toBe("b1");
     expect(getLastCompactionStats()!.budgetCut).toBe("no_anchor");
   });
 
@@ -803,7 +822,7 @@ describe("collectLiveMessages: custom_message / branch_summary entries", () => {
     expect(cut.ok).toBe(true);
     if (!cut.ok) return;
     expect(cut.compactAll).toBe(true); // no user anchor → case A
-    const result = applyTailBudget(entries, cut, { charsPerToken: 4 });
+    const result = applyTailBudget(entries, cut);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.budgetCut).toBe("no_anchor");

@@ -86,6 +86,33 @@ export function formatTouchedOutput(
   return result;
 }
 
+/**
+ * One `#N [role] …` line per entry, WITHOUT the listing header. `formatRecallOutput`
+ * joins them under its header, and the recall tool's expand path renders
+ * individual entries through this directly — wrapping each expanded entry in
+ * `formatRecallOutput` printed a "Session history (1 entries)" header per entry.
+ */
+export const formatRecallLines = (entries: SearchHit[], query?: string): string[] =>
+  entries.map((e) => {
+    const fileSuffix = e.files?.length ? ` files:[${e.files.join(", ")}]` : "";
+    const fileDetails = e.fileMatches?.length
+      ? `\n${e.fileMatches
+          .map((m) => {
+            const matchHeader = `  ${m.path} (${m.toolName}, ${m.lineCount} lines)`;
+            if (!m.snippet) return matchHeader;
+            const snippet = m.snippet
+              .split("\n")
+              .map((line) => `    ${line}`)
+              .join("\n");
+            return `${matchHeader}\n${snippet}`;
+          })
+          .join("\n")}`
+      : "";
+    const body = query && e.snippet ? e.snippet : e.summary;
+    const separator = fileDetails ? "\n" : " ";
+    return `#${e.index} [${e.role}]${fileSuffix}${fileDetails}${separator}${body}`;
+  });
+
 export const formatRecallOutput = (
   entries: SearchHit[],
   query?: string,
@@ -104,25 +131,7 @@ export const formatRecallOutput = (
       ? `Found ${entries.length} matches for "${query}":`
       : `Session history (${entries.length} entries):`;
 
-  const lines = entries.map((e) => {
-    const fileSuffix = e.files?.length ? ` files:[${e.files.join(", ")}]` : "";
-    const fileDetails = e.fileMatches?.length
-      ? `\n${e.fileMatches
-          .map((m) => {
-            const header = `  ${m.path} (${m.toolName}, ${m.lineCount} lines)`;
-            if (!m.snippet) return header;
-            const snippet = m.snippet
-              .split("\n")
-              .map((line) => `    ${line}`)
-              .join("\n");
-            return `${header}\n${snippet}`;
-          })
-          .join("\n")}`
-      : "";
-    const body = query && e.snippet ? e.snippet : e.summary;
-    const separator = fileDetails ? "\n" : " ";
-    return `#${e.index} [${e.role}]${fileSuffix}${fileDetails}${separator}${body}`;
-  });
+  const lines = formatRecallLines(entries, query);
 
   const body = `${header}\n\n${lines.join("\n\n")}`;
   // Every hit ref resolves: #N expands the full entry (see expandEntry in

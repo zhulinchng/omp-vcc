@@ -74,6 +74,37 @@ describe("extractGoals", () => {
     expect(goals[scopeIdx + 1]).toContain("password reset");
   });
 
+  it("clips a first instruction longer than the goal cap instead of dropping it", () => {
+    const long = `Implement the retry logic for the sync worker ${"detail ".repeat(40)}`;
+    expect(long.length).toBeGreaterThan(200);
+    const goals = extractGoals([{ kind: "user", text: long }]);
+    expect(goals).toHaveLength(1);
+    expect(goals[0].length).toBeLessThanOrEqual(200);
+    expect(goals[0].startsWith("Implement the retry logic")).toBe(true);
+  });
+
+  it("keeps instructions that start with an acknowledgement", () => {
+    // `ok\b.*` in NOISE_SHORT_RE used to swallow the whole line.
+    const goals = extractGoals([{ kind: "user", text: "ok now implement the retry logic" }]);
+    expect(goals.length).toBeGreaterThan(0);
+    expect(goals.join(" ")).toContain("retry logic");
+
+    // A bare acknowledgement from the FIRST user message is still noise, but a
+    // later one is a scope change / task instruction and must not vanish.
+    const later = extractGoals([
+      { kind: "user", text: "Fix the auth module" },
+      { kind: "assistant", text: "ok" },
+      { kind: "user", text: "ok now implement the retry logic" },
+    ]);
+    expect(later.join(" ")).toContain("retry logic");
+  });
+
+  it("still treats bare acknowledgements as noise", () => {
+    for (const text of ["ok", "ok.", "Ok!", "yes", "thanks", "y"]) {
+      expect(extractGoals([{ kind: "user", text }])).toEqual([]);
+    }
+  });
+
   it("skips noise short user messages as goals", () => {
     const blocks: NormalizedBlock[] = [
       { kind: "user", text: "ok" },

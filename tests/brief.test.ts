@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from "bun:test";
-import { compileBrief } from "../extensions/vcc-core/core/brief";
+import { compileBrief, buildBriefSections } from "../extensions/vcc-core/core/brief";
 import type { NormalizedBlock } from "../extensions/vcc-core/types";
 
 describe("compileBrief", () => {
@@ -452,5 +452,28 @@ describe("compileBrief section attribution", () => {
     ];
     const r = compileBrief(blocks);
     expect(r).toBe("[assistant]\nfirst (#0)\nsecond (#2)");
+  });
+});
+
+describe("compileBrief malformed tool calls", () => {
+  // `name` comes from persisted JSONL via normalize's unchecked toolCall branch:
+  // a non-string must not throw (the hook's handler would lose the whole summary).
+  it("skips tool calls with a non-string name", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "tool_call", name: 123 as unknown as string, args: { path: "a.ts" }, sourceIndex: 1 },
+      { kind: "tool_call", name: {} as unknown as string, args: {}, sourceIndex: 2 },
+    ];
+    expect(() => buildBriefSections(blocks)).not.toThrow();
+    expect(compileBrief(blocks)).toBe("");
+  });
+
+  it("keeps well-formed siblings of a malformed tool call", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "tool_call", name: 123 as unknown as string, args: {}, sourceIndex: 1 },
+      { kind: "tool_call", name: "Read", args: { path: "a.ts" }, sourceIndex: 2 },
+      { kind: "tool_result", name: "Read", text: "a contents", sourceIndex: 3 },
+    ];
+    expect(() => buildBriefSections(blocks)).not.toThrow();
+    expect(compileBrief(blocks)).toContain('* Read "a.ts" (#2, result #3)');
   });
 });

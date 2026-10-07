@@ -1,6 +1,6 @@
 // @ts-nocheck
 import type { Message } from "@oh-my-pi/pi-ai";
-import { clip, textOf, thinkingOf } from "./content";
+import { clip, textOf, thinkingOf, toolCallArgsText } from "./content";
 import { summarizeToolArgs } from "./tool-args";
 import { extractPath } from "./tool-args";
 
@@ -50,6 +50,20 @@ export const renderMessage = (msg: Message, index: number, full = false): Render
     const text = full ? `$ ${cmd}\n${out}` : clip(`$ ${cmd}\n${out}`, 300);
     return { index, role: "bash", summary: text };
   }
+  // pythonExecution carries code+output instead of content, and fileMention
+  // carries files[]: both used to fall through to the assistant branch and
+  // render as an EMPTY `[assistant]` row (their text was never indexed either).
+  if ((msg as any).role === "pythonExecution") {
+    const code = (msg as any).code ?? "";
+    const out = (msg as any).output ?? "";
+    const text = full ? `>>> ${code}\n${out}` : clip(`>>> ${code}\n${out}`, 300);
+    return { index, role: "python", summary: text };
+  }
+  if ((msg as any).role === "fileMention") {
+    const mentionFiles = Array.isArray((msg as any).files) ? (msg as any).files : [];
+    const text = mentionFiles.map((f: any) => `${f?.path ?? ""}\n${f?.content ?? ""}`).join("\n");
+    return { index, role: "file_mention", summary: full ? text : clip(text, 300) };
+  }
   const thinking = thinkingOf(msg.content);
   const text = full ? textOf(msg.content) : clip(textOf(msg.content), 300);
   const tools = toolCalls(msg.content);
@@ -57,8 +71,22 @@ export const renderMessage = (msg: Message, index: number, full = false): Render
   if (!text && !tools && thinking) {
     return { index, role: "thinking", summary: full ? thinking : clip(thinking, 300) };
   }
-  const summary = tools ? `${tools}\n${text}` : text;
-  return { index, role: "assistant", summary, ...(files.length > 0 && { files }) };
+  // Search indexes text + thinking + toolCall arguments (search-entries.ts
+  // fullText), so the FULL view must carry the same fields. Without them a hit
+  // whose only match lives in a Write/Edit argument gets a `#N`/`#N:full` ref
+  // that cannot reproduce the matched text. The non-full body is unchanged
+  // (pinned by tests/thinking.test.ts mixed thinking+text).
+  const base = tools ? `${tools}\n${text}` : text;
+  const argsText = full ? toolCallArgsText(msg.content) : "";
+  const summary = [
+    full && thinking ? `[thinking]\n${thinking}` : "",
+    base,
+    argsText ? `[tool args]\n${argsText}` : "",
+  ].filter(Boolean).join("\n\n");
+  // Label with the REAL role: developer/hookMessage blocks used to masquerade
+  // as `[assistant]`.
+  const role = typeof (msg as any).role === "string" && (msg as any).role ? (msg as any).role : "assistant";
+  return { index, role, summary, ...(files.length > 0 && { files }) };
 };
 
 

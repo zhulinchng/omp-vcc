@@ -328,7 +328,7 @@ describe("combined-compaction: edge cases preserved", () => {
     const underCut = buildOwnCut(under as any, 1);
     expect(underCut.ok).toBe(true);
     if (underCut.ok) {
-      const res = applyTailBudget(under as any, underCut, { maxTokens: MAX_TOKENS, charsPerToken: CPT });
+      const res = applyTailBudget(under as any, underCut, { maxTokens: MAX_TOKENS });
       expect(res.ok).toBe(true);
       expect(res.budgetCut).toBeUndefined();
       expect(res.firstKeptEntryId).toBe("u_last");
@@ -339,7 +339,7 @@ describe("combined-compaction: edge cases preserved", () => {
     const overCut = buildOwnCut(over as any, 1);
     expect(overCut.ok).toBe(true);
     if (overCut.ok) {
-      const res = applyTailBudget(over as any, overCut, { maxTokens: MAX_TOKENS, charsPerToken: CPT });
+      const res = applyTailBudget(over as any, overCut, { maxTokens: MAX_TOKENS });
       expect(res.ok).toBe(true);
       expect(res.budgetCut).toBe("oversized_tail");
       // The rescue re-cuts to the token budget, so the giant reply is

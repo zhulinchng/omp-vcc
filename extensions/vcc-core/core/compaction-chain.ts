@@ -182,10 +182,14 @@ export const coverageForMessages = (input: CoverageForMessagesInput): PiVccAppen
   if (!nonEmptyString(first) || !nonEmptyString(last)) return null;
   const sourceMessageCount = input.sourceMessageCount ?? ids.length;
   if (!Number.isInteger(sourceMessageCount) || sourceMessageCount < 1) return null;
+  // Fail closed: `""` is the compact-all sentinel, so a MISSING firstKeptEntryId
+  // must not be coerced into it — that made an incomplete attempt look like a
+  // well-formed compact-all coverage record to the append/validity checks.
+  if (typeof input.firstKeptEntryId !== "string") return null;
   return {
     firstCoveredEntryId: first,
     lastCoveredEntryId: last,
-    firstKeptEntryId: typeof input.firstKeptEntryId === "string" ? input.firstKeptEntryId : "",
+    firstKeptEntryId: input.firstKeptEntryId,
     sourceMessageCount,
   };
 };
@@ -250,7 +254,7 @@ export const decideAppendMode = (input: CompactionDecisionInput): CompactionDeci
   let mode: "append" | "rebase" = "append";
   if (input.manual === true) mode = "rebase";
   else if (explicit && rebaseTokens !== undefined) mode = rebaseTokens < input.chainTokens ? "rebase" : "append";
-  else if (pressure && saving !== undefined && saving >= thresholds.minimumSaving && (rebaseTokens === undefined || rebaseTokens < input.chainTokens)) mode = "rebase";
+  else if (pressure && saving !== undefined && saving >= thresholds.minimumSaving && rebaseTokens < input.chainTokens) mode = "rebase";
   const decision: CompactionDecision = {
     // `chainStart` is NOT part of the decision: it depends on whether a prior
     // chain exists, which only the caller knows (a manual rebase and the first

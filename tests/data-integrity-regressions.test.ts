@@ -126,6 +126,43 @@ describe("extractCommits: quoting forms and hash pairing", () => {
       .toEqual([{ hash: sha, message: "x" }]);
   });
 
+  it("ignores commits inside heredoc bodies and quoted text", () => {
+    const heredoc = [
+      "cat > NOTES.md <<'EOF'",
+      'Example: git commit -m "wip"',
+      "EOF",
+      'git commit -m "real"',
+    ].join("\n");
+    expect(extractCommits([bashCall(heredoc)])).toEqual([{ hash: undefined, message: "real" }]);
+    // No real commit at all → the file write reports nothing.
+    const onlyHeredoc = ["cat > NOTES.md <<'EOF'", 'git commit -m "wip"', "EOF"].join("\n");
+    expect(extractCommits([bashCall(onlyHeredoc)])).toEqual([]);
+    expect(extractCommits([bashCall('echo "git commit -m wip"')])).toEqual([]);
+  });
+
+  it("keeps every commit of a compound command", () => {
+    expect(extractCommits([bashCall('git commit -m "a" && git commit -m "b"')]))
+      .toEqual([{ hash: undefined, message: "a" }, { hash: undefined, message: "b" }]);
+    expect(extractCommits([bashCall('git add x && git commit -m "c"; git commit -m "d"')]))
+      .toEqual([{ hash: undefined, message: "c" }, { hash: undefined, message: "d" }]);
+  });
+
+  it("matches a commit behind -c overrides", () => {
+    expect(extractCommits([bashCall('git -c user.name=me commit -m "override"')]))
+      .toEqual([{ hash: undefined, message: "override" }]);
+  });
+
+  it("rejects a decimal output token as a hash", () => {
+    const blocks = [
+      bashCall('git commit -m "x"'),
+      { kind: "tool_result", name: "bash", text: "wrote 12345678 bytes" },
+    ];
+    expect(extractCommits(blocks)).toEqual([{ hash: undefined, message: "x" }]);
+    // A hex-looking token in the bracket form is still a hash.
+    expect(extractCommits([bashCall('git commit -m "x"'), bashResult("[main 0123456] x")]))
+      .toEqual([{ hash: "0123456", message: "x" }]);
+  });
+
   it("never adopts a hash from a different tool's result", () => {
     const blocks = [
       bashCall('git commit -m "real work"'),

@@ -6,7 +6,7 @@ Comprehensive reference for the `omp-vcc` test corpus: unit, integration, sessio
 
 ```sh
 bunx tsc --noEmit          # typecheck — 0 errors, vendored core // @ts-nocheck, skipLibCheck
-bun test                   # 967 tests, 72 files, 3163 expects, 0 fail  (~11s)
+bun test                   # 1247 tests, 80 files, 3964 expects, 0 fail  (~11s)
 bun test tests/e2e --timeout 120000   # E2E suite
 bun test tests/audit-regressions.test.ts # adversarial host/recall regressions
 bun run smoke              # extension + pipeline smoke checks
@@ -64,7 +64,7 @@ flowchart TB
     E11["combined-compaction 11\nsequential VCC chains\nsnapcompact bypass, vision gate\nno post-VCC chain, per-pi\norphan/snap/boundary, brief cap"]
     E12["compaction-mix-matrix 13\ncommand matrix via handlers\n3-pass chain, VCC+snapcompact\nVCC+handoff/shake/soft/remote\nboundary interleaves"]
   end
-  Unit & Integration & Sessions & Savings --> ALL["bun test 987 pass
+  Unit & Integration & Sessions & Savings --> ALL["bun test 1247 pass
 72 files"]
   E2E --> RUNNER["bun run e2e\nisolated OMP_DIR"]
   ALL & RUNNER --> CI["CI gates green"]
@@ -129,7 +129,7 @@ All use `tests/fixtures.ts` (`userMsg`, `assistantText`, `assistantWithThinking`
 | `normalize.test.ts` | `normalize.ts` lex→parse IR, thinking blocks preserved with `sourceIndex`, `custom` kind for injected context, queue-operation discard, `digits→` strip |
 | `rank.test.ts` | `rank.ts` TF-IDF (dedup key includes tool args), `selectRankedBriefBlocks` budget `maxBriefChars` / `maxBriefCharsCeiling` / `briefCharsPerBlock`, size-relative clamp `1100→2000` tok, `custom-context` scoring |
 | `sanitize.test.ts` | `sanitize.ts` ANSI `\u001b[31m` strip, `queue-operation` discard |
-| `token-estimate.test.ts` | `token-estimate.ts` `calibrateCharsPerToken` clamp 2–6 fallback 4 + content-class guards (Latin/CJK priors, usage-stats sampling), `estimateMessageContentChars/Tokens`, `IMAGE_CONTENT_CHARS 4800`, `collectUsageStats` models/span/tool-calls/usage-totals + charsPerToken calibration |
+| `token-estimate.test.ts` | `token-estimate.ts` `calibrateCharsPerToken` clamp 2–6 fallback 4 + content-class guards (Latin/CJK priors, usage-stats sampling), `estimateMessageContentChars/Tokens`, `estimateMessageChars`/`estimateScriptAwareMessageTokens` (shape-aware: bashExecution/pythonExecution/summary roles/fileMention text), `IMAGE_CONTENT_CHARS 4800`, `collectUsageStats` models/span/tool-calls/usage-totals + charsPerToken calibration |
 | `extract-files.test.ts` | `extract/files.ts` tool-name matching, fileOps seeding, full verbatim paths, `longestCommonDirPrefix`, `renderFileCategoryLines` flat/grouped/bare-count caps |
 | `extract-goals.test.ts` | `extract/goals.ts` goal mining |
 | `extract-preferences.test.ts` | `extract/preferences.ts` preference mining |
@@ -213,7 +213,7 @@ Support:
 | orphan `ORPHAN_ID` | `buildOrphanSession()` → summary not contain `old pre-compaction message` |
 | `reset_boundary` supersession | `resetBoundary("r1")` after `comp` → `buildOwnCut(...,1).ok` true, live window after boundary |
 | `too_few` | `buildTooFewSession()` 2 live → `{cancel:true}` + `notify warning /Too few/` via `REASON_MESSAGES.too_few_live_messages` |
-| `toolResult` snap | `buildToolResultBoundarySession()` ends with `toolResult`; `findBudgetCutIndex` not land on `toolResult`, `applyTailBudget` with `maxTokens 2000` `charsPerToken 4` snapping |
+| `toolResult` snap | `buildToolResultBoundarySession()` ends with `toolResult`; `findBudgetCutIndex` not land on `toolResult`, `applyTailBudget` with `maxTokens 2000` snapping (the calibration-free script-aware estimator; there is no `charsPerToken` option) |
 | `calibrate` 2–6 fallback 4 | `tokensBefore 0 → 4`, huge ratio → ≤6, small → ≥2 |
 | second compaction merges bounded | `summary1` as `previousSummary` → `summary2.length < summary1.length*2+2000` |
 

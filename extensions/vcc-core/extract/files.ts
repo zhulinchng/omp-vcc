@@ -22,10 +22,6 @@ const FILE_WRITE_TOOLS = new Set([
   "multiedit", "quick_edit", "target_edit", "apply_patch",
 ]);
 
-const FILE_CREATE_TOOLS = new Set([
-  "write", "write_file",
-]);
-
 const matches = (tools: Set<string>, name: string): boolean => tools.has(name.toLowerCase());
 
 /**
@@ -49,6 +45,12 @@ export const longestCommonDirPrefix = (paths: string[]): string => {
   return split[0].slice(0, i).join("/") + "/";
 };
 
+// There is no create signal in either host's fileOps (Write is `written`, Edit is
+// `edited`; the host's own summary merges both into modifiedFiles), and the
+// write/create tool sets were identical — so every tool-derived `created` path
+// was already in `modified` and deduped away by build-sections. File tool calls
+// are therefore classified Modified only; `created` is populated from
+// fileOps.createdFiles alone.
 export const extractFiles = (
   blocks: NormalizedBlock[],
   fileOps?: FileOps,
@@ -66,7 +68,6 @@ export const extractFiles = (
 
     if (matches(FILE_READ_TOOLS, b.name)) act.read.add(p);
     if (matches(FILE_WRITE_TOOLS, b.name)) act.modified.add(p);
-    if (matches(FILE_CREATE_TOOLS, b.name)) act.created.add(p);
   }
 
   // Full paths are carried verbatim: per-cycle prefix trimming made prev-cycle

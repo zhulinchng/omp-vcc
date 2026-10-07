@@ -28,6 +28,7 @@ import { formatRecallOutput, formatTouchedOutput, normalizePageNumber } from "./
 import { getActiveLineageEntryIds } from "./vcc-core/core/lineage";
 import { normalizeRecallScope, normalizeRecallMode, parseRecallScope, parseRecallMode } from "./vcc-core/core/recall-scope";
 import { parseDrillDown, expandEntryFile, parseEntryRef, expandEntry } from "./vcc-core/core/drill-down";
+import { formatRecallLines } from "./vcc-core/core/format-recall";
 import { capRecallBlocks, type RecallBudgetBlock } from "./vcc-core/core/recall-budget";
 import { buildPiVccCustomInstructions, parseKeepAndPrompt } from "./vcc-core/core/compact-args";
 
@@ -95,7 +96,7 @@ export default function (pi: ExtensionAPI): void {
     name: "vcc_recall",
     label: "VCC Recall",
     description:
-      "Recall earlier parts of the current session — decisions made, files touched, commands run, including anything dropped by compaction. Reach for this before telling the user you no longer have the context. Plain keywords work best; a regex pattern is also accepted. Results are paged (page); pass expand with entry indices to read full untruncated content. Use mode:'touched' to list files worked on in this session with their entry indices, mode:'file' to search only file tool arguments, and #N:path to drill into a file's content from an entry (#N:path:full for all lines). Note: apply_patch paths (inside the diff payload) and bash redirects do not appear in the touched index. Only the current session is searchable — earlier sessions are not.",
+      "Recall earlier parts of the current session — decisions made, files touched, commands run, including anything dropped by compaction. Reach for this before telling the user you no longer have the context. Plain keywords work best; a regex pattern is also accepted. Results are paged (page); pass expand with entry indices to read full untruncated content. Use mode:'touched' to list files worked on in this session with their entry indices, mode:'file' to search only file tool arguments, and #N:path to drill into a file's content from an entry (#N:path:full for all lines). Note: apply_patch paths (inside the diff payload) and bash redirects do not appear in the touched index. Only the current session is searchable — earlier sessions are not. Host-injected context entries (custom messages, branch summaries) are not indexed.",
     approval: "read",
     parameters: vccRecallParameters,
     async execute(_toolCallId: string, params: unknown, _signal: unknown, _onUpdate: unknown, ctx: unknown) {
@@ -197,7 +198,7 @@ export default function (pi: ExtensionAPI): void {
         return { content: [{ type: "text", text: capModelRecall(settings, [{ label: "file entries", text: output }], "file") }], details: undefined };
       }
 
-      const expandSet = new Set(p.expand ?? []);
+      const expandSet = new Set(Array.isArray(p.expand) ? p.expand : []);
       const hasExpand = expandSet.size > 0;
       if (hasExpand) {
         const { rendered: fullMsgs } = loadRecallMessages(ctx, sessionFile, true, lineageEntryIds);
@@ -211,7 +212,10 @@ export default function (pi: ExtensionAPI): void {
           };
         }
         const expanded = requested.map((i) => byIndex.get(i)).filter((m): m is NonNullable<typeof m> => Boolean(m));
-        const blocks = expanded.map((entry) => ({ id: `#${entry.index}`, text: formatRecallOutput([entry]) }));
+        // Render each requested entry as one `#N [role] …` line: wrapping every
+        // entry in formatRecallOutput would repeat its "Session history (1
+        // entries)" header once per entry.
+        const blocks = formatRecallLines(expanded).map((text, i) => ({ id: `#${expanded[i].index}`, text }));
         const output = (scope === "all" ? "Scope: all\n\n" : "") + capModelRecall(settings, blocks, "entry");
         return { content: [{ type: "text", text: output }], details: undefined };
       }
@@ -222,21 +226,26 @@ export default function (pi: ExtensionAPI): void {
         const page = normalizePageNumber(p.page);
         const totalPages = Math.ceil(hits.length / PAGE_SIZE);
         const scopeSuffix = scope === "all" ? " (scope: all)" : "";
+        // The footer/guidance must carry the mode back, or following the hint
+        // silently switches an explicit mode:file search back to hybrid.
+        const modeHint = mode !== "hybrid" ? ` with mode:'${mode}'` : "";
         const truncationNote = truncated ? ` — showing ${hits.length} of ${totalBeforeCap} matches, refine your query for more precise results` : "";
         if (hits.length > 0 && page > totalPages) {
-          const guidance = truncated ? `Use a page between 1 and ${totalPages}.` : `Use a page between 1 and ${totalPages}, or refine your query.`;
+          const guidance = truncated ? `Use a page between 1 and ${totalPages}${modeHint}.` : `Use a page between 1 and ${totalPages}${modeHint}, or refine your query.`;
           const text = `Page ${page} is outside the available range 1-${totalPages} (${hits.length} matches${scopeSuffix}${truncationNote}). ${guidance}`;
           return { content: [{ type: "text", text: bounded(text, `page:${page}`, "page", `page ${page}`) }], details: undefined };
         }
         const start = (page - 1) * PAGE_SIZE;
         const pageResults = hits.slice(start, start + PAGE_SIZE);
         const header = totalPages > 1 ? `Page ${page}/${totalPages} (${hits.length} total matches${scopeSuffix}${truncationNote})` : `${hits.length} matches${scopeSuffix}${truncationNote}`;
-        const footer = page < totalPages ? `\n--- Use page:${page + 1}${scope === "all" ? " with scope:'all'" : ""} for more results ---` : "";
+        const footer = page < totalPages ? `\n--- Use page:${page + 1}${scope === "all" ? " with scope:'all'" : ""}${modeHint} for more results ---` : "";
         const output = formatRecallOutput(pageResults, q, header, { truncated, totalBeforeCap }) + footer;
         return { content: [{ type: "text", text: bounded(output, `page:${page}`, "page", `page ${page}`) }], details: undefined };
       }
       const recent = msgs.slice(-DEFAULT_RECENT);
-      const blocks = recent.map((entry) => ({ id: `#${entry.index}`, text: formatRecallOutput([entry]) }));
+      // One `#N [role] …` line per entry — `formatRecallOutput([entry])` printed a
+      // "Session history (1 entries)" header (and a wrong plural) before each one.
+      const blocks = formatRecallLines(recent).map((text, i) => ({ id: `#${recent[i].index}`, text }));
       const output = (scope === "all" ? "Scope: all\n\n" : "") + capModelRecall(settings, blocks, "entry");
       return { content: [{ type: "text", text: output }], details: undefined };
     },
@@ -386,9 +395,12 @@ export default function (pi: ExtensionAPI): void {
       const totalPages = Math.ceil(hits.length / PAGE_SIZE);
       const scopeSuffix = scope === "all" ? " (scope: all)" : "";
       const scopeArg = scope === "all" ? " scope:all" : "";
+      // The suggested follow-up must repeat the parsed mode, or following it
+      // silently switches an explicit mode:file search back to hybrid.
+      const modeArg = mode !== "hybrid" ? ` mode:${mode}` : "";
       const truncationNote = truncated ? ` — showing ${hits.length} of ${totalBeforeCap} matches, refine your query for more precise results` : "";
       if (hits.length > 0 && page > totalPages) {
-        const guidance = truncated ? `Use /vcc-recall ${query}${scopeArg} page:N with N between 1 and ${totalPages}.` : `Use /vcc-recall ${query}${scopeArg} page:N with N between 1 and ${totalPages}, or refine your query.`;
+        const guidance = truncated ? `Use /vcc-recall ${query}${scopeArg}${modeArg} page:N with N between 1 and ${totalPages}.` : `Use /vcc-recall ${query}${scopeArg}${modeArg} page:N with N between 1 and ${totalPages}, or refine your query.`;
         const text = `Page ${page} is outside the available range 1-${totalPages} (${hits.length} matches${scopeSuffix}${truncationNote}). ${guidance}`;
         try { piAny.sendMessage?.({ customType: "vcc-recall", content: text, display: true }, { triggerTurn: false }); } catch {}
         return;
@@ -396,7 +408,7 @@ export default function (pi: ExtensionAPI): void {
       const start = (page - 1) * PAGE_SIZE;
       const pageResults = hits.slice(start, start + PAGE_SIZE);
       const header = totalPages > 1 ? `Page ${page}/${totalPages} (${hits.length} total matches${scopeSuffix}${truncationNote})` : `${hits.length} matches${scopeSuffix}${truncationNote}`;
-      const footer = page < totalPages ? `\n--- /vcc-recall ${query}${scopeArg} page:${page + 1} ---` : "";
+      const footer = page < totalPages ? `\n--- /vcc-recall ${query}${scopeArg}${modeArg} page:${page + 1} ---` : "";
       const output = formatRecallOutput(pageResults, query, header, { truncated, totalBeforeCap }) + footer;
       try { piAny.sendMessage?.({ customType: "vcc-recall", content: output, display: true }, { triggerTurn: false }); } catch {}
       try { c.ui.notify(`vcc_recall: ${hits.length} hits`, "info"); } catch {}
@@ -442,9 +454,11 @@ export default function (pi: ExtensionAPI): void {
       const totalPages = Math.ceil(hits.length / PAGE_SIZE);
       const scopeSuffix = scope === "all" ? " (scope: all)" : "";
       const scopeArg = scope === "all" ? " scope:all" : "";
+      // Same as /vcc-recall: the parsed mode must ride the suggested follow-up.
+      const modeArg = mode !== "hybrid" ? ` mode:${mode}` : "";
       const truncationNote = truncated ? ` — showing ${hits.length} of ${totalBeforeCap} matches, refine your query for more precise results` : "";
       if (hits.length > 0 && page > totalPages) {
-        const guidance = truncated ? `Use /pi-vcc-recall ${query}${scopeArg} page:N with N between 1 and ${totalPages}.` : `Use /pi-vcc-recall ${query}${scopeArg} page:N with N between 1 and ${totalPages}, or refine your query.`;
+        const guidance = truncated ? `Use /pi-vcc-recall ${query}${scopeArg}${modeArg} page:N with N between 1 and ${totalPages}.` : `Use /pi-vcc-recall ${query}${scopeArg}${modeArg} page:N with N between 1 and ${totalPages}, or refine your query.`;
         const text = `Page ${page} is outside the available range 1-${totalPages} (${hits.length} matches${scopeSuffix}${truncationNote}). ${guidance}`;
         try { piAny.sendMessage?.({ customType: "vcc-recall", content: text, display: true }, { triggerTurn: false }); } catch {}
         return;
@@ -452,7 +466,7 @@ export default function (pi: ExtensionAPI): void {
       const start = (page - 1) * PAGE_SIZE;
       const pageResults = hits.slice(start, start + PAGE_SIZE);
       const header = totalPages > 1 ? `Page ${page}/${totalPages} (${hits.length} total matches${scopeSuffix}${truncationNote})` : `${hits.length} matches${scopeSuffix}${truncationNote}`;
-      const footer = page < totalPages ? `\n--- /pi-vcc-recall ${query}${scopeArg} page:${page + 1} ---` : "";
+      const footer = page < totalPages ? `\n--- /pi-vcc-recall ${query}${scopeArg}${modeArg} page:${page + 1} ---` : "";
       const output = formatRecallOutput(pageResults, query, header, { truncated, totalBeforeCap }) + footer;
 
       try { piAny.sendMessage?.({ customType: "vcc-recall", content: output, display: true }, { triggerTurn: false }); } catch {}

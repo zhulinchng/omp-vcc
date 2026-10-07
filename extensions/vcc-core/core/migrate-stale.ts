@@ -6,6 +6,7 @@
 import * as fsSync from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { pluginsDirCandidates } from "./settings";
 
 const HISTORIC = ["@zhu/omp-vcc", "@zhulinchng/omp-vcc"];
 const CURRENT = "omp-vcc";
@@ -26,9 +27,11 @@ function isSymlink(p: string): boolean {
   }
 }
 
-export function migrateStalePluginEntries(home?: string): string {
-  const baseHome = home || homedir();
-  const pluginsDir = join(baseHome, ".omp", "plugins");
+/**
+ * Run the migration against ONE plugin root. `home` is only used for the
+ * candidates list by the caller; every path here derives from `pluginsDir`.
+ */
+function migrateOneDir(pluginsDir: string): string {
   const lockPath = join(pluginsDir, "omp-plugins.lock.json");
   const pkgPath = join(pluginsDir, "package.json");
   const nm = join(pluginsDir, "node_modules");
@@ -163,4 +166,22 @@ export function migrateStalePluginEntries(home?: string): string {
     return `migrated locks:${removedLocks.join(",") || "none"} links:${removedLinks.join(",") || "none"}`;
   }
   return "no-stale";
+}
+
+/**
+ * One-time migration across EVERY plugin root the host may use. The migration
+ * used to read only `<home>/.omp/plugins`, so under a named profile / XDG /
+ * `$PI_CONFIG_DIR` it inspected a directory with no lock file and returned
+ * "no-lock": the stale `@zhu/omp-vcc` symlink survived every extension load
+ * even though settings.ts already resolves the real roots
+ * (`pluginsDirCandidates`). The first non-trivial result wins; "no-lock" is
+ * reported only when NO candidate had a lock file.
+ */
+export function migrateStalePluginEntries(home?: string): string {
+  const baseHome = home || homedir();
+  const results = pluginsDirCandidates(process.env, baseHome, join(baseHome, ".omp"), undefined)
+    .map((dir) => migrateOneDir(dir));
+  const migrated = results.find((r) => r !== "no-lock" && r !== "no-stale");
+  if (migrated) return migrated;
+  return results.every((r) => r === "no-lock") ? "no-lock" : "no-stale";
 }

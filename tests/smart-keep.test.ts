@@ -202,11 +202,10 @@ describe("resolveSmartKeepUserTurns", () => {
       smartKeepTail: true,
       minTokens: 10,
       maxTokens: 20,
-      charsPerToken: 2,
     });
 
-    // Script-aware Latin content remains four characters per token even when
-    // the host calibration ratio is two, so keep:2 stays within the 20-token cap.
+    // Script-aware Latin content is four characters per token, so keep:2 stays
+    // within the 20-token cap (the calibrated host ratio does not apply here).
     expect(r.keepUserTurns).toBe(2);
     expect(r.smartAdjusted).toBe(true);
   });

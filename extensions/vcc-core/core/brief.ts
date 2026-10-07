@@ -352,12 +352,16 @@ export const buildBriefSections = (blocks: NormalizedBlock[]): BriefLine[] => {
       }
       case "tool_call": {
         // Skip malformed tool calls from streaming providers (empty name / fragmented args).
-        if (!b.name || b.name.trim() === "") break;
-        const resultIdx = findToolResultIndex(blocks, blockIndex, b.name);
+        // `name` is copied from persisted JSONL without a type check, so it is not
+        // guaranteed to be a string (a non-string would throw out of the hook and
+        // discard the whole compaction).
+        const toolName = typeof b.name === "string" ? b.name : "";
+        if (!toolName.trim()) break;
+        const resultIdx = findToolResultIndex(blocks, blockIndex, toolName);
         const ref = b.sourceIndex != null
           ? (resultIdx != null ? ` (#${b.sourceIndex}, result #${resultIdx})` : ` (#${b.sourceIndex})`)
           : (resultIdx != null ? ` (result #${resultIdx})` : "");
-        const summary = toolOneLiner(b.name, b.args) + ref;
+        const summary = toolOneLiner(toolName, b.args) + ref;
         push("[assistant]", summary, true);
         break;
       }

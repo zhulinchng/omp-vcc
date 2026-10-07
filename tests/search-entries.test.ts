@@ -1027,3 +1027,53 @@ describe("path key order is a single source", () => {
     expect(rendered[0].files).toEqual([extractPath(bothSpellings[0].arguments) as string]);
   });
 });
+
+// Browse, the mode:file cap and hostile patterns.
+describe("searchEntriesDetailed: browse, mode:file cap, hostile patterns", () => {
+  const many = (n: number) => {
+    const msgs: Message[] = [];
+    const rendered: RenderedEntry[] = [];
+    for (let i = 0; i < n; i++) {
+      msgs.push({ role: "assistant", content: [{ type: "text", text: `entry body ${i}` }] } as any);
+      rendered.push(renderMessage(msgs[i], i));
+    }
+    return { rendered, msgs };
+  };
+
+  it("no-query browse is never capped", () => {
+    // `searchEntries(entries, messages)` documents "list all"; re-applying the
+    // 50-hit search cap returned only the oldest 50 of a long session.
+    const { rendered, msgs } = many(60);
+    const r = searchEntriesDetailed(rendered, msgs);
+    expect(r.hits).toHaveLength(60);
+    expect(r.truncated).toBe(false);
+    expect(searchEntries(rendered, msgs)).toHaveLength(60);
+  });
+
+  it("mode:file with an empty query still honours the cap", () => {
+    const msgs: Message[] = Array.from({ length: 60 }, (_, i) => ({
+      role: "assistant",
+      content: [{ type: "toolCall", name: "write", arguments: { path: `src/f${i}.ts`, content: `body ${i}` } }],
+    })) as any;
+    const rendered = msgs.map((m, i) => renderMessage(m, i));
+    const r = searchEntriesDetailed(rendered, msgs, undefined, { mode: "file" });
+    expect(r.hits).toHaveLength(50);
+    expect(r.truncated).toBe(true);
+  });
+
+  it("a query that assembles a hostile snippet regex still returns", () => {
+    // Two terms sharing a named group: their joined alternation is the only
+    // unguarded RegExp construction on the search path.
+    const query = "(?<dup>alpha) (?<dup>beta)";
+    expect(() => searchEntriesDetailed(entries, messages, query)).not.toThrow();
+    const r = searchEntriesDetailed(entries, messages, query);
+    expect(Number.isInteger(r.hits.length)).toBe(true);
+  });
+
+  it("an empty corpus does not produce NaN scores", () => {
+    // lenNorm divided by avgDl (0 for an empty corpus) → NaN used to propagate
+    // into every score and probability.
+    const r = searchEntriesDetailed([], [], "anything");
+    expect(r.hits).toEqual([]);
+  });
+});

@@ -23,7 +23,8 @@ import {
 } from "./core/tool-output-budget";
 import { buildPiVccCustomInstructions, parseKeepAndPrompt, PI_VCC_COMPACT_INSTRUCTION } from "./core/compact-args";
 import { loadSettings, loadSettingsWithPluginOverlay, loadSettingsWithSourcesAsync, getSettingsPath, DEFAULT_SETTINGS, type PiVccSettings, type VccConfigView } from "./core/settings";
-import { calibrateCharsPerToken, estimateMessageContentChars, estimateScriptAwareTokens, estimateScriptAwareMessageContentTokens, estimateTokensFromChars, collectUsageStats } from "./core/token-estimate";
+import { calibrateCharsPerToken, estimateMessageChars, estimateScriptAwareMessageTokens, estimateScriptAwareTokens, estimateTokensFromChars, collectUsageStats } from "./core/token-estimate";
+import { messageText } from "./core/content";
 import { sanitize } from "./core/sanitize";
 import type { PiVccCompactionDetails } from "./details";
 import type { CompactionReason } from "./types";
@@ -675,7 +676,7 @@ const trustedFullContextTokens = (branchEntries: any[], preparation: any, ctx: a
     for (let j = i + 1; j < branchEntries.length; j++) {
       const post = branchEntries[j];
       if (post?.type !== "message") continue;
-      postAnchor += estimateScriptAwareMessageContentTokens(post.message?.content);
+      postAnchor += estimateScriptAwareMessageTokens(post.message);
     }
     return Math.max(0, authoritative + postAnchor);
   }
@@ -1002,33 +1003,31 @@ export const collectLiveMessages = (branchEntries: any[]): EntryWithMessage[] =>
     return liveMessages;
   }
 
-  // Orphan recovery: triggers when lastKeptId is set to "" (sentinel from prior
-  // compact-all) OR set to an id that no longer exists in the branch. In both cases,
-  // start collecting from right after the last compaction entry.
-  const hasPriorCompaction = lastCompactionIdx >= 0;
-  const hasValidKeptId = !!lastKeptId && branchEntries.some((e: any) => e.id === lastKeptId);
-  const orphanRecovery = hasPriorCompaction && !hasValidKeptId;
+  // The window must start INSIDE the last segment. Anchoring on "an entry with
+  // this id exists somewhere in the branch" plus the first match re-included
+  // every entry before the last compaction whenever that id also occurred
+  // before it — the exact duplicate-id shape `buildGlobalIndex` collapses, so
+  // the window started before the compaction and re-summarized summarized
+  // entries. Only a unique occurrence BEFORE the compaction is a usable anchor;
+  // anything else (missing id, the "" compact-all sentinel, an id that only
+  // occurs after the compaction) means orphan recovery: collect from right
+  // after the compaction entry.
+  const keptPositions: number[] = [];
+  if (lastKeptId) {
+    for (let i = 0; i < branchEntries.length; i++) {
+      if (branchEntries[i].id === lastKeptId) keptPositions.push(i);
+    }
+  }
+  const anchorIdx = keptPositions.length === 1 && keptPositions[0] < lastCompactionIdx ? keptPositions[0] : -1;
+  const startIdx = anchorIdx >= 0 ? anchorIdx : lastCompactionIdx + 1;
 
-  // Collect live messages
   const liveMessages: EntryWithMessage[] = [];
-  if (orphanRecovery) {
-    for (let i = lastCompactionIdx + 1; i < branchEntries.length; i++) {
-      const e = branchEntries[i];
-      if (e.type === "compaction") continue;
-      if (e.type === "reset_boundary") continue;
-      const m = toLiveMessage(e);
-      if (m) liveMessages.push({ entry: e, message: m });
-    }
-  } else {
-    let foundKept = !lastKeptId; // if no prior compaction, start collecting immediately
-    for (const e of branchEntries) {
-      if (!foundKept && e.id === lastKeptId) foundKept = true;
-      if (!foundKept) continue;
-      if (e.type === "compaction") continue;
-      if (e.type === "reset_boundary") continue;
-      const m = toLiveMessage(e);
-      if (m) liveMessages.push({ entry: e, message: m });
-    }
+  for (let i = startIdx; i < branchEntries.length; i++) {
+    const e = branchEntries[i];
+    if (e.type === "compaction") continue;
+    if (e.type === "reset_boundary") continue;
+    const m = toLiveMessage(e);
+    if (m) liveMessages.push({ entry: e, message: m });
   }
   return liveMessages;
 };
@@ -1112,6 +1111,11 @@ export function buildOwnCut(
 // anchored tail is absent (autonomous: no user boundary in the live window)
 // or oversized (a single giant last user turn). Cuts at the nearest valid
 // non-toolResult boundary, mirroring pi-core's findCutPoint.
+//
+// Budgets are measured with the calibration-free script-aware estimator
+// (CJK = 1 tok/char, other = ceil(chars/4)); the session's calibrated
+// chars/token is intentionally not applied here — this is a rescue for
+// pathological tails, so a ratio that under-counts must not disable it.
 export const findBudgetCutIndex = (
   live: EntryWithMessage[],
   maxTokens: number,
@@ -1119,7 +1123,7 @@ export const findBudgetCutIndex = (
   let acc = 0;
   let crossed = -1;
   for (let i = live.length - 1; i >= 0; i--) {
-    acc += estimateScriptAwareMessageContentTokens(live[i].message.content);
+    acc += estimateScriptAwareMessageTokens(live[i].message);
     if (acc >= maxTokens) {
       crossed = i;
       break;
@@ -1136,7 +1140,7 @@ export const findBudgetCutIndex = (
 export const applyTailBudget = (
   branchEntries: any[],
   cut: OwnCutResult,
-  opts: { maxTokens?: number; oversizedFactor?: number; charsPerToken?: number; live?: EntryWithMessage[] } = {},
+  opts: { maxTokens?: number; oversizedFactor?: number; live?: EntryWithMessage[] } = {},
 ): OwnCutResult => {
   if (!cut.ok) return cut;
   const maxTokens = opts.maxTokens ?? MAX_SMART_TAIL_TOKENS;
@@ -1170,7 +1174,7 @@ export const applyTailBudget = (
   const tailStart = cut.messages.length; // equals the cut index in the live window
   let tailTokens = 0;
   for (let i = tailStart; i < live.length; i++) {
-    tailTokens += estimateScriptAwareMessageContentTokens(live[i].message.content);
+    tailTokens += estimateScriptAwareMessageTokens(live[i].message);
   }
   if (tailTokens <= maxTokens * factor) return cut;
   const idx = findBudgetCutIndex(live, maxTokens);
@@ -1194,8 +1198,6 @@ export interface ResolveSmartKeepOptions {
   /** Injectable thresholds for tests. */
   minTokens?: number;
   maxTokens?: number;
-  /** Calibrated chars/token for the current session; defaults to heuristic when omitted. */
-  charsPerToken?: number;
   /** Prebuilt live window; rebuilt from `branchEntries` when omitted. */
   live?: EntryWithMessage[];
 }
@@ -1226,7 +1228,7 @@ const tailTokensForKeep = (branchEntries: any[], keepUserTurns: number, live?: E
   const keptIdx = window.findIndex((e) => e.entry.id === cut.firstKeptEntryId);
   if (keptIdx < 0) return null;
   return window.slice(keptIdx).reduce(
-    (sum: number, e) => sum + estimateScriptAwareMessageContentTokens(e.message?.content),
+    (sum: number, e) => sum + estimateScriptAwareMessageTokens(e.message),
     0,
   );
 };
@@ -1440,7 +1442,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const calibrationCut = buildOwnCut(branchEntries as any[], 0, false, liveWindow);
     const calibrationMessageChars = calibrationCut.ok
       ? calibrationCut.messages.reduce(
-          (sum: number, message: any) => sum + estimateMessageContentChars(message.content),
+          (sum: number, message: any) => sum + estimateMessageChars(message),
           0,
         )
       : 0;
@@ -1448,20 +1450,21 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       ? preparation.previousSummary.length
       : 0;
     // Content samples for the mismatch guards: head text (first 50 mapped
-    // contents — string content or "" per message) plus tail text (last 50).
-    // A prose head with a dense tail is the exact shape that under-reported
-    // kept tails, so density is checked on both ends. Bounded (8k chars each):
-    // only the sampled windows are joined, never the whole transcript.
+    // messages) plus tail text (last 50). A prose head with a dense tail is the
+    // exact shape that under-reported kept tails, so density is checked on both
+    // ends. Bounded (8k chars each): only the sampled windows are joined, never
+    // the whole transcript. Sampling via shape-aware messageText (not
+    // `typeof content === "string"`) matters: array content — the dominant shape
+    // on both hosts — sampled as "" and `isDenseContent("")` is false, so the
+    // prose/dense discrimination was a constant.
     const calibrationMsgs = calibrationCut.ok ? calibrationCut.messages : [];
     const headContents: string[] = [];
     for (let i = 0; i < calibrationMsgs.length && headContents.length < 50; i++) {
-      const c = (calibrationMsgs[i] as any).content;
-      headContents.push(typeof c === "string" ? c : "");
+      headContents.push(messageText(calibrationMsgs[i]));
     }
     const tailContents: string[] = [];
     for (let i = Math.max(0, calibrationMsgs.length - 50); i < calibrationMsgs.length; i++) {
-      const c = (calibrationMsgs[i] as any).content;
-      tailContents.push(typeof c === "string" ? c : "");
+      tailContents.push(messageText(calibrationMsgs[i]));
     }
     const calibrationSample = joinBounded(headContents, 8000);
     const calibrationTailSample = joinBounded(tailContents, 8000);
@@ -1479,7 +1482,6 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       requestedKeepUserTurns: keepUserTurnsExplicit ? keepUserTurns : null,
       explicit: keepUserTurnsExplicit,
       smartKeepTail: settings.smartKeepTail,
-      charsPerToken: tokenEstimate.charsPerToken,
       live: liveWindow,
     });
     let ownCut = buildOwnCut(branchEntries as any[], smartKeep.keepUserTurns, keepUserTurnsExplicit, liveWindow);
@@ -1487,7 +1489,6 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     // token-budget cut. Explicit keep:N is respected absolutely (no-op here).
     if (ownCut.ok && !keepUserTurnsExplicit) {
       ownCut = applyTailBudget(branchEntries as any[], ownCut, {
-        charsPerToken: tokenEstimate.charsPerToken,
         live: liveWindow,
       });
     }
@@ -1602,7 +1603,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       ? (branchEntries as any[]).slice(keptIdx).filter((e: any) => e.type === "message")
       : [];
     const keptTokensEst = keptEntries.reduce(
-      (sum: number, entry: any) => sum + estimateScriptAwareMessageContentTokens(entry.message?.content),
+      (sum: number, entry: any) => sum + estimateScriptAwareMessageTokens(entry.message),
       0,
     );
     const config = settings;
@@ -1666,7 +1667,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     // must happen: abstain (host default proceeds) instead of cancelling.
     const summaryChars = summary.length;
     const prefixChars = agentMessages.reduce(
-      (sum: number, message: any) => sum + estimateMessageContentChars(message.content),
+      (sum: number, message: any) => sum + estimateMessageChars(message),
       0,
     );
     const prevSummaryChars = typeof preparation.previousSummary === "string"
@@ -1677,7 +1678,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const { netGrowthChars, toleranceChars } = guard;
     if (guard.trip) {
       const prefixTok = agentMessages.reduce(
-        (sum: number, message: any) => sum + estimateScriptAwareMessageContentTokens(message.content),
+        (sum: number, message: any) => sum + estimateScriptAwareMessageTokens(message),
         0,
       );
       // netNewSummaryChars is already a CHARACTER count. Estimating the decimal

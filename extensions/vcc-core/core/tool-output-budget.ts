@@ -124,9 +124,11 @@ export const buildRetainedToolOutputProjection = (
     const markerCost = estimateScriptAwareTokens(markerFor(entry.id));
     // Retain while it fits. Also retain when omitting would NOT save anything:
     // swapping a body for a marker costs `markerCost`, so a body cheaper than
-    // its own marker stays. Without this, a session full of trivial tool calls
-    // would emit ~2x more tokens as markers than it would have kept as text.
-    if (!exhausted && (spent + tokens <= limit || tokens <= markerCost)) {
+    // its own marker always stays. The marker-cost arm must stay OUTSIDE the
+    // exhaustion gate: gating it meant one oversized body flipped `exhausted`,
+    // after which every older tiny body was omitted too — and each omission
+    // ADDED its marker to `spent`, so the "omission" made the payload bigger.
+    if (tokens <= markerCost || (!exhausted && spent + tokens <= limit)) {
       projection.retainedTokens += tokens;
       spent += tokens;
       continue;
@@ -202,7 +204,9 @@ const findProjectionTarget = (
       if (messages[i]?.toolCallId === toolCallId) byCall.push(i);
     }
     if (byCall.length === 1) return byCall[0];
-    if (byCall.length > 1) return -1;
+    // Ambiguous toolCallId (a host may reuse one across retries) does NOT
+    // disqualify the omission either: fall through to the byte-identical
+    // serialized strategy, which resolves on identity.
   }
 
   const serialized = metadata.serializedByEntryId?.[omission.entryId];

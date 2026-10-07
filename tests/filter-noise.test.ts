@@ -44,6 +44,31 @@ describe("filterNoise", () => {
     expect((result[0] as any).text).toBe("real task");
   });
 
+  it("removes the host-facing snake_case noise tool names", () => {
+    // omp/pi emit `todo`, `web_search` and `ask` (builtin-names.ts), while
+    // NOISE_TOOLS only carried the legacy camelCase names, so none of them were
+    // ever filtered.
+    for (const name of ["todo", "TodoWrite", "web_search", "WebSearch", "ask", "AskUser"]) {
+      const blocks: NormalizedBlock[] = [
+        { kind: "tool_call", name, args: {} },
+        { kind: "tool_result", name, text: "ok" },
+        { kind: "user", text: "real task" },
+      ];
+      const result = filterNoise(blocks);
+      expect(result).toHaveLength(1);
+      expect((result[0] as any).text).toBe("real task");
+    }
+  });
+
+  it("never throws on a non-string tool name", () => {
+    const blocks: NormalizedBlock[] = [
+      { kind: "tool_call", name: 123 as unknown as string, args: {} },
+      { kind: "tool_result", name: undefined as unknown as string, text: "ok" },
+    ];
+    expect(() => filterNoise(blocks)).not.toThrow();
+    expect(filterNoise(blocks)).toHaveLength(2);
+  });
+
   it("preserves non-noise tool calls", () => {
     const blocks: NormalizedBlock[] = [
       { kind: "tool_call", name: "Edit", args: { path: "a.ts" } },

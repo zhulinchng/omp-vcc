@@ -86,8 +86,21 @@ const joinContinuations = (text: string): string[] => {
 
 /** Merge a header section */
 const mergeHeaderSection = (header: string, prev: string, fresh: string): string => {
-  // Outstanding Context is volatile -- always use fresh only
-  if (header === "Outstanding Context") return fresh;
+  // Collapse skill tags on BOTH inputs before anything is returned. A summary
+  // written before the writers collapsed can still carry a raw mid-line tag,
+  // and the early returns below would otherwise pass it straight through — the
+  // removed content-blind guard was the only thing that had scrubbed it.
+  // Structure-preserving (one line in, one line out) and LINE-scoped, because
+  // an unterminated tag must not consume the rest of its bullet.
+  const prevCollapsed = prev.split("\n").map(collapseSkillTagsInLine).join("\n");
+  const freshCollapsed = fresh.split("\n").map(collapseSkillTagsInLine).join("\n");
+
+  // Outstanding Context: fresh wins while the retained window still shows
+  // blockers, but the previous section is CARRIED when it shows none —
+  // returning `fresh` unconditionally silently deleted every unresolved blocker
+  // as soon as the window scrolled past it. The shared CAP eviction below never
+  // runs for this branch, so growth is bounded by the sections themselves.
+  if (header === "Outstanding Context") return freshCollapsed || prevCollapsed;
 
   // Files And Changes: merge by category (Modified/Created/Read), dedup paths.
   // Always rendered through mergeFileLines (even one-sided) so stale bare
@@ -97,15 +110,6 @@ const mergeHeaderSection = (header: string, prev: string, fresh: string): string
     if (!prev) return fresh;
     return mergeFileLines(prev, fresh);
   }
-
-  // Collapse skill tags on BOTH inputs before anything is returned. A summary
-  // written before the writers collapsed can still carry a raw mid-line tag,
-  // and the early returns below would otherwise pass it straight through — the
-  // removed content-blind guard was the only thing that had scrubbed it.
-  // Structure-preserving (one line in, one line out) and LINE-scoped, because
-  // an unterminated tag must not consume the rest of its bullet.
-  const prevCollapsed = prev.split("\n").map(collapseSkillTagsInLine).join("\n");
-  const freshCollapsed = fresh.split("\n").map(collapseSkillTagsInLine).join("\n");
 
   if (!prev) return freshCollapsed;
   if (!fresh) return prevCollapsed;
@@ -120,7 +124,15 @@ const mergeHeaderSection = (header: string, prev: string, fresh: string): string
   const freshLines = joinContinuations(freshCollapsed).filter((l) => l.startsWith("- "));
   const combined = [...new Set([...prevLines, ...freshLines])];
   const CAP = header === "Session Goal" ? 8 : header === "Commits" ? 8 : 15;
-  const capped = combined.length > CAP ? combined.slice(-CAP) : combined;
+  // Session Goal keeps the session's ORIGINAL goal (the first line captured,
+  // which stays first through every merge) — a FIFO tail cut evicted it as soon
+  // as a long session accumulated scope changes, so the summary lost the task
+  // it was summarizing. The other slots still keep the newest lines.
+  const capped = combined.length > CAP
+    ? (header === "Session Goal"
+      ? [...combined.slice(0, 1), ...combined.slice(-(CAP - 1))]
+      : combined.slice(-CAP))
+    : combined;
   if (capped.length === 0) return "";
   return `[${header}]\n${capped.join("\n")}`;
 };
@@ -229,9 +241,16 @@ const capBriefToLineBudget = (text: string, maxLines: number): string => {
 };
 
 const mergeBriefTranscriptWithFreshBudget = (prev: string, fresh: string): string => {
-  if (!prev) return fresh;
+  if (!prev) return capBriefToLineBudget(fresh, BRIEF_MAX_LINES);
   if (!fresh) return capBrief(prev);
-  const freshLines = briefLineCount(fresh);
+  // The fresh brief is char-budgeted by rank.ts, NOT line-budgeted: a window of
+  // many short blocks (80 one-line tool calls) rendered ~240 lines and drove
+  // `roomForPrev` to 0, so the previous transcript was replaced by a single
+  // omission notice and the BRIEF_MAX_LINES cap did not hold. Line-cap the
+  // fresh brief first, reserving the separator plus the previous brief's
+  // two-line omission header.
+  const freshCapped = capBriefToLineBudget(fresh, Math.max(1, BRIEF_MAX_LINES - 3));
+  const freshLines = briefLineCount(freshCapped);
   // Reserve one line for the blank separator, and two more when the previous
   // brief must be truncated (the "...(N earlier lines omitted)" notice plus its
   // blank line). Reserving the overhead up front keeps the merged brief within
@@ -242,12 +261,15 @@ const mergeBriefTranscriptWithFreshBudget = (prev: string, fresh: string): strin
   // became "...(4 earlier lines omitted)").
   const roomForPrev = Math.max(0, BRIEF_MAX_LINES - freshLines - 1);
   const prevLines = briefLineCount(prev);
-  const prevBudget = prevLines > roomForPrev ? roomForPrev - 2 : roomForPrev;
+  const prevBudget = Math.max(0, prevLines > roomForPrev ? roomForPrev - 2 : roomForPrev);
   // Even with no room left, still declare the loss rather than dropping prev
   // silently — one notice line over budget beats a summary that lies about
   // having covered everything.
   const prevTail = capBriefToLineBudget(prev, prevBudget);
-  return `${prevTail}\n\n${fresh}`;
+  const merged = `${prevTail}\n\n${freshCapped}`;
+  // Belt and braces: the budget arithmetic above already fits BRIEF_MAX_LINES,
+  // but never hand the model an unbounded brief.
+  return briefLineCount(merged) > BRIEF_MAX_LINES ? capBriefToLineBudget(merged, BRIEF_MAX_LINES) : merged;
 };
 
 const mergePrevious = (prev: string, fresh: string, options: { preserveFreshBrief?: boolean } = {}): string => {
@@ -317,11 +339,16 @@ const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\
 
 const RECALL_NOTE_PATTERN = new RegExp(RECALL_NOTE.split(" ").map(escapeRegExp).join("\\s+"));
 
+// Tail-ANCHORED variant. Matching the first occurrence anywhere (the old
+// behaviour) truncated everything after a previous summary that merely QUOTED
+// the note, because `text.slice(0, match.index)` drops the whole tail.
+const RECALL_NOTE_TAIL_PATTERN = new RegExp(`${RECALL_NOTE_PATTERN.source}\\s*$`);
+
 const stripRecallNote = (text: string): string => {
-  // Remove trailing RECALL_NOTE (and any separators surrounding it) if present.
+  // Remove a TRAILING RECALL_NOTE (and any separators surrounding it).
   // Whitespace-insensitive: matches the current single-line format, a bare
   // trailing note, and legacy copies wrapped mid-sentence by wrapLongLines.
-  const match = RECALL_NOTE_PATTERN.exec(text);
+  const match = RECALL_NOTE_TAIL_PATTERN.exec(text);
   if (!match || match.index < 0) return text;
   return text.slice(0, match.index).replace(/\s*(?:\n\n---\n\n)?\s*$/, "").trimEnd();
 };

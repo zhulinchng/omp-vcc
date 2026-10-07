@@ -206,7 +206,7 @@ omp config list | grep -E "vcc|compaction"
 
 ### `smartKeepTail` (5 k → 25 k)
 
-Resolver `resolveSmartKeepUserTurns({branchEntries, requestedKeepUserTurns:null, explicit:false, smartKeepTail:true, charsPerToken, live})` (`live` is the prebuilt live window a caller may pass to avoid rebuilding it per candidate):
+Resolver `resolveSmartKeepUserTurns({branchEntries, requestedKeepUserTurns:null, explicit:false, smartKeepTail:true, live})` (`live` is the prebuilt live window a caller may pass to avoid rebuilding it per candidate):
 
 - `explicit===true` or `smartKeepTail===false` → return `baseKeep` unchanged.
 - `tailTokensForKeep(baseKeep)` (live-window chars incl. `custom_message`) → if `null` (compact-all/cancel/empty-prefix) or `> minTokens 5k` → return base.

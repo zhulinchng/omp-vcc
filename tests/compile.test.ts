@@ -56,13 +56,52 @@ describe("compile", () => {
     expect(r).toContain("Next step");
   });
 
-  it("outstanding context is volatile (fresh only)", () => {
+  // Outstanding Context used to be "fresh only": returning `fresh`
+  // unconditionally deleted every unresolved blocker as soon as the retained
+  // window scrolled past it, so the model was told nothing was outstanding.
+  it("outstanding context prefers fresh blockers over previous ones", () => {
+    const previousSummary = "[Outstanding Context]\n- old blocker\n\n---\n\n[user]\nhi";
+    const r = compile({
+      previousSummary,
+      messages: [userMsg("continue"), assistantText("Still broken: the parser loses keys.")],
+    });
+    const sectionBody = r.split("[Outstanding Context]")[1]?.split("\n\n---")[0] ?? "";
+    expect(sectionBody).toContain("parser loses keys");
+    // Fresh replaces prev instead of stacking, so the section cannot grow per cycle.
+    expect(sectionBody).not.toContain("old blocker");
+  });
+
+  it("outstanding context carries the previous blockers when the window shows none", () => {
     const previousSummary = "[Outstanding Context]\n- old blocker\n\n---\n\n[user]\nhi";
     const r = compile({
       previousSummary,
       messages: [userMsg("continue")],
     });
-    expect(r).not.toContain("old blocker");
+    expect(r).toContain("old blocker");
+  });
+
+  it("session goal keeps the original goal when the cap evicts old lines", () => {
+    const goalLines = Array.from({ length: 8 }, (_, i) => `- goal ${i}`).join("\n");
+    const previousSummary = `[Session Goal]\n${goalLines}\n\n---\n\n[user]\noriginal ask`;
+    const r = compile({ previousSummary, messages: [userMsg("also handle retries")] });
+    const goals = r.split("[Session Goal]")[1]?.split("\n\n")[0] ?? "";
+    // The first goal is the session's original task: a FIFO tail cut used to
+    // evict it as soon as a long session accumulated scope changes.
+    expect(goals).toContain("goal 0");
+    expect(goals).toContain("also handle retries");
+  });
+
+  it("keeps text that follows a quoted recall note in the previous summary", () => {
+    const note = "Use `vcc_recall` to search for prior work, decisions, and context from before this summary. Do not redo work already completed.";
+    const previousSummary = [
+      "[Session Goal]\n- original",
+      "---",
+      `[assistant]\nThe summary footer reads: ${note}`,
+      "IMPORTANT tail marker",
+    ].join("\n\n");
+    const r = compile({ previousSummary, messages: [userMsg("go on")] });
+    // Stripping from the FIRST occurrence anywhere truncated the whole tail.
+    expect(r).toContain("IMPORTANT tail marker");
   });
 
   it("caps long brief transcript with rolling window", () => {

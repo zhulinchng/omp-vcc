@@ -188,3 +188,62 @@ describe("retained tool output budget", () => {
     expect(projection.pendingCount).toBe(1);
   });
 });
+
+// The marker-cost rule and the toolCallId fallthrough.
+describe("retained tool output: exhaustion and ambiguous ids", () => {
+  const outputMsg = (id: string, text: string, toolCallId = `call-${id}`) => ({
+    id,
+    type: "message",
+    message: { role: "toolResult", toolCallId, toolName: "Read", content: [{ type: "text", text }] },
+  });
+  const assistantMsg = (id: string) => ({ id, type: "message", message: { role: "assistant", stopReason: "stop", content: "done" } });
+
+  test("the marker-cost rule survives budget exhaustion", () => {
+    // Marker-cost retention used to be gated on `!exhausted`: one oversized body
+    // flipped the flag and every older tiny body was then swapped for a marker
+    // that costs MORE than the body — 100 x 2-tok bodies became 100 markers.
+    const entries = [
+      ...Array.from({ length: 100 }, (_, i) => outputMsg(`m${i}`, "x".repeat(8))),
+      outputMsg("huge", "y".repeat(100_000)), // 25k tok
+      assistantMsg("a1"),
+    ];
+    const projection = buildRetainedToolOutputProjection(entries, 20_000);
+    expect(projection.omissions.map((o) => o.entryId)).toEqual(["huge"]);
+    expect(projection.retainedTokens).toBeGreaterThan(0);
+  });
+
+  test("an ambiguous toolCallId falls through to the serialized identity match", () => {
+    const messages = [
+      structuredClone(outputMsg("a", "first body").message),
+      structuredClone(outputMsg("b", "second body").message),
+    ];
+    messages[0].toolCallId = "shared-call";
+    messages[1].toolCallId = "shared-call";
+    const projection = {
+      version: 1 as const,
+      retainedTokens: 0,
+      omittedTokens: 0,
+      pendingCount: 0,
+      omissions: [{ entryId: "target", marker: "[omitted]" }],
+    };
+    const applied = applyRetainedToolOutputProjection(messages, projection, {
+      omissionToolCallIds: { target: "shared-call" },
+      serializedByEntryId: { target: JSON.stringify(messages[1]) },
+    });
+    expect(applied).not.toBe(messages);
+    expect(applied[1].content[0].text).toBe("[omitted]");
+    expect(applied[0].content[0].text).toBe("first body");
+  });
+
+  test("an unresolvable omission is skipped without disturbing the payload", () => {
+    const messages = [structuredClone(outputMsg("a", "body").message)];
+    const projection = {
+      version: 1 as const,
+      retainedTokens: 0,
+      omittedTokens: 0,
+      pendingCount: 0,
+      omissions: [{ entryId: "gone", marker: "[omitted]" }],
+    };
+    expect(applyRetainedToolOutputProjection(messages, projection, {})).toBe(messages);
+  });
+});

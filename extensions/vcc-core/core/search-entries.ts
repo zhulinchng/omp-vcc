@@ -1,7 +1,15 @@
 // @ts-nocheck
 import type { Message } from "@oh-my-pi/pi-ai";
 import type { RenderedEntry } from "./render-entries";
-import { textOf, thinkingOf, isContentBearing, extractToolCallText, extractToolCallArgsText, clip } from "./content";
+import { textOf, thinkingOf, isContentBearing, extractToolCallText, toolCallArgsText, TOOL_ARGS_BUDGET, clip } from "./content";
+
+// TOOL_ARGS_BUDGET is the aggregate head-only cap for all toolCall arguments of
+// one message (see toolCallArgsText in content.ts): a single shared budget, not
+// per call, so N toolCalls can't multiply the bound and make one message's
+// contribution to the BM25 doc corpus unbounded. Content past it is not indexed
+// via toolCall arguments at all — an honest tradeoff: a Write/Edit tool result
+// often only acknowledges success ("wrote 400 lines"), so a fact buried past
+// the cap is not guaranteed to be searchable elsewhere either.
 import { scoreToProbability, estimateLikelihoodParams } from "./bayesian-probability.ts";
 import type { RecallMode } from "./recall-scope";
 import { PATH_KEYS } from "./tool-args";
@@ -195,9 +203,20 @@ const scriptWordCount = (text: string): number => {
   return count;
 };
 
-/** Build a regex for snippet highlighting — matches first available term. */
-const snippetRegex = (sources: string[]): RegExp =>
-  new RegExp(sources.join("|"), "i");
+/**
+ * Build a regex for snippet highlighting — matches the first available term.
+ * The alternation is assembled from user-supplied patterns, so the
+ * construction itself is guarded: a `new RegExp` throw (e.g. two terms that
+ * both use a named group the runtime rejects) would fail the WHOLE search,
+ * and a snippet highlight is not worth that. Degrades to the first term.
+ */
+const snippetRegex = (sources: string[]): RegExp => {
+  try {
+    return new RegExp(sources.join("|"), "i");
+  } catch {
+    return sources.length > 0 ? safeRegex(sources[0]) : new RegExp("", "i");
+  }
+};
 
 // ── Stopwords for natural language queries ──
 const STOPWORDS = new Set([
@@ -285,6 +304,9 @@ const bm25Score = (doc: string, compiled: CompiledTerm[], ctx: BM25Context, dl: 
   let score = 0;
   let totalTf = 0;
   const seenTerms = new Set<string>();
+  // Guarded like every other ratio on this path: an empty corpus (avgDl 0) made
+  // `dl / ctx.avgDl` NaN, which propagated into every BM25 score.
+  const lenNorm = ctx.avgDl > 0 ? dl / ctx.avgDl : 1;
 
   for (const c of compiled) {
     const termTf = termFreq(doc, c.freqRe);
@@ -294,11 +316,11 @@ const bm25Score = (doc: string, compiled: CompiledTerm[], ctx: BM25Context, dl: 
 
     const docFreq = ctx.df.get(c.term) ?? 0;
     const idf = Math.log((ctx.n - docFreq + 0.5) / (docFreq + 0.5) + 1);
-    const tfNorm = (termTf * (BM25_K + 1)) / (termTf + BM25_K * (1 - BM25_B + BM25_B * dl / ctx.avgDl));
+    const tfNorm = (termTf * (BM25_K + 1)) / (termTf + BM25_K * (1 - BM25_B + BM25_B * lenNorm));
     score += idf * tfNorm;
   }
 
-  return { score, tf: totalTf, distinctTerms: seenTerms.size, docLenRatio: ctx.avgDl > 0 ? dl / ctx.avgDl : 1 };
+  return { score, tf: totalTf, distinctTerms: seenTerms.size, docLenRatio: lenNorm };
 };
 
 /** Line-based snippet: ±contextLines around first regex match. */
@@ -433,20 +455,6 @@ const fileMatchesWithoutQuery = (msg: Message): FileMatch[] => {
 const fileText = fileToolText;
 
 /**
- * Aggregate character budget for ALL toolCall arguments appended to one
- * message's searchable text — a single shared budget across every toolCall
- * in the message, not per call, so N toolCalls can't multiply the bound and
- * make one message's contribution to the BM25 doc corpus unbounded.
- *
- * Head-only cap: content past this budget is not indexed via toolCall
- * arguments at all. This is an honest tradeoff, not a proxy for full
- * coverage — a Write/Edit tool result commonly only acknowledges success
- * (e.g. "wrote 400 lines"), so a fact buried past the cap in a giant
- * argument is not guaranteed to be searchable elsewhere either.
- */
-const TOOL_ARGS_BUDGET = 2000;
-
-/**
  * Tool name of the recall tool itself (src/tools/recall.ts). A search
  * operation must not match its own query or its own prior output: the
  * vcc_recall invocation is persisted as an ordinary assistant toolCall (its
@@ -458,26 +466,6 @@ const TOOL_ARGS_BUDGET = 2000;
  * general allowlist/blocklist over tool names or tool results.
  */
 const RECALL_TOOL_NAME = "vcc_recall";
-
-/** Text of every toolCall's arguments in a message's content, for search —
- *  bounded once, in aggregate, by TOOL_ARGS_BUDGET. Excludes the recall
- *  tool's own arguments (see RECALL_TOOL_NAME). */
-const toolCallArgsText = (content: Message["content"]): string => {
-  if (!Array.isArray(content)) return "";
-  const raw = content
-    // A content array may hold a null/non-object element (persisted sessions do
-    // carry them), and `part.type` on it throws. Same guard as the other
-    // text-bearing branches in content.ts / render-entries.ts.
-    .filter((part) => part !== null && typeof part === "object" && part.type === "toolCall")
-    // Coerced, like every other tool-name read in this file: `name` is not
-    // guaranteed to be a string in a persisted line, and `42?.toLowerCase()`
-    // throws.
-    .filter((part) => String(part.name ?? "").toLowerCase() !== RECALL_TOOL_NAME)
-    .map((part) => extractToolCallArgsText(part.arguments))
-    .filter(Boolean)
-    .join("\n");
-  return clip(raw, TOOL_ARGS_BUDGET);
-};
 
 /**
  * Build full searchable text for a message: text parts plus toolCall
@@ -497,12 +485,21 @@ const fullText = (msg: Message): string => {
   if ((msg as any).role === "bashExecution") {
     return `${(msg as any).command ?? ""} ${(msg as any).output ?? ""}`;
   }
+  // Mirror renderMessage's shape branches: without these, pythonExecution and
+  // fileMention content was neither searchable nor visible in the recalled view.
+  if ((msg as any).role === "pythonExecution") {
+    return `${(msg as any).code ?? ""} ${(msg as any).output ?? ""}`;
+  }
+  if ((msg as any).role === "fileMention") {
+    const files = Array.isArray((msg as any).files) ? (msg as any).files : [];
+    return files.map((f: any) => `${f?.path ?? ""}\n${f?.content ?? ""}`).join("\n");
+  }
   if (msg.role === "toolResult" && String(msg.toolName ?? "").toLowerCase() === RECALL_TOOL_NAME) {
     return "";
   }
   const text = textOf(msg.content);
   const thinking = thinkingOf(msg.content);
-  const argsText = toolCallArgsText(msg.content);
+  const argsText = toolCallArgsText(msg.content, [RECALL_TOOL_NAME]);
   return [text, thinking, argsText].filter(Boolean).join("\n");
 };
 
@@ -823,6 +820,11 @@ export const searchEntriesDetailed = (
   const uncapped: SearchTuning = { ...tuning, cap: Number.MAX_SAFE_INTEGER };
   const result = searchDetailed(entries, messages, query, uncapped);
   const rawQuery = query?.trim() ?? "";
+  // Browse (no query) promises EVERY entry — `searchEntries(entries, messages)`
+  // is documented as "list all". Re-applying the search cap here returned only
+  // the 50 OLDEST entries of a long session; `mode: "file"` builds a real match
+  // list and keeps its cap.
+  if (!rawQuery && (tuning?.mode ?? "hybrid") !== "file") return result;
   if (!rawQuery.includes("\\")) return capHits(result.hits, cap, result.totalBeforeCap);
   const literal = escapeRegex(rawQuery);
   if (literal === rawQuery) return capHits(result.hits, cap, result.totalBeforeCap);

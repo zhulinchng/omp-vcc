@@ -1,10 +1,18 @@
 // @ts-nocheck
 import type { NormalizedBlock } from "../types";
 
+// Compared case-insensitively against the persisted tool name: the camelCase
+// entries are the legacy (Claude-Code-era) names, the snake_case ones are what
+// omp/pi actually emit (`todo`, `web_search`, `ask`), and the previous exact
+// `Set.has` matched neither of the latter — so every todo/web-search block
+// reached the summary as a tool line.
 const NOISE_TOOLS = new Set([
-  "TodoWrite", "TodoRead", "ToolSearch", "WebSearch",
-  "AskUser", "ExitSpecMode", "GenerateDroid",
+  "todowrite", "todoread", "toolsearch", "websearch", "askuser", "exitspecmode", "generatedroid",
+  "todo", "web_search", "ask",
 ]);
+
+const isNoiseTool = (name: unknown): boolean =>
+  NOISE_TOOLS.has(String(name ?? "").toLowerCase());
 
 const NOISE_STRINGS = [
   "Continue from where you left off.",
@@ -36,8 +44,8 @@ const isNoiseUserBlock = (text: string): boolean => {
 export const filterNoise = (blocks: NormalizedBlock[]): NormalizedBlock[] => {
   const out: NormalizedBlock[] = [];
   for (const b of blocks) {
-    if (b.kind === "tool_call" && NOISE_TOOLS.has(b.name)) continue;
-    if (b.kind === "tool_result" && NOISE_TOOLS.has(b.name)) continue;
+    if (b.kind === "tool_call" && isNoiseTool(b.name)) continue;
+    if (b.kind === "tool_result" && isNoiseTool(b.name)) continue;
     if (b.kind === "user") {
       if (isNoiseUserBlock(b.text)) continue;
       const cleaned = cleanUserText(b.text);

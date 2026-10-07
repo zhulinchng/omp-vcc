@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { messageShapeText } from "./content";
+
 export const DEFAULT_CHARS_PER_TOKEN = 4;
 export const MIN_CHARS_PER_TOKEN = 2;
 export const MAX_CHARS_PER_TOKEN = 6;
@@ -192,6 +194,33 @@ export const estimateScriptAwareMessageContentTokens = (content: unknown): numbe
     }
   }
   return Math.ceil(total);
+};
+
+/**
+ * Text-bearing fields of the message shapes that carry no `content` part
+ * array. `bashExecution` keeps its text in `command`/`output`, `pythonExecution`
+ * in `code`/`output`, the summary roles in `summary`, `fileMention` in
+ * `files[].content` — every one of them is invisible to the content-part
+ * estimators. Returns `undefined` for shapes that DO have `content`, so
+ * callers fall through to the part-level estimators.
+ */
+/**
+ * Char length of a whole message. Equal to
+ * `estimateMessageContentChars(message.content)` for the `content`-carrying
+ * roles and to the shape text for bashExecution / pythonExecution /
+ * branchSummary / compactionSummary / fileMention (which otherwise measure 0).
+ */
+export const estimateMessageChars = (message: unknown): number => {
+  const shape = messageShapeText(message);
+  if (shape !== undefined) return shape.length;
+  return estimateMessageContentChars(asRecord(message)?.content);
+};
+
+/** Script-aware variant of {@link estimateMessageChars}. */
+export const estimateScriptAwareMessageTokens = (message: unknown): number => {
+  const shape = messageShapeText(message);
+  if (shape !== undefined) return estimateScriptAwareTokens(shape);
+  return estimateScriptAwareMessageContentTokens(asRecord(message)?.content);
 };
 
 export interface UsageStats {

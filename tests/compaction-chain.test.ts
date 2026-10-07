@@ -70,6 +70,17 @@ describe("append compaction chain", () => {
     expect(coverageForMessages({ selectedIds: ["a", "b"], firstKeptEntryId: "c" })).toEqual(coverage("a", "b", "c"));
   });
 
+  test("coverage fails closed on a non-string firstKeptEntryId", () => {
+    // `""` is the compact-all sentinel and must survive; a MISSING id used to be
+    // coerced into it, making a malformed attempt look like valid compact-all
+    // coverage to buildAppendOnlyDetails / validCoverageForBranch.
+    for (const missing of [undefined, null, 42, {}]) {
+      expect(coverageForMessages({ selectedIds: ["a", "b"], firstKeptEntryId: missing })).toBeNull();
+    }
+    expect(coverageForMessages({ selectedIds: ["a", "b"], firstKeptEntryId: "" })).toEqual(coverage("a", "b", ""));
+    expect(coverageForMessages({ selectedIds: ["a", "b"] })).toBeNull();
+  });
+
   test("builds chain-start and next sequence details", () => {
     const first = buildAppendOnlyDetails({
       segment: { summary: "one", coverage: coverage("a", "b", "c"), tokensBefore: 90 },
