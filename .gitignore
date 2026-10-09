@@ -7,3 +7,4 @@ skills-lock.json
 .DS_Store
 coverage/
 .pi
+.omp/plans
