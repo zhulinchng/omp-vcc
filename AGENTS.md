@@ -57,7 +57,7 @@ docs/                   — architecture, configuration, harness, omp-compaction
 
 ```bash
 bunx tsc --noEmit                    # zero-build, vendored // @ts-nocheck, skipLibCheck
-bun test                             # 1247 tests, 80 files, 3964 expects
+bun test                             # 1282 tests, 82 files, 4049 expects
 bun test tests/brief.test.ts         # single suite
 bun run smoke                        # 16 checks: 3 hooks + 6 cmds + 2 tools + dedup (+ pipeline)
 

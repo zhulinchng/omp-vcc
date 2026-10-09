@@ -6,6 +6,7 @@ import {
   buildOwnCut,
   AUTO_CONTINUE_CUSTOM_TYPE,
   OMP_VCC_COMPACT_INSTRUCTION,
+  __setHostKindForTests,
 } from "../extensions/vcc-core/hook";
 
 describe("invisible auto-continue: trigger + context filter", () => {
@@ -144,6 +145,10 @@ describe("scheduleManaged agrees with isCurrentGeneration", () => {
 
   it("fires the auto-continue after a threshold compaction", async () => {
     vi.useFakeTimers();
+    // The plugin's own auto-continue is a pi-only contract: omp resumes the
+    // interrupted turn itself, so it must not fire there (that race is the
+    // double-prompt the latch exists to prevent).
+    __setHostKindForTests("pi");
     try {
       const pi = makePi();
       const ctx = ctxWithSessionId();
@@ -177,6 +182,7 @@ describe("scheduleManaged agrees with isCurrentGeneration", () => {
       vi.advanceTimersByTime(1);
       expect(pi.sent.some((m) => m?.customType === AUTO_CONTINUE_CUSTOM_TYPE)).toBe(true);
     } finally {
+      __setHostKindForTests(null);
       vi.useRealTimers();
     }
   });

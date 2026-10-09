@@ -12,7 +12,7 @@ import { textOf, thinkingOf, isContentBearing, extractToolCallText, toolCallArgs
 // the cap is not guaranteed to be searchable elsewhere either.
 import { scoreToProbability, estimateLikelihoodParams } from "./bayesian-probability.ts";
 import type { RecallMode } from "./recall-scope";
-import { PATH_KEYS } from "./tool-args";
+import { PATH_KEYS, isFilesystemPath } from "./tool-args";
 
 export interface FileMatch {
   path: string;
@@ -387,7 +387,7 @@ const clipLineAroundMatch = (
 const filePathFromArgs = (args: Record<string, unknown>): string | undefined =>
   PATH_KEYS
     .map((key) => args[key])
-    .find((value): value is string => typeof value === "string");
+    .find((value): value is string => isFilesystemPath(value));
 
 /** Path plus content-bearing fields for one file tool call. */
 const fileToolPartText = (part: Record<string, unknown>): { path?: string; text: string } => {
@@ -517,9 +517,13 @@ export function getFileIndicators(msg: Message): { toolName: string; path: strin
     if (!part || typeof part !== "object" || part.type !== "toolCall") continue;
     const args = part.arguments as Record<string, unknown>;
     if (!isContentBearing(args)) continue;
+    // Device URIs (`xd://propose`, `local://…`) are host-internal targets, not
+    // repository files: indexing them in mode:'touched' misreports the change
+    // set the same way they used to misreport `[Files And Changes]`.
     const path = PATH_KEYS
       .map((k) => args[k])
-      .find((v): v is string => typeof v === "string")!;
+      .find((v): v is string => isFilesystemPath(v));
+    if (path === undefined) continue;
     const totalText = extractToolCallText(args);
     const nonEmpty = totalText.split("\n").filter((l) => l.trim().length > 0);
     indicators.push({

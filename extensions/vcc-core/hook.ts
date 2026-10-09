@@ -230,6 +230,15 @@ interface PerPiState {
   timers: Set<unknown>;
   pendingDisplay?: { text: string; sourceEntryId?: string; truncated: boolean };
   autoCompaction?: { generation: number; sessionId?: string; reason: string; action: string; willRetry: boolean };
+  /** Latched at `session_before_compact`: whether the HOST owns the agent turn
+   *  that follows this compaction. `auto_compaction_end` may be emitted BEFORE
+   *  the `session_compact` finish event reaches us (the host detaches the emit
+   *  for mid-turn compactions), so the transient `autoCompaction` field cannot
+   *  answer this at `session_compact` time. Either value suppresses the plugin's
+   *  own invisible-continue; they differ only in diagnostics. Only set on omp —
+   *  pi has no auto-continue of its own, so there the latch stays unset and the
+   *  legacy live predicate still applies. */
+  compactionOwner?: "host-auto" | "host-manual";
   pendingCompactionFingerprint?: string;
   pendingPreviousStats?: CompactionStats | null;
   /** Pre-compaction copies of the history arrays. A length snapshot cannot undo
@@ -425,6 +434,7 @@ const advanceSessionGeneration = (pi: any, ctx: any): void => {
   state.statsHistory = [];
   state.pendingDisplay = undefined;
   state.autoCompaction = undefined;
+  state.compactionOwner = undefined;
   pendingFollowUpPrompt = null;
   pendingAutoContinueTimer = null;
   lastCompactWasPiVcc = false;
@@ -1428,6 +1438,27 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       if (m === "snapcompact" || m === "shake" || m === "soft" || m === "remote" || m === "handoff") return;
     }
     if (!isPiVcc && !settings.overrideDefaultCompaction) return;
+    // omp owns the turn after EVERY compaction IT drives: auto (threshold /
+    // overflow / idle) resumes the interrupted turn via
+    // #scheduleCompactionContinuation, mid-turn passes run with
+    // autoContinue:false + suppressContinuation:true because the in-flight turn
+    // continues by itself, manual /compact resumes the turn it aborted, and
+    // plan-mode "Approve and compact context" dispatches its own execution
+    // turn. `auto_compaction_start` is therefore only a hint, never the
+    // authority: it is absent for manual compactions, and `auto_compaction_end`
+    // (emitted after a DETACHED `session_compact` emit, session-maintenance.ts:5300)
+    // clears it before the finish event reaches us. Latch the answer once, past
+    // the gates above so a compaction the plugin does NOT own leaves no latch.
+    // Gated on omp only: pi emits no `auto_compaction_start` at all, so an
+    // unconditional latch would silently disable continueAfterThresholdCompact
+    // on the one host with no auto-continue of its own.
+    const attemptAuto = attemptState?.autoCompaction;
+    const autoOwnsThisAttempt = attemptAuto !== undefined
+      && attemptAuto.generation === attemptGeneration
+      && (attemptAuto.sessionId ?? attemptSessionId) === attemptSessionId;
+    if (attemptState && getHostKind() === "omp") {
+      attemptState.compactionOwner = autoOwnsThisAttempt ? "host-auto" : "host-manual";
+    }
     const memoryResult = nativeMemoryBlock(ctx, event, branchEntries as any[], settings);
     function runBody(memoryBlock: string) {
       if (!attemptCurrent()) return;
@@ -1937,6 +1968,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     rollbackPendingStats(per);
     if (!per) return;
     per.pendingDisplay = undefined;
+    per.compactionOwner = undefined;
     clearPendingAttempt(per);
     setPendingFollowUpPrompt(pi, null);
   });
@@ -1957,9 +1989,14 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       && (!pendingFingerprint || committedFingerprint === pendingFingerprint || legacyCompletionShape);
     const pendingDisplay = per?.pendingDisplay;
     const followUpPrompt = getPendingFollowUpPrompt(pi);
+    // Read BEFORE the clear below: the latch is the authority for who owns the
+    // turn that follows, and it must survive until the continuation decision is
+    // made later in this handler.
+    const continuationOwner = per?.compactionOwner;
     if (per) {
       if (!ownsCompaction) rollbackPendingStats(per);
       per.pendingDisplay = undefined;
+      per.compactionOwner = undefined;
       clearPendingAttempt(per);
     }
     setPendingFollowUpPrompt(pi, null);
@@ -2011,7 +2048,13 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       return;
     }
     const auto = per?.autoCompaction;
-    const hostOwnsContinuation = auto?.generation === generation && (auto.sessionId ?? sessionIdOf(ctx)) === sessionId;
+    // The latch is authoritative when present: it was set once, at
+    // `session_before_compact`, so it cannot be lost to a detached
+    // `auto_compaction_end` that outruns this emit. The live `autoCompaction`
+    // predicate is the fallback for hosts that never set the latch (pi).
+    const hostOwnsContinuation = continuationOwner !== undefined
+      ? true
+      : auto?.generation === generation && (auto.sessionId ?? sessionIdOf(ctx)) === sessionId;
     const eventContext = readCompactionEventContext(event);
     // `incomplete` is a recovery the host will itself re-drive; it is deliberately
     // NOT added to the auto-continue gate below, which must stay off for it.
@@ -2024,7 +2067,12 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       && settings.continueAfterThresholdCompact;
     if (willRetry) return;
     scheduleCompactionStatsNotify(pi, ctx, stats);
-    if (hostOwnsContinuation) return;
+    // NOTE: no `hostOwnsContinuation` return here. That flag gates only the
+    // *auto-continue* arm, through `shouldContinueAfterAutoCompact` below. A
+    // follow-up prompt is a visible user message the caller explicitly asked
+    // for ("/compact keep:N focus" → then deliver "focus"); gating it on host
+    // ownership silently dropped it, because a manual compaction has no
+    // `auto_compaction_start` and therefore always latched "host-manual".
     if (followUpPrompt) {
       try {
         const sent = (pi as any).sendUserMessage?.(followUpPrompt) as Promise<void> | undefined;

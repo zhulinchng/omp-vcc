@@ -1,6 +1,6 @@
 // @ts-nocheck
 import type { FileOps, NormalizedBlock } from "../types";
-import { extractPath } from "../core/tool-args";
+import { extractPath, isFilesystemPath } from "../core/tool-args";
 
 interface FileActivity {
   read: Set<string>;
@@ -55,10 +55,13 @@ export const extractFiles = (
   blocks: NormalizedBlock[],
   fileOps?: FileOps,
 ): FileActivity => {
+  // Seeded from the host-provided fileOps, which are derived from the same
+  // tool-call arguments, so they can carry a device target (keeping the
+  // `xd://propose` plan-mode write out of `[Files And Changes]`).
   const act: FileActivity = {
-    read: new Set(fileOps?.readFiles ?? []),
-    modified: new Set(fileOps?.modifiedFiles ?? []),
-    created: new Set(fileOps?.createdFiles ?? []),
+    read: new Set((fileOps?.readFiles ?? []).filter(isFilesystemPath)),
+    modified: new Set((fileOps?.modifiedFiles ?? []).filter(isFilesystemPath)),
+    created: new Set((fileOps?.createdFiles ?? []).filter(isFilesystemPath)),
   };
 
   for (const b of blocks) {

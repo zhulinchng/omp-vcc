@@ -3,7 +3,7 @@ import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll } fr
 import { existsSync, unlinkSync, writeFileSync, readFileSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, formatCompactionStats, buildOwnCut, applyTailBudget } from "../extensions/vcc-core/hook";
+import { registerBeforeCompactHook, PI_VCC_COMPACT_INSTRUCTION, getLastCompactionStats, formatCompactionStats, buildOwnCut, applyTailBudget, __setHostKindForTests } from "../extensions/vcc-core/hook";
 
 let tmpDir: string;
 let CONFIG_PATH: string;
@@ -263,6 +263,9 @@ describe("registerBeforeCompactHook: compact-all path", () => {
 
   test("threshold compact auto-continues by default with hidden custom message", async () => {
     setConfig({ debug: false, overrideDefaultCompaction: true });
+    // pi-only contract: omp resumes the interrupted turn itself (the latch), so
+    // the plugin's invisible-continue must stay silent there.
+    __setHostKindForTests("pi");
     const { pi, invokeBefore, invokeCompact, customMessages, userMessages } = createMockPi();
     registerBeforeCompactHook(pi);
 
@@ -270,6 +273,7 @@ describe("registerBeforeCompactHook: compact-all path", () => {
     invokeBefore(makeEvent(entries, undefined, { reason: "threshold", willRetry: false }));
     await invokeCompact({ type: "session_compact", fromExtension: true, reason: "threshold", willRetry: false });
     await new Promise((resolve) => setTimeout(resolve, 5));
+    __setHostKindForTests(null);
 
     expect(userMessages).toEqual([]);
     expect(customMessages).toHaveLength(1);
@@ -283,6 +287,8 @@ describe("registerBeforeCompactHook: compact-all path", () => {
 
   test("successful overflow compact auto-continues by default with hidden custom message", async () => {
     setConfig({ debug: false, overrideDefaultCompaction: true });
+    // pi-only contract (see the threshold case above).
+    __setHostKindForTests("pi");
     const { pi, invokeBefore, invokeCompact, customMessages, userMessages } = createMockPi();
     registerBeforeCompactHook(pi);
 
@@ -290,6 +296,7 @@ describe("registerBeforeCompactHook: compact-all path", () => {
     invokeBefore(makeEvent(entries, undefined, { reason: "overflow", willRetry: false }));
     await invokeCompact({ type: "session_compact", fromExtension: true, reason: "overflow", willRetry: false });
     await new Promise((resolve) => setTimeout(resolve, 5));
+    __setHostKindForTests(null);
 
     expect(userMessages).toEqual([]);
     expect(customMessages).toHaveLength(1);

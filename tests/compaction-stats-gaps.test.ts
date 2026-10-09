@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, expect, test, beforeEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { writeFileSync, readFileSync, unlinkSync, existsSync, mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -15,6 +15,7 @@ import {
   registerVccStatsCommand,
   PI_VCC_COMPACT_INSTRUCTION,
   OMP_VCC_COMPACT_INSTRUCTION,
+  __setHostKindForTests,
 } from "../extensions/vcc-core/hook";
 import extension from "../extensions/main.ts";
 
@@ -666,6 +667,14 @@ describe("gap: pi session_compact guards (reason/willRetry/isPiVccLast)", () => 
     msg("u6", "user", "topic six"), msg("a6", "assistant", "reply six"),
   ];
   const prep = { previousSummary: undefined, fileOps: { read: [], written: [], edited: [] }, tokensBefore: 100000 };
+
+  // This block pins the PLUGIN's own continuation contract, which is only live
+  // on pi: omp owns the turn after every compaction it drives (it resumes the
+  // interrupted turn, or dispatches its own), so under omp the plugin's
+  // invisible-continue is inert by design. Pin the host explicitly rather than
+  // letting the module default ("omp") silently turn these into no-op tests.
+  beforeEach(() => { __setHostKindForTests("pi"); });
+  afterEach(() => { __setHostKindForTests(null); });
 
   async function runCompactFlow(cfg: Record<string, unknown>, beforeEvent: any, afterEvent: any) {
     const dir = mkdtempSync(join(tmpdir(), "vcc-pi-compact-"));

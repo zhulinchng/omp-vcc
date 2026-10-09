@@ -6,7 +6,7 @@ Comprehensive reference for the `omp-vcc` test corpus: unit, integration, sessio
 
 ```sh
 bunx tsc --noEmit          # typecheck — 0 errors, vendored core // @ts-nocheck, skipLibCheck
-bun test                   # 1247 tests, 80 files, 3964 expects, 0 fail  (~11s)
+bun test                   # 1282 tests, 82 files, 4049 expects, 0 fail  (~11s)
 bun test tests/e2e --timeout 120000   # E2E suite
 bun test tests/audit-regressions.test.ts # adversarial host/recall regressions
 bun run smoke              # extension + pipeline smoke checks
@@ -18,7 +18,7 @@ No API key required. E2E `vcc_recall` live LLM turn is `skipIf` when `ANTHROPIC_
 
 ```mermaid
 flowchart LR
-  TSC["bunx tsc --noEmit"] --> TEST["bun test\n564 pass"]
+  TSC["bunx tsc --noEmit"] --> TEST["bun test\n1282 pass"]
   TEST --> SMOKE["bun run smoke\n3 hooks + 4 cmds + 2 tools"]
   SMOKE --> E2E["bun run e2e\n124 E2E isolated OMP_DIR"]
   E2E --> PUB{"prepublishOnly?"}
@@ -40,6 +40,8 @@ flowchart TB
     I1["before-compact buildOwnCut\nkeep:0/1/N, orphan ''\ncompactAll, too_few, autonomous\n13 tests"]
     I2["before-compact-hook\nsession_before+compact flow\nsmartKeep, budget 2.5×, cancel,\ntoast, invisible-continue\n41 tests"]
     I3["pi-vcc-command / vcc-recall-command\nrecall-tool-scope / smart-keep\ninvisible-continue / expand / touched\n~30 tests"]
+    I4["host-owned-continuation 16\ncontinuation-owner latch\nomp silent, pi keeps its own\ncompact_failed / generation"]
+    I5["device-path-filtering 19\nisFilesystemPath gate\nextractPath fall-through\nfileOps / touched / summary"]
   end
   subgraph Sessions["Sessions — real data"]
     S1["real-sessions 2\nstubbed when no ~/.pi/sessions\nsynthetic 100-turn fallback"]
@@ -64,8 +66,8 @@ flowchart TB
     E11["combined-compaction 11\nsequential VCC chains\nsnapcompact bypass, vision gate\nno post-VCC chain, per-pi\norphan/snap/boundary, brief cap"]
     E12["compaction-mix-matrix 13\ncommand matrix via handlers\n3-pass chain, VCC+snapcompact\nVCC+handoff/shake/soft/remote\nboundary interleaves"]
   end
-  Unit & Integration & Sessions & Savings --> ALL["bun test 1247 pass
-72 files"]
+  Unit & Integration & Sessions & Savings --> ALL["bun test 1282 pass
+82 files"]
   E2E --> RUNNER["bun run e2e\nisolated OMP_DIR"]
   ALL & RUNNER --> CI["CI gates green"]
 ```
@@ -74,6 +76,8 @@ flowchart TB
 |---|---|---|---|---|---|
 | Unit | `tests/brief.test.ts` + 15 more | ~150 | `bun test` | none | Deterministic output for fixtures, no LLM, no host |
 | Integration | `before-compact*.test.ts`, `pi-vcc-command*`, `smart-keep*`, `invisible-continue*` | ~95 | `bun test` | none | Hook `session_before_compact`→`session_compact` flow, command parsing |
+| Host contract | `tests/host-owned-continuation.test.ts` | 16 | `bun test` | none | Continuation-owner latch: omp never double-prompts, pi keeps its only continuation; latch lifecycle (`session_compact_failed`, generation bumps, gates) |
+| Host contract | `tests/device-path-filtering.test.ts` | 19 | `bun test` | none | `xd://`/`local://`/`artifact://` URIs excluded from `[Files And Changes]`, the recall touched index, and the brief; real paths unaffected |
 | E2E | `tests/e2e/*.e2e.test.ts` (12 files) | 124 | `bun run e2e` or `bun test tests/e2e` | `bun`, `omp` optional for `omp-integration` | Execution results via real pipeline, isolated `OMP_DIR`, mixed sequences |
 
 ## Running

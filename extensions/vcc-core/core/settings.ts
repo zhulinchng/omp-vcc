@@ -119,6 +119,16 @@ export interface PiVccSettings {
    * finished with stop). This avoids a UX cliff where the agent finishes a response,
    * immediately compacts, and then stops instead of continuing the task.
    * Overflow retry is still owned by pi-core via willRetry.
+   *
+   * omp only: omp owns the turn after every compaction it drives, so this
+   * setting is inert there — auto compaction resumes the interrupted turn via
+   * `CompactOptions.autoContinue`, mid-turn passes run with
+   * `autoContinue:false`/`suppressContinuation:true` because the in-flight turn
+   * continues by itself, manual `/compact` resumes the turn it aborted, and
+   * plan-mode "Approve and compact context" dispatches its own execution turn.
+   * Adding an invisible follow-up on top of that is the double-prompt
+   * `suppressContinuation` exists to prevent. The plugin therefore suppresses
+   * its own continuation under omp and never competes with the host's.
    */
   continueAfterThresholdCompact: boolean;
   /** Write debug snapshot to /tmp/omp-vcc-debug.json on each compaction. */

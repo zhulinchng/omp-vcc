@@ -98,7 +98,7 @@ Defaults (same as `DEFAULT_SETTINGS` in `extensions/vcc-core/core/settings.ts`):
 | `vccEnabled` | Master switch. `false` → extension still loads but `session_before_compact` returns `void` unless `__omp_vcc__`/`__pi_vcc__` marker present. |
 | `overrideDefaultCompaction` | `true` (default): omp-vcc handles **all** compactions — `/compact`, threshold, overflow, `/omp-vcc`. `false`: only `/omp-vcc`/`/pi-vcc` handled, rest falls back to core LLM compaction (host walks `methodOrder` per [omp-compaction.md:104-151](omp-compaction.md) and vision gate per [snapcompact.md](snapcompact.md)). |
 | `smartKeepTail` | `true`: when default `keep:1` tail ≤ `MIN_SMART_TAIL_TOKENS 5_000`, grow `keep` to largest N with tail ≤ `MAX_SMART_TAIL_TOKENS 25_000`. Explicit `keep:N` always respected. `false`: old behavior `keep:1`. |
-| `continueAfterThresholdCompact` | `true`: after successful `threshold`/`overflow` compaction (and not `willRetry`), schedule invisible-continue (`customType:"omp-vcc-auto-continue"` display:false triggerTurn:followUp, filtered in `on('context')`) so agent continues without UX cliff. `false`: stop after compaction. |
+| `continueAfterThresholdCompact` | `true`: after successful `threshold`/`overflow` compaction (and not `willRetry`), schedule invisible-continue (`customType:"omp-vcc-auto-continue"` display:false triggerTurn:followUp, filtered in `on('context')`) so agent continues without UX cliff. `false`: stop after compaction. **omp only:** inert under omp — the host owns the turn after every compaction it drives (auto resumes the interrupted turn, mid-turn passes run with `autoContinue:false`/`suppressContinuation:true`, manual `/compact` resumes the turn it aborted, plan-mode "Approve and compact context" dispatches its own turn), so the plugin stays silent and never double-prompts. |
 | `debug` | `true`: write snapshot to `/tmp/omp-vcc-debug.json` (and legacy `/tmp/pi-vcc-debug.json`) on each `session_before_compact` and `session_compact` with `counts`, `liveMessages.roleSequence`, `tail` previews, `tokenEstimate`, `sections`, `savings {tokensBefore, summaryChars, summaryTokensEst, keptTokensEst, tokensAfterEst, tokensSavedEst, savedPercentEst}` and after `session_compact` also `authoritativeSavings {tokensBefore, tokensAfter, tokensSaved, savedPercent}`. |
 | `compactionSummaryMode` | `append` (default): persist immutable v3 segments plus a complete fallback/trailing summary; `rewrite`: retain the complete replacement summary behavior. Invalid chains fail closed to rewrite. |
 | `retainedToolOutputMaxTokens` | Provider-visible consumed tool-output budget. Priced over the **kept tail** only (entries the compaction summarizes away can never be re-resolved), so every persisted omission still resolves after the compaction; omissions whose target later leaves the payload are skipped, not fatal. `0` disables omission. Pending output and images remain untouched. |
@@ -177,7 +177,7 @@ flowchart TB
   OVERRIDE -->|false| PIVCC
 
   HANDLE --> SMART["resolveSmartKeepUserTurns\n+ applyTailBudget ×2.5\n+ compileRanked"]
-  SMART --> CONT{"continueAfterThresholdCompact\n&& (threshold|overflow)\n&& !willRetry && !compactAll?"}
+  SMART --> CONT{"continueAfterThresholdCompact\n&& (threshold|overflow)\n&& !willRetry && !compactAll?\n&& compactionOwner unset (omp host only)"}
   CONT -->|yes| INVIS["triggerInvisibleContinue\ncustomType omp-vcc-auto-continue"]
   CONT -->|no| STOP["stop, no follow-up"]
   FORWARD & STOP & INVIS --> DONE["done"]
@@ -238,7 +238,22 @@ pi.sendMessage({customType:"omp-vcc-auto-continue", content:[], display:false}, 
 // on('context') filter removes it by customType — model just continues from summary
 ```
 
-Guarded by `loadSettings().continueAfterThresholdCompact` and `reason==="threshold"||"overflow" && !willRetry`. `overflow` retry owned by `pi-core` via `willRetry`.
+Guarded by `loadSettings().continueAfterThresholdCompact`, `reason==="threshold"||"overflow" && !willRetry`, and — on omp — a per-attempt **continuation-owner latch**. `overflow` retry owned by `pi-core` via `willRetry`.
+
+**omp vs pi.** The latch is latched once at `session_before_compact` and read at `session_compact`; it is set only when `getHostKind() === "omp"`. Under omp the host owns every turn it can drive, so the plugin stays silent there:
+
+| omp compaction path | Who continues |
+|---|---|
+| auto (threshold / overflow / idle) | host — resumes the interrupted turn via `scheduleCompactionContinuation` |
+| mid-turn (`detachPostCommit`, `autoContinue:false` + `suppressContinuation:true`) | the in-flight turn itself |
+| manual `/compact` | host — `#scheduleInterruptedTurnResume` |
+| plan-mode "Approve and compact context" | host — dispatches its own execution turn |
+
+A live read of the transient `auto_compaction_start` flag cannot reproduce this: the flag is absent for a manual compaction, and `auto_compaction_end` is emitted **after** a detached `session_compact` emit (`detachExtensionEmit`), so it clears the flag before the finish event arrives. That race is exactly the double-prompt the latch removes.
+
+pi emits no `auto_compaction_start` at all and has no auto-continue of its own, so the latch is never set there and the plugin's continuation is the only one — unchanged behaviour.
+
+A follow-up prompt (`/compact keep:N focus` → re-send "focus" as a visible user message) is **not** the auto-continue and is never gated by the latch.
 
 ```mermaid
 sequenceDiagram
